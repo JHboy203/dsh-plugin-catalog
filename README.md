@@ -201,6 +201,22 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
 读可选服务一律用 `ctx.get(name)`（cordis 注释原文：*Read a service from the store without the
 inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么做的。
 
+### 模型调用：推理档位和 `maxTokens` 共用一份预算
+
+`deepseek-flash` 默认 `reasoningEffort: high`，而推理 token 与正文**共享同一个 `maxTokens`**。
+长文本任务（把整篇 README 翻成英文）会把预算花在推理上 → 正文要么**空流**、要么被
+`max-tokens` 截断（文本看着有内容但残缺，英文版章节对不上就是这么来的）。`askLlm` 只累积
+`text-delta`，推理段本来就丢弃，所以**从文本侧完全看不出来**。
+
+本插件的做法：翻译类任务传 `reasoningEffort: "off"`，并把 `finish.kind` 与
+`usage.reasoningTokens` 记进失败原因。`FinishReasonMap` 只有
+`stop / tool-calls / max-tokens / aborted / error` —— **截断是 `max-tokens`，别猜成 `length`**。
+（实测：24 个仓里 11 个英文 README 因此静默缺失；降到 `off` 后剩余 5 个全部一次成功。）
+
+另一个自激：英文 README 的新鲜度判据是 `mtime(en) >= mtime(zh)`，而流程是「先写英文、
+再给中文补互链」—— 中文随即变新，下次 plan 又要求翻译。修法见 `lib/publish.mjs`
+（补完互链后 `utimes` 刷新英文时间戳）。
+
 ## 自救（界面出问题时）
 
 本插件是**独立客户端插件**，禁用即回官方界面：
