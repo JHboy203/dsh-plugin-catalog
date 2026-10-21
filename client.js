@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r1.0";
+		const BUILD = "r1.1";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -43,6 +43,9 @@ window.__ModuleLoader__.load({
 			{ id: "name", label: "名称" },
 		];
 
+		/* 列表每页可选条数（127 条一次铺完既卡又难扫，必须能分页） */
+		const LIST_PAGE_SIZES = [12, 24, 48, 96, 0]; /* 0 = 全部 */
+
 		/* ── 迷你 store（模块级：面板关着时图标也在用） ── */
 
 		const store = {
@@ -53,6 +56,8 @@ window.__ModuleLoader__.load({
 			source: "any",
 			kind: "all",
 			sort: "calls",
+			page: 1,
+			pageSize: 24,
 			open: null,
 			detail: null,
 			detailLoading: false,
@@ -276,6 +281,10 @@ window.__ModuleLoader__.load({
 			const all = props.tags || [];
 			const zh = item.descriptionZh || "";
 			const en = item.descriptionEn || "";
+			/* 没有中文简介时直接拿英文当正文：否则每张卡都顶着一行「（还没有中文简介）」再接英文，
+			   127 张卡一起看就是一片噪声。提示只留在详情里。 */
+			const main = zh || en;
+			const sub = zh && en ? en : "";
 			return h(
 				"button",
 				{ className: "dpc-card" + (item.enabled === false ? " is-off" : ""), onClick: () => openEntry(item), title: "查看 " + item.name + " 的调用明细" },
@@ -288,8 +297,10 @@ window.__ModuleLoader__.load({
 					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
 					h("span", { className: "dpc-calls", title: "总调用次数" }, fmtNumber(item.calls)),
 				),
-				h("div", { className: "dpc-zh" }, zh || h("span", { className: "dpc-muted" }, item.kind === "skill" ? "（Skill 没有英文简介）" : "（还没有中文简介）")),
-				en ? h("div", { className: "dpc-en" }, en) : null,
+				main
+					? h("div", { className: "dpc-zh" + (zh ? "" : " dpc-zh-plain"), title: main }, main)
+					: h("div", { className: "dpc-zh" }, h("span", { className: "dpc-muted" }, item.kind === "skill" ? "（Skill 没有英文简介）" : "（还没有简介）")),
+				sub ? h("div", { className: "dpc-en" }, sub) : null,
 				h(
 					"div",
 					{ className: "dpc-card-foot" },
@@ -812,6 +823,14 @@ window.__ModuleLoader__.load({
 				return list;
 			}, [items, state.query, state.kind, state.source, state.sort]);
 
+			/* 分页：过滤/排序一改就回第 1 页；pageSize 为 0 表示「全部」 */
+			const rawSize = Number(state.pageSize);
+			const pageSize = Number.isFinite(rawSize) && rawSize >= 0 ? Math.floor(rawSize) : 24;
+			const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize));
+			const page = Math.min(Math.max(1, state.page || 1), totalPages);
+			const pageItems = pageSize === 0 ? filtered : filtered.slice((page - 1) * pageSize, page * pageSize);
+			const gotoPage = (next) => set({ page: Math.min(Math.max(1, next), totalPages) });
+
 			async function startPlan() {
 				set({ uploadBusy: true });
 				const result = await post("/upload", { action: "plan" });
@@ -919,19 +938,19 @@ window.__ModuleLoader__.load({
 				h(
 					"div",
 					{ className: "dpc-toolbar" },
-					h("input", { className: "dpc-search", placeholder: "搜索名称 / 简介 / 判定依据…", value: state.query, onChange: (event) => set({ query: event.target.value }) }),
+					h("input", { className: "dpc-search", placeholder: "搜索名称 / 简介 / 判定依据…", value: state.query, onChange: (event) => set({ query: event.target.value, page: 1 }) }),
 					h(
 						"div",
 						{ className: "dpc-seg" },
 						[{ id: "any", label: "全部" }, { id: "official", label: "官方" }, { id: "self", label: "自写" }, { id: "third", label: "第三方" }, { id: "hybrid", label: "混血" }, { id: "pending", label: "待标记" }].map((option) =>
-							h("button", { key: option.id, className: "dpc-seg-btn" + (state.source === option.id ? " is-on" : ""), onClick: () => set({ source: option.id }) }, option.label),
+							h("button", { key: option.id, className: "dpc-seg-btn" + (state.source === option.id ? " is-on" : ""), onClick: () => set({ source: option.id, page: 1 }) }, option.label),
 						),
 					),
 					h(
 						"div",
 						{ className: "dpc-seg" },
 						[{ id: "all", label: "全部" }, { id: "plugin", label: "插件" }, { id: "skill", label: "Skill" }].map((option) =>
-							h("button", { key: option.id, className: "dpc-seg-btn" + (state.kind === option.id ? " is-on" : ""), onClick: () => set({ kind: option.id }) }, option.label),
+							h("button", { key: option.id, className: "dpc-seg-btn" + (state.kind === option.id ? " is-on" : ""), onClick: () => set({ kind: option.id, page: 1 }) }, option.label),
 						),
 					),
 					h(
@@ -940,7 +959,7 @@ window.__ModuleLoader__.load({
 						"排序 ",
 						h(
 							"select",
-							{ value: state.sort, onChange: (event) => set({ sort: event.target.value }) },
+							{ value: state.sort, onChange: (event) => set({ sort: event.target.value, page: 1 }) },
 							SORTS.map((option) => h("option", { key: option.id, value: option.id }, option.label)),
 						),
 					),
@@ -950,8 +969,40 @@ window.__ModuleLoader__.load({
 				h(
 					"div",
 					{ className: "dpc-grid" },
-					filtered.map((item) => h(Card, { key: item.id, item, tags: all })),
-					filtered.length === 0 ? h("div", { className: "dpc-muted dpc-pad" }, "没有匹配的条目。") : null,
+					pageItems.map((item) => h(Card, { key: item.id, item, tags: all })),
+					pageItems.length === 0 ? h("div", { className: "dpc-muted dpc-pad" }, "没有匹配的条目。") : null,
+				),
+				/* 列表分页条 */
+				h(
+					"div",
+					{ className: "dpc-listbar" },
+					h("span", { className: "dpc-listbar-count" }, "共 " + filtered.length + " 条" + (pageSize === 0 || totalPages === 1 ? "" : "　·　第 " + page + " / " + totalPages + " 页")),
+					h(
+						"div",
+						{ className: "dpc-listbar-nav" },
+						pageSize === 0 || totalPages === 1
+							? null
+							: h(
+									"div",
+									{ className: "dpc-pager" },
+									h("button", { className: "dpc-btn dpc-btn-ghost dpc-btn-sm", disabled: page <= 1, onClick: () => gotoPage(1), title: "第一页" }, "«"),
+									h("button", { className: "dpc-btn dpc-btn-ghost dpc-btn-sm", disabled: page <= 1, onClick: () => gotoPage(page - 1) }, "上一页"),
+									h("span", { className: "dpc-page-pill" }, page + " / " + totalPages),
+									h("button", { className: "dpc-btn dpc-btn-ghost dpc-btn-sm", disabled: page >= totalPages, onClick: () => gotoPage(page + 1) }, "下一页"),
+									h("button", { className: "dpc-btn dpc-btn-ghost dpc-btn-sm", disabled: page >= totalPages, onClick: () => gotoPage(totalPages), title: "最后一页" }, "»"),
+								),
+						h(
+							"label",
+							{ className: "dpc-inline" },
+							"每页 ",
+							h(
+								"select",
+								{ value: String(pageSize), onChange: (event) => set({ pageSize: Number(event.target.value), page: 1 }) },
+								LIST_PAGE_SIZES.map((size) => h("option", { key: size, value: String(size) }, size === 0 ? "全部" : String(size))),
+							),
+							" 条",
+						),
+					),
 				),
 				/* 宿主核心（单列，不算进任何插件） */
 				hostCore && hostCore.calls > 0
@@ -993,7 +1044,16 @@ window.__ModuleLoader__.load({
 .dpc-entry.is-active{color:var(--dsw-alias-brand-primary)}
 .dpc-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;
   background:var(--dsw-alias-state-warn-primary,#d89614);box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#fff)}
-.dpc-panel{display:flex;flex-direction:column;gap:10px;padding:18px 20px 40px;min-height:100%;box-sizing:border-box}
+.dpc-panel{display:flex;flex-direction:column;gap:12px;padding:18px 20px 40px;min-height:100%;box-sizing:border-box}
+/* 本地色板：全部由 label-primary 混出来，深色/浅色主题都跟着走。
+   之前直接用 --dsw-alias-border，深色主题下是接近白的实线，一排排白勾边很难看。 */
+.dpc-panel,.dpc-overlay{
+  --dpc-line:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 13%,transparent);
+  --dpc-line-soft:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 8%,transparent);
+  --dpc-fill:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 4%,transparent);
+  --dpc-fill-hover:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 7%,transparent);
+  --dpc-klein:#002fa7;
+  --dpc-klein-glow:rgba(0,47,167,.55)}
 .dpc-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
 .dpc-title{font-size:19px;font-weight:650;letter-spacing:.2px}
 .dpc-sub{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:4px;line-height:1.6}
@@ -1002,28 +1062,40 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-bg-base,#fff);border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer;line-height:1.2}
 .dpc-btn:disabled{opacity:.55;cursor:default}
 .dpc-btn-sm{padding:6px 10px;font-size:12px}
-.dpc-btn-ghost{background:transparent;color:var(--dsw-alias-label-primary,#1f2937);border-color:var(--dsw-alias-border,#e5e7eb)}
-.dpc-btn-ghost:hover{background:var(--dsw-alias-bg-layer-2,rgba(0,0,0,.04))}
+.dpc-btn-ghost{background:transparent;color:var(--dsw-alias-label-primary,#1f2937);border-color:var(--dpc-line)}
+.dpc-btn-ghost:hover{background:var(--dpc-fill-hover);border-color:color-mix(in srgb,var(--dpc-klein) 45%,var(--dpc-line))}
 .dpc-btn-ghost.is-on{border-color:var(--dsw-alias-brand-primary,#3964fe);color:var(--dsw-alias-brand-primary,#3964fe)}
 .dpc-btn-ghost.is-due{border-color:var(--dsw-alias-state-warn-primary,#d89614);color:var(--dsw-alias-state-warn-primary,#d89614)}
-.dpc-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0 2px}
+.dpc-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-radius:13px;
+  border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
 .dpc-search{flex:1 1 240px;min-width:200px;padding:8px 11px;border-radius:9px;font-size:13px;
-  border:1px solid var(--dsw-alias-border,#e5e7eb);background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.6));
-  color:var(--dsw-alias-label-primary,#1f2937)}
-.dpc-seg{display:inline-flex;border:1px solid var(--dsw-alias-border,#e5e7eb);border-radius:9px;overflow:hidden}
+  border:1px solid var(--dpc-line);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 55%,transparent);
+  color:var(--dsw-alias-label-primary,#1f2937);transition:border-color .15s ease,box-shadow .15s ease}
+.dpc-search:focus{outline:none;border-color:var(--dpc-klein);box-shadow:0 0 0 2px rgba(0,47,167,.22)}
+.dpc-seg{display:inline-flex;border:1px solid var(--dpc-line);border-radius:9px;overflow:hidden}
 .dpc-seg-btn{appearance:none;border:0;background:transparent;padding:6px 10px;font-size:12px;cursor:pointer;
   color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-seg-btn.is-on{background:var(--dsw-alias-brand-primary,#3964fe);color:var(--dsw-alias-bg-base,#fff)}
 .dpc-inline{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dpc-inline select,.dpc-add-form select{font-size:12px;padding:5px 8px;border-radius:7px;
-  border:1px solid var(--dsw-alias-border,#e5e7eb);background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.6));
+  border:1px solid var(--dpc-line);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 55%,transparent);
   color:var(--dsw-alias-label-primary,#1f2937)}
-.dpc-grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
-.dpc-card{appearance:none;text-align:left;display:flex;flex-direction:column;gap:6px;padding:12px 13px;
-  border-radius:12px;border:1px solid var(--dsw-alias-border,#e5e7eb);
-  background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.72));color:inherit;cursor:pointer;
-  transition:border-color .12s ease,transform .12s ease}
-.dpc-card:hover{border-color:var(--dsw-alias-brand-primary,#3964fe);transform:translateY(-1px)}
+.dpc-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.dpc-card{appearance:none;text-align:left;display:flex;flex-direction:column;gap:7px;padding:14px 15px;
+  border-radius:14px;border:1px solid var(--dpc-line);position:relative;overflow:hidden;
+  background:linear-gradient(180deg,var(--dpc-fill),transparent 72%);
+  color:inherit;cursor:pointer;
+  transition:border-color .16s ease,box-shadow .18s ease,transform .16s ease}
+/* 顶部一道极淡的高光，让卡片有“面”而不是一块纯色 */
+.dpc-card::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--dsw-alias-label-primary,#fff) 22%,transparent),transparent)}
+/* 悬停：边缘发一圈克莱因蓝的光（#002FA7） */
+.dpc-card:hover{
+  border-color:color-mix(in srgb,var(--dpc-klein) 66%,var(--dpc-line));
+  box-shadow:0 0 0 1px rgba(0,47,167,.38),0 0 20px -3px var(--dpc-klein-glow),0 14px 30px -22px rgba(0,0,0,.55);
+  transform:translateY(-1px)}
+.dpc-card:focus-visible{outline:none;border-color:var(--dpc-klein);
+  box-shadow:0 0 0 2px rgba(0,47,167,.5),0 0 22px -4px var(--dpc-klein-glow)}
 .dpc-card.is-off{opacity:.72}
 .dpc-card-host{grid-column:1/-1}
 .dpc-card-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
@@ -1034,7 +1106,9 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-state-warn-primary,#d89614)}
 .dpc-calls{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:650;font-size:13.5px;
   color:var(--dsw-alias-brand-primary,#3964fe)}
-.dpc-zh{font-size:12.5px;line-height:1.55;color:var(--dsw-alias-label-primary,#1f2937)}
+.dpc-zh{font-size:12.5px;line-height:1.55;color:var(--dsw-alias-label-primary,#1f2937);
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.dpc-zh-plain{color:var(--dsw-alias-label-secondary,#525a66)}
 .dpc-en{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary,#8b93a1);
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .dpc-en-block{font-size:12px;margin-top:6px;-webkit-line-clamp:6}
@@ -1051,25 +1125,35 @@ window.__ModuleLoader__.load({
 .dpc-src-pending{background:rgba(220,38,38,.12);color:#b91c1c;border-color:rgba(220,38,38,.34)}
 .dpc-overlay{position:fixed;inset:0;z-index:70;background:rgba(15,23,42,.48);display:flex;
   align-items:center;justify-content:center;padding:20px}
-.dpc-modal{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;
-  border-radius:14px;background:var(--dsw-alias-bg-base,#fff);box-shadow:0 24px 64px rgba(15,23,42,.32);
-  border:1px solid var(--dsw-alias-border,#e5e7eb);overflow:hidden;color:var(--dsw-alias-label-primary,#1f2937)}
-.dpc-modal-wide{width:min(920px,calc(100vw - 32px))}
-.dpc-modal-head{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border,#e5e7eb)}
-.dpc-modal-title{font-weight:650;font-size:14.5px;word-break:break-all}
+.dpc-modal{width:min(780px,calc(100vw - 32px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;
+  border-radius:16px;background:var(--dsw-alias-bg-base,#fff);
+  box-shadow:0 1px 0 color-mix(in srgb,var(--dsw-alias-label-primary,#000) 6%,transparent) inset,0 28px 72px rgba(0,0,0,.42);
+  border:1px solid var(--dpc-line);overflow:hidden;color:var(--dsw-alias-label-primary,#1f2937)}
+.dpc-modal-wide{width:min(940px,calc(100vw - 32px))}
+.dpc-modal-head{display:flex;align-items:center;gap:9px;padding:13px 18px;flex:0 0 auto;z-index:2;
+  border-bottom:1px solid var(--dpc-line-soft);
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 86%,transparent);backdrop-filter:blur(10px)}
+.dpc-modal-title{font-weight:650;font-size:15px;word-break:break-all;letter-spacing:.1px}
 .dpc-grow{flex:1}
-.dpc-modal-body{padding:14px 16px 20px;overflow:auto;display:flex;flex-direction:column;gap:14px}
-.dpc-stats{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(96px,1fr))}
-.dpc-stat{padding:8px 10px;border-radius:10px;background:var(--dsw-alias-bg-layer-2,rgba(0,0,0,.03))}
-.dpc-stat-value{font-size:15px;font-weight:650;font-variant-numeric:tabular-nums}
-.dpc-stat-label{font-size:11px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:2px}
-.dpc-block{display:flex;flex-direction:column;gap:7px;padding-top:10px;border-top:1px dashed var(--dsw-alias-border,#e5e7eb)}
-.dpc-block-title{font-size:12px;font-weight:650;color:var(--dsw-alias-label-secondary,#4b5563);letter-spacing:.3px}
+.dpc-modal-body{padding:16px 18px 22px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.dpc-stats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+.dpc-stat{padding:10px 12px;border-radius:12px;border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-stat-value{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.25}
+.dpc-stat-label{font-size:11px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:3px}
+/* 详情分区改成"一块卡片"，替掉原来一排虚线分隔 —— 之前每段之间只有一条虚线，看着散 */
+.dpc-block{display:flex;flex-direction:column;gap:9px;padding:13px 14px;border-radius:14px;
+  border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-block-title{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:650;
+  color:var(--dsw-alias-label-secondary,#4b5563);letter-spacing:.4px}
+.dpc-block-title::before{content:"";width:3px;height:12px;border-radius:2px;background:var(--dpc-klein);opacity:.8;flex:0 0 auto}
 .dpc-why{margin:0;padding-left:18px;font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-table{width:100%;border-collapse:collapse;font-size:12px}
 .dpc-table th{text-align:left;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280);
-  padding:5px 6px;border-bottom:1px solid var(--dsw-alias-border,#e5e7eb);font-size:11px}
-.dpc-table td{padding:5px 6px;border-bottom:1px solid var(--dsw-alias-border,#f1f2f4);font-variant-numeric:tabular-nums}
+  padding:6px 8px;border-bottom:1px solid var(--dpc-line);font-size:11px;white-space:nowrap}
+.dpc-table td{padding:6px 8px;border-bottom:1px solid var(--dpc-line-soft);font-variant-numeric:tabular-nums}
+.dpc-table tbody tr:nth-child(even){background:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 3%,transparent)}
+.dpc-table tbody tr:last-child td{border-bottom:0}
+.dpc-table tbody tr:hover{background:var(--dpc-fill-hover)}
 .dpc-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 .dpc-bad{color:#b91c1c}
 .dpc-muted{color:var(--dsw-alias-label-secondary,#8b93a1);font-size:11.5px}
@@ -1081,22 +1165,32 @@ window.__ModuleLoader__.load({
   background:rgba(57,100,254,.08);color:#2f5fd0}
 .dpc-sessions-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;
   color:var(--dsw-alias-label-secondary,#4b5563);margin-bottom:4px}
-.dpc-sessions{display:flex;flex-direction:column;gap:3px;max-height:260px;overflow:auto}
-.dpc-session{display:flex;align-items:center;gap:7px;font-size:12px;padding:4px 6px;border-radius:7px}
+.dpc-sessions{display:flex;flex-direction:column;gap:2px;max-height:300px;overflow:auto}
+.dpc-session{display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 9px;border-radius:9px;
+  transition:background .12s ease}
+.dpc-session:hover{background:var(--dpc-fill-hover)}
 .dpc-session.is-sub{background:rgba(217,119,6,.07)}
 .dpc-session-calls{font-variant-numeric:tabular-nums;font-weight:600;min-width:38px}
 .dpc-session-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}
 .dpc-sub-badge{font-size:10px;padding:0 5px;border-radius:5px;border:1px solid rgba(217,119,6,.5);color:#b45309}
 .dpc-session-time{margin-left:auto}
 .dpc-pager{display:flex;align-items:center;gap:8px;margin-top:6px}
+.dpc-listbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:2px 2px 4px}
+.dpc-listbar-count{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);font-variant-numeric:tabular-nums}
+.dpc-listbar-nav{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dpc-listbar-nav .dpc-pager{margin-top:0}
+.dpc-page-pill{font-size:12px;font-variant-numeric:tabular-nums;padding:3px 11px;border-radius:999px;
+  background:var(--dpc-fill);color:var(--dsw-alias-label-secondary,#4b5563);white-space:nowrap}
 .dpc-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .dpc-row-end{justify-content:flex-end;padding-top:10px}
 .dpc-link{font-size:11.5px;color:var(--dsw-alias-brand-primary,#3964fe);word-break:break-all}
 .dpc-tag-group{display:flex;flex-direction:column;gap:4px}
 .dpc-tag-group-title{font-size:11px;color:var(--dsw-alias-label-secondary,#8b93a1)}
 .dpc-tag-list{display:flex;gap:4px;flex-wrap:wrap}
-.dpc-tag{appearance:none;font-size:11px;padding:3px 8px;border-radius:999px;cursor:pointer;
-  border:1px solid var(--dsw-alias-border,#e5e7eb);background:transparent;color:var(--dsw-alias-label-secondary,#4b5563)}
+.dpc-tag{appearance:none;font-size:11px;padding:3px 9px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--dpc-line);background:var(--dpc-fill);color:var(--dsw-alias-label-secondary,#4b5563);
+  transition:border-color .14s ease,color .14s ease,background .14s ease}
+.dpc-tag:hover{border-color:var(--dpc-klein);color:var(--dpc-klein)}
 .dpc-tag.is-on{background:var(--dsw-alias-brand-primary,#3964fe);border-color:var(--dsw-alias-brand-primary,#3964fe);
   color:var(--dsw-alias-bg-base,#fff)}
 .dpc-tag-custom{font-size:9px;margin-left:4px;opacity:.75}

@@ -305,6 +305,34 @@ const skillOnly = visibleNames();
 ok("类型筛选「Skill」只留 Skill", skillOnly.length === 1 && skillOnly[0].includes("vex-ops"), JSON.stringify(skillOnly));
 T.store.kind = "all";
 
+/* ②.5 列表分页（2026-10-21 加：之前 127 条一次性铺满，没有翻页也没有页大小） */
+T.store.pageSize = 2;
+T.store.page = 1;
+const pageOne = visibleNames();
+ok("分页：每页 2 条时只渲染 2 张卡", pageOne.length === 2, JSON.stringify(pageOne).slice(0, 160));
+T.store.page = 2;
+const pageTwo = visibleNames();
+ok(
+	"分页：翻到第 2 页换成了不同的卡",
+	pageTwo.length === 2 && JSON.stringify(pageOne) !== JSON.stringify(pageTwo),
+	JSON.stringify(pageTwo).slice(0, 160),
+);
+ok("分页：页码显示为「2 / N」", (() => {
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	return /2\s*\/\s*\d+/.test(text);
+})());
+T.store.pageSize = 0;
+T.store.page = 1;
+const allCards = visibleNames();
+ok("分页：页大小设 0（全部）时不再截断", allCards.length > 2, "all=" + allCards.length);
+ok("分页条显示总条数", (() => {
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	const match = text.match(/共\s*(\d+)\s*条/);
+	return Boolean(match) && Number(match[1]) >= allCards.length;
+})());
+T.store.pageSize = 24;
+T.store.page = 1;
+
 /* ③ 浮窗：条目详情 */
 const detail = {
 	ok: true,
