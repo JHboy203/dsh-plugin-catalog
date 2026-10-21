@@ -1,0 +1,11 @@
+# dsh-plugin-catalog bundle patch：把宿主半边挂进 profile。
+# ⚠️ 改完这个文件必须重启 DSH（Desktop 不 watch patch 层）。
+#
+# 宿主半边持有：目录枚举 / 来源四分类 / 90 天调用统计 / 标签与 AI 分类 /
+#               每周缺口分析与安全审核 / GitHub 推送与密钥门禁。
+# 客户端半边只做展示与交互：它**不读磁盘、不调模型、不碰 git**。
+#
+# 面板是独立客户端插件：禁用本插件（或从 dsh.profile.bundles 去掉）即恢复官方界面。
+- insert:
+    - id: plugin-catalog
+      name: dsh-plugin-catalog

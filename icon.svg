@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Plugin Catalog">
+  <defs>
+    <linearGradient id="pc-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#2f5fd0"/>
+    </linearGradient>
+  </defs>
+  <!-- 四张卡片：对应来源四分类 -->
+  <rect x="7" y="9" width="21" height="17" rx="4" fill="url(#pc-grad)" opacity="0.95"/>
+  <rect x="36" y="9" width="21" height="17" rx="4" fill="none" stroke="#2f5fd0" stroke-width="2.4" opacity="0.85"/>
+  <rect x="7" y="34" width="21" height="17" rx="4" fill="none" stroke="#2f5fd0" stroke-width="2.4" opacity="0.55"/>
+  <rect x="36" y="34" width="21" height="17" rx="4" fill="url(#pc-grad)" opacity="0.55"/>
+  <!-- 每张卡里的两行「内容」 -->
+  <g fill="#ffffff" opacity="0.85">
+    <rect x="11" y="14" width="12" height="2.2" rx="1.1"/>
+    <rect x="11" y="19" width="8" height="2.2" rx="1.1"/>
+  </g>
+  <g fill="#2f5fd0" opacity="0.75">
+    <rect x="40" y="14" width="12" height="2.2" rx="1.1"/>
+    <rect x="40" y="19" width="8" height="2.2" rx="1.1"/>
+  </g>
+  <g fill="#ffffff" opacity="0.5">
+    <rect x="40" y="39" width="12" height="2.2" rx="1.1"/>
+    <rect x="40" y="44" width="8" height="2.2" rx="1.1"/>
+  </g>
+  <g fill="#2f5fd0" opacity="0.4">
+    <rect x="11" y="39" width="12" height="2.2" rx="1.1"/>
+    <rect x="11" y="44" width="8" height="2.2" rx="1.1"/>
+  </g>
+</svg>
