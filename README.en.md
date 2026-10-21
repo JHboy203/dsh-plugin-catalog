@@ -47,16 +47,23 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 
 A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalog`). Clicking it opens:
 
-- **Cards**: name, Chinese introduction (English original appended in small text), source badge, tags, creation/download time, total call count (with subagent breakdown)
+- **Cards**: name, introduction (Chinese preferred; when there is no Chinese text the English is used as the body, instead of stamping a placeholder line on every card), source badge, tags, creation/download time, total call count (with subagent breakdown)
 - **Search**: filter by name / introduction / classification rationale
 - **Filter**: source (all/official/self-written/third-party/hybrid/to-be-tagged) × type (all/plugin/Skill)
 - **Sort**: call count / recently used / time / name
+- **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
+- **Appearance**: dark and light themes share one local palette mixed from `label-primary`, so dark mode no longer shows harsh white outlines; hovering a card emits a soft **Klein Blue `#002FA7`** glow around its edge, and keyboard `:focus-visible` gets the same blue ring
 - **Popup** (click a card, centered on screen, close by clicking outside or pressing Esc):
   - Each tool's own call count, errors, average duration, most recent call, number of involved sessions
   - Session list: **session nickname** + count + whether a subagent (including parent session name), paginated, with selectable page size (10/20/50/100)
   - Source classification rationale (listing item by item why it was classified this way), tag editing, creation time, repo link
   - Self-written/hybrid items additionally have "Upload / Update to GitHub" and "Gap analysis"
   - A misclassified source can be manually tagged once (stored in `.dsh-plugin-catalog/overrides.json`, not asked again afterwards)
+
+> ⚠️ **The panel must scroll itself**: DSH's official center column (`div._centerCol`) is
+> `overflow:hidden`. If the panel does not set `height:100% + overflow-y:auto`, everything past
+> the first screen is **silently clipped** — which looks like "no scrollbar and no way to reach
+> the bottom". This is now pinned by assertions in `dev/audit.mjs`; regressing it fails the audit.
 
 ### Tools (the same capabilities, invoked directly in an ordinary session)
 
@@ -231,8 +238,8 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 ## Self-check
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程（172 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索排序/浮窗/分页/计划浮窗/空态（65 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式契约（181 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索排序/列表分页/浮窗/计划浮窗/空态（70 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
