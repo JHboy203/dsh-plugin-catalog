@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r1.1";
+		const BUILD = "r1.2";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -1044,7 +1044,17 @@ window.__ModuleLoader__.load({
 .dpc-entry.is-active{color:var(--dsw-alias-brand-primary)}
 .dpc-dot{position:absolute;top:-2px;right:-2px;width:7px;height:7px;border-radius:50%;
   background:var(--dsw-alias-state-warn-primary,#d89614);box-shadow:0 0 0 2px var(--dsw-alias-bg-base,#fff)}
-.dpc-panel{display:flex;flex-direction:column;gap:12px;padding:18px 20px 40px;min-height:100%;box-sizing:border-box}
+/* 面板自己当滚动容器：官方中列 div._centerCol 是 overflow:hidden，
+   面板若不自己滚，超出一屏的内容会被**静默裁掉** —— 既没有滚动条，也翻不到下面。
+   height:100% 撑满 + overflow-y:auto，并把滚动条显式画出来（默认主题里几乎看不见）。 */
+.dpc-panel{display:flex;flex-direction:column;gap:12px;padding:18px 20px 40px;height:100%;
+  box-sizing:border-box;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;
+  scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--dsw-alias-label-primary,#888) 26%,transparent) transparent}
+.dpc-panel::-webkit-scrollbar{width:10px}
+.dpc-panel::-webkit-scrollbar-track{background:transparent}
+.dpc-panel::-webkit-scrollbar-thumb{border-radius:999px;border:2px solid transparent;background-clip:content-box;
+  background-color:color-mix(in srgb,var(--dsw-alias-label-primary,#888) 26%,transparent)}
+.dpc-panel::-webkit-scrollbar-thumb:hover{background-color:color-mix(in srgb,var(--dpc-klein) 70%,transparent)}
 /* 本地色板：全部由 label-primary 混出来，深色/浅色主题都跟着走。
    之前直接用 --dsw-alias-border，深色主题下是接近白的实线，一排排白勾边很难看。 */
 .dpc-panel,.dpc-overlay{
