@@ -9,7 +9,7 @@
  * 退出码：0 全过 / 1 有失败。
  */
 
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync, statSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
@@ -447,6 +447,26 @@ const tagsRoundTrip = { version: 2, custom: [], assignments: { "plugin:x": { pur
 await saveTagsStore(dataDir, tagsRoundTrip);
 const reloaded = await loadTagsStore(dataDir);
 eq("标签库落盘再读回一致", reloaded.assignments["plugin:x"].purpose, ["ops"]);
+
+/* ─────────── 客户端样式契约（2026-10-21 R1 那一轮踩出来的） ───────────
+   这些规则都属于"改回去照样能渲染、但体验直接坏掉"的一类：
+     · 面板不自己滚 → 官方中列 overflow:hidden 把第二屏整个裁掉（没滑块、翻不到页）
+     · 口径退回 min-height:100% → 同上复发
+     · 边框直接用 --dsw-alias-border → 深色主题下是一排刺眼白框
+   固定成断言，改坏就红。 */
+const clientSource = readFileSync(new URL("../client.js", import.meta.url), "utf8");
+const cssStart = clientSource.indexOf("const CSS = `");
+const cssSource = cssStart >= 0 ? clientSource.slice(cssStart) : "";
+
+ok("client.js 里有 CSS 模板", cssSource.length > 2000);
+ok("面板自己当滚动容器（overflow-y:auto + height:100%）", /\.dpc-panel\{[^}]*overflow-y:auto/.test(cssSource) && /\.dpc-panel\{[^}]*height:100%/.test(cssSource));
+ok("面板不再退回 min-height:100% 的旧口径", !/\.dpc-panel\{[^}]*min-height:100%/.test(cssSource));
+ok("滚动条被显式画出宽度（否则主题里几乎看不见）", /\.dpc-panel::-webkit-scrollbar\{width:\d+px\}/.test(cssSource));
+ok("本地色板存在（--dpc-line / --dpc-fill）", cssSource.includes("--dpc-line:") && cssSource.includes("--dpc-fill:"));
+ok("克莱因蓝被指定为 #002fa7", cssSource.includes("--dpc-klein:#002fa7"));
+ok("卡片悬停有克莱因蓝光效", /\.dpc-card:hover\{[^}]*rgba\(0,47,167/.test(cssSource));
+ok("卡片边框不再直接用 --dsw-alias-border", !/\.dpc-card\{[^}]*--dsw-alias-border/.test(cssSource));
+ok("列表分页的类名与页大小常量都在", cssSource.includes(".dpc-listbar") && cssSource.includes(".dpc-page-pill") && clientSource.includes("const LIST_PAGE_SIZES"));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
