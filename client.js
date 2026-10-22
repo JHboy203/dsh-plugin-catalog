@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r1.2";
+		const BUILD = "r7.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -38,10 +38,37 @@ window.__ModuleLoader__.load({
 
 		const SORTS = [
 			{ id: "calls", label: "调用次数" },
+			{ id: "errors", label: "报错次数" },
+			/* 率比次数更能看出毛病：23/252 = 9% 和 6/6 = 100% 是两件事，按次数排会把后者藏起来 */
+			{ id: "rate", label: "报错率" },
 			{ id: "recent", label: "最近使用" },
 			{ id: "time", label: "时间" },
 			{ id: "name", label: "名称" },
 		];
+
+		/* 「用没用」的五个视角 —— 洞察条上就是这五个 chip，点一下就是一次筛选。
+		   数字要能直接回答「哪些可以删」：本机 127 条里 86 条从未被调用过；
+		   另有一部分**只被子代理调过** —— 这类删掉不会立刻报错，只会让某条委派链悄悄变差。 */
+		const USAGE_FILTERS = [
+			{ id: "any", label: "全部" },
+			{ id: "used", label: "有调用" },
+			{ id: "unused", label: "未使用" },
+			{ id: "errors", label: "有报错" },
+			{ id: "subonly", label: "仅子代理" },
+		];
+
+		/* 每个 chip 的说明书 —— 光给数字不解释的话，「仅子代理 0」会被误读成功能坏了 */
+		const USAGE_HINTS = {
+			any: "全部条目（插件 + Skill）",
+			used: "至少被调用过一次",
+			unused: "只显示从没被调用过的条目（优先清理对象）",
+			errors: "只显示有报错的条目；配合「排序＝报错次数 / 报错率」看",
+			subonly: "只显示「每一次调用都发生在子代理会话里」的条目 —— 删掉不会当场报错，只会让某条委派链悄悄变差",
+		};
+
+		/* 缓存超过这么久就自动补一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒）。
+		   ★ 别设得更短：面板每 20 秒轮询一次，阈值太短会退化成「一直在刷新」。 */
+		const AUTO_REFRESH_MS = 10 * 60 * 1000;
 
 		/* 列表每页可选条数（127 条一次铺完既卡又难扫，必须能分页） */
 		const LIST_PAGE_SIZES = [12, 24, 48, 96, 0]; /* 0 = 全部 */
@@ -56,11 +83,18 @@ window.__ModuleLoader__.load({
 			source: "any",
 			kind: "all",
 			sort: "calls",
+			/* 用没用：any / used / unused / errors / subonly —— 与 USAGE_FILTERS 一一对应 */
+			usage: "any",
 			page: 1,
 			pageSize: 24,
+			/* 滚动位置（只用于重载后恢复，不参与渲染） */
+			scrollTop: 0,
 			open: null,
 			detail: null,
 			detailLoading: false,
+			/* 浮窗里的磁盘体积：懒算，打开一个条目才问一次 */
+			size: null,
+			sizeError: null,
 			tagBusy: false,
 			notice: null,
 			plan: null,
@@ -68,7 +102,81 @@ window.__ModuleLoader__.load({
 			uploadResult: null,
 			report: null,
 			reportBusy: false,
+			/* 导出当前筛选结果（写进数据目录 reports/，路径给到用户） */
+			exportBusy: false,
+			exportPath: "",
+			exportCount: 0,
+			/* 多选（清理决策用）：选择模式下点卡片 = 选中，不进浮窗。
+			   ★ 选中项不进 localStorage：重载后清空是**故意的**，避免半个批次被忘在那里。 */
+			picking: false,
+			picked: [],
+			pickedBytes: null,
+			pickedSizes: null,
+			pickedBusy: false,
 		};
+
+		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
+		   ★ 只存**用户动过**的那几个键；`data` / `detail` 每次轮询都变，绝不入库。
+		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
+		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
+		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page"];
+
+		function readView() {
+			try {
+				const raw = typeof localStorage !== "undefined" ? localStorage.getItem(VIEW_KEY) : null;
+				if (!raw) return null;
+				const parsed = JSON.parse(raw);
+				if (!parsed || typeof parsed !== "object") return null;
+				const view = {};
+				for (const key of VIEW_KEYS) {
+					if (parsed[key] !== undefined) view[key] = parsed[key];
+				}
+				view.scrollTop = Number(parsed.scrollTop) || 0;
+				return view;
+			} catch (error) {
+				return null; /* 坏数据 / 存储被禁用，都退回默认视图 */
+			}
+		}
+
+		function writeView() {
+			try {
+				if (typeof localStorage === "undefined") return false;
+				const view = { scrollTop: store.scrollTop || 0 };
+				for (const key of VIEW_KEYS) view[key] = store[key];
+				localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+				return true;
+			} catch (error) {
+				return false;
+			}
+		}
+
+		function touchesView(patch) {
+			if (!patch) return false;
+			return VIEW_KEYS.some((key) => key in patch);
+		}
+
+		/* 模块加载时就把上次的视图接回来（面板还没挂载，所以只改 store） */
+		const restoredView = readView();
+		if (restoredView) {
+			for (const key of VIEW_KEYS) {
+				if (restoredView[key] !== undefined) store[key] = restoredView[key];
+			}
+			store.scrollTop = restoredView.scrollTop || 0;
+		}
+
+		/* 滚动时记住位置：每 300ms 最多落一次盘，别让滚轮把 localStorage 打成瓶颈 */
+		let scrollSavedAt = 0;
+		function rememberScroll(event) {
+			const panel = event && event.currentTarget;
+			if (!panel) return;
+			store.scrollTop = Number(panel.scrollTop) || 0;
+			const now = Date.now();
+			if (now - scrollSavedAt < 300) return;
+			scrollSavedAt = now;
+			writeView();
+		}
+
 		const listeners = new Set();
 		function emit() {
 			for (const fn of listeners) {
@@ -81,6 +189,18 @@ window.__ModuleLoader__.load({
 		}
 		function set(patch) {
 			Object.assign(store, patch);
+			/* 换筛选 / 换排序 / 换页之后必须回到顶部：否则第 2 页的第一条会落在屏幕外，
+			   看起来像"点了下一页什么都没变"。 */
+			if (patch && ("query" in patch || "source" in patch || "kind" in patch || "usage" in patch || "sort" in patch || "page" in patch || "pageSize" in patch)) {
+				store.scrollTop = 0;
+				try {
+					const panel = typeof document !== "undefined" && typeof document.getElementById === "function" ? document.getElementById("dpc-panel") : null;
+					if (panel) panel.scrollTop = 0;
+				} catch (error) {
+					/* 拿不到容器就算了，恢复逻辑本来就是尽力而为 */
+				}
+			}
+			if (touchesView(patch)) writeView();
 			emit();
 		}
 		function useStore() {
@@ -130,13 +250,36 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** 体积单算一路：慢也不挡浮窗先出来（大目录要递归，不能让详情等它）。 */
+		async function loadSize(id) {
+			try {
+				const result = await api("/size?id=" + encodeURIComponent(id));
+				if (store.open && store.open.id === id) set({ size: result.ok ? result.size : null, sizeError: result.ok ? (result.reason || null) : result.error });
+			} catch (error) {
+				if (store.open && store.open.id === id) set({ size: null, sizeError: String((error && error.message) || error) });
+			}
+		}
+
 		function openEntry(item) {
-			set({ open: { id: item.id, page: 1, pageSize: 20 }, detail: null });
+			set({ open: { id: item.id, page: 1, pageSize: 20 }, detail: null, size: null, sizeError: null });
 			loadDetail(item.id, 1, 20);
+			loadSize(item.id);
 		}
 
 		function closeEntry() {
-			set({ open: null, detail: null });
+			set({ open: null, detail: null, size: null, sizeError: null });
+		}
+
+		/** 选中 / 取消选中一个条目（选择模式下点卡片走这里）。 */
+		function togglePick(id) {
+			const picked = store.picked.includes(id) ? store.picked.filter((item) => item !== id) : store.picked.concat(id);
+			set({ picked, pickedBytes: null, pickedSizes: null });
+		}
+
+		/** 进出选择模式：退出时清空选中，避免"上次选的还在"这种幽灵状态。 */
+		function togglePicking() {
+			const picking = !store.picking;
+			set({ picking, picked: picking ? store.picked : [], pickedBytes: picking ? store.pickedBytes : null, pickedSizes: picking ? store.pickedSizes : null });
 		}
 
 		/* 轮询：有任务在跑时 2.5 秒一拍（看进度），否则 20 秒一拍 */
@@ -182,15 +325,50 @@ window.__ModuleLoader__.load({
 			return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate());
 		}
 
-		function fmtDateTime(ms) {
-			if (!ms) return "—";
+		function fmtDateTime(ms) {			if (!ms) return "—";
 			const date = new Date(Number(ms));
 			const pad = (n) => String(n).padStart(2, "0");
 			return fmtTime(ms) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
 		}
 
-		function ago(ms) {
-			if (!ms) return "从未";
+		/* ── 副本漂移标签（纯函数，便于断言）──
+		   profile 装的是**副本**，工作区里还有一份源码：两者不同步时，改源码根本不会生效。
+		   这是本机反复踩的坑（dsh-ofm-ops 丢源码那回），所以要在卡片上直接标出来。 */
+		function driftLabel(drift) {
+			if (!drift) return "";
+			const staged = Boolean(drift.staged);
+			if (drift.verdict === "differs") return staged ? "staging 不同步" : "副本不同步";
+			if (drift.verdict === "newer-workspace") return staged ? "staging 较新" : "副本较旧";
+			if (drift.verdict === "newer-loaded") return staged ? "staging 较旧" : "工作区较旧";
+			return "";
+		}
+
+		function driftDetail(drift) {
+			if (!drift) return "";
+			const parts = [];
+			if (drift.differs && drift.differs.length > 0) parts.push("关键文件不同：" + drift.differs.join("、"));
+			if (drift.staged) {
+				if (drift.loadedDir) parts.push("DSH 加载的：" + drift.loadedDir);
+				if (drift.workspaceDir) parts.push("staging（上传用）：" + drift.workspaceDir);
+				parts.push("发布前先同步这两份 —— staging 是旧的那份时，推上去的就是旧版");
+				return parts.join("\n");
+			}
+			if (drift.loadedDir) parts.push("加载的：" + drift.loadedDir);
+			if (drift.workspaceDir) parts.push("工作区：" + drift.workspaceDir);
+			if (drift.verdict === "newer-workspace") parts.push("工作区那份更新 —— 改它才会生效（先重新安装或改成 junction）");
+			if (drift.verdict === "newer-loaded") parts.push("加载的那份更新 —— 工作区源码可能是旧的，别改错地方");
+			return parts.join("\n");
+		}
+
+		/** 体积：只给人看，不参与判断（「12.3 MB · 318 个文件」） */		function fmtBytes(bytes) {
+			const value = Number(bytes) || 0;
+			if (value >= 1024 * 1024 * 1024) return (value / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+			if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + " MB";
+			if (value >= 1024) return (value / 1024).toFixed(0) + " KB";
+			return value + " B";
+		}
+
+		function ago(ms) {			if (!ms) return "从未";
 			const delta = Date.now() - Number(ms);
 			if (delta < 60000) return "刚刚";
 			if (delta < 3600000) return Math.floor(delta / 60000) + " 分钟前";
@@ -203,6 +381,88 @@ window.__ModuleLoader__.load({
 			if (value >= 60000) return (value / 60000).toFixed(1) + " 分钟";
 			if (value >= 1000) return (value / 1000).toFixed(1) + " 秒";
 			return value + " ms";
+		}
+
+		/* ── 用没用 / 搜得到 / 键盘（都是纯函数，自检里能直接断言） ── */
+
+		/** 从未被调用过。 */
+		function isUnused(item) {
+			return !(item && item.calls > 0);
+		}
+
+		function hasErrors(item) {
+			return Boolean(item && item.errors > 0);
+		}
+
+		/** 报错率（0~1）：没调用过就没有率可言，返回 0 而不是假装 100%。 */
+		function errorRate(item) {
+			const calls = Number(item && item.calls) || 0;
+			return calls > 0 ? (Number(item.errors) || 0) / calls : 0;
+		}
+
+		/**
+		 * 「只被子代理调过」：有调用，但每一次都发生在子代理会话里。
+		 * 这类条目删掉**不会当场报错** —— 只会在某条委派链下次跑的时候悄悄变差，
+		 * 所以清理前必须能单独看见它们。
+		 */
+		function isSubagentOnly(item) {
+			const calls = Number(item && item.calls) || 0;
+			return calls > 0 && calls === (Number(item && item.subagentCalls) || 0);
+		}
+
+		/**
+		 * 搜索命中：把**命中的工具名**挑出来（最多 4 个）。
+		 * 这是面板要能回答的第二个问题 —— 「这个工具是谁提供的」。
+		 * 少于 2 个字符不搜，免得一个 `a` 把所有条目都点亮。
+		 */
+		function toolHits(item, query) {
+			const needle = String(query || "").trim().toLowerCase();
+			if (needle.length < 2) return [];
+			const names = (item && item.toolNames) || [];
+			return names.filter((name) => String(name).toLowerCase().includes(needle)).slice(0, 4);
+		}
+
+		/**
+		 * 快捷键判定（纯函数：不碰 DOM，所以自检能直接断言）。
+		 * `/` 聚焦搜索、`Esc` 清空搜索；在输入框里按这两个键不抢。
+		 */
+		function hotkeyOf(event) {
+			if (!event || typeof event.key !== "string") return "";
+			const target = event && event.target;
+			const tag = target && typeof target.tagName === "string" ? target.tagName : "";
+			const typing = tag === "INPUT" || tag === "TEXTAREA" || Boolean(target && target.isContentEditable);
+			if (event.key === "/" && !typing) return "focus-search";
+			if (event.key === "Escape" && !typing) return "clear-search";
+			return "";
+		}
+
+		/**
+		 * 复制到剪贴板：先走 navigator.clipboard，被拒/不可用时退回临时 textarea。
+		 * 两条都失败就返回 false —— 调用方要给一句人话，不能静默失败。
+		 */
+		function copyText(text) {
+			const value = String(text == null ? "" : text);
+			try {
+				if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+					navigator.clipboard.writeText(value).catch(() => {});
+					return true;
+				}
+			} catch (error) {
+				/* 落到下面的兜底 */
+			}
+			try {
+				const area = document.createElement("textarea");
+				area.value = value;
+				area.style.position = "fixed";
+				area.style.opacity = "0";
+				document.body.appendChild(area);
+				area.select();
+				const copied = document.execCommand("copy");
+				document.body.removeChild(area);
+				return Boolean(copied);
+			} catch (error) {
+				return false;
+			}
 		}
 
 		function tagLabel(all, id) {
@@ -279,6 +539,10 @@ window.__ModuleLoader__.load({
 		function Card(props) {
 			const item = props.item;
 			const all = props.tags || [];
+			const hits = props.hits || [];
+			const picked = Boolean(props.picked);
+			const picking = Boolean(props.picking);
+			const drift = props.drift || null;
 			const zh = item.descriptionZh || "";
 			const en = item.descriptionEn || "";
 			/* 没有中文简介时直接拿英文当正文：否则每张卡都顶着一行「（还没有中文简介）」再接英文，
@@ -287,20 +551,30 @@ window.__ModuleLoader__.load({
 			const sub = zh && en ? en : "";
 			return h(
 				"button",
-				{ className: "dpc-card" + (item.enabled === false ? " is-off" : ""), onClick: () => openEntry(item), title: "查看 " + item.name + " 的调用明细" },
+				{
+					className: "dpc-card" + (item.enabled === false ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
+					onClick: () => (picking ? props.onPick(item.id) : openEntry(item)),
+					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的调用明细",
+				},
 				h(
 					"div",
 					{ className: "dpc-card-head" },
+					picked ? h("span", { className: "dpc-pick-badge", "aria-label": "已选中" }, "✓") : null,
 					h(SourceBadge, { source: item.source, why: item.sourceWhy }),
 					h("span", { className: "dpc-name" }, item.name),
 					item.kind === "skill" ? h("span", { className: "dpc-kind" }, "Skill") : null,
+					driftLabel(drift) ? h("span", { className: "dpc-drift", title: driftDetail(drift) }, driftLabel(drift)) : null,
 					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
-					h("span", { className: "dpc-calls", title: "总调用次数" }, fmtNumber(item.calls)),
+					hasErrors(item)
+						? h("span", { className: "dpc-err", title: "报错 " + (item.errors || 0) + " 次 / 调用 " + (item.calls || 0) + " 次（" + Math.round(errorRate(item) * 100) + "%）" }, "报错 " + fmtNumber(item.errors || 0))
+						: null,
+					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "从没被调用过" : "总调用次数" }, fmtNumber(item.calls)),
 				),
 				main
 					? h("div", { className: "dpc-zh" + (zh ? "" : " dpc-zh-plain"), title: main }, main)
 					: h("div", { className: "dpc-zh" }, h("span", { className: "dpc-muted" }, item.kind === "skill" ? "（Skill 没有英文简介）" : "（还没有简介）")),
 				sub ? h("div", { className: "dpc-en" }, sub) : null,
+				hits.length > 0 ? h("div", { className: "dpc-hit", title: "搜索命中的工具名" }, "工具：" + hits.join(" · ")) : null,
 				h(
 					"div",
 					{ className: "dpc-card-foot" },
@@ -543,6 +817,8 @@ window.__ModuleLoader__.load({
 			const open = state.open;
 			const item = detail && detail.ok ? detail.item : null;
 			const all = (state.data && state.data.tags && state.data.tags.all) || [];
+			/* 复制源目录后按钮变「已复制」—— 面板里的操作反馈只能出现在面板里 */
+			const [copiedPath, setCopiedPath] = useState(false);
 
 			useEffect(() => {
 				function onKey(event) {
@@ -614,6 +890,59 @@ window.__ModuleLoader__.load({
 										item.descriptionEn ? h("div", { className: "dpc-en dpc-en-block" }, item.descriptionEn) : null,
 										item.whenToUse ? h("div", { className: "dpc-muted" }, "何时该用：" + item.whenToUse) : null,
 									),
+									/* 位置：装上了却不工作的时候，第一件事是看它到底在哪、是不是 junction */
+									item.kind === "plugin"
+										? h(
+												"div",
+												{ className: "dpc-block" },
+												h("div", { className: "dpc-block-title" }, "位置与安装形态"),
+												h(
+													"div",
+													{ className: "dpc-row" },
+													h("span", { className: "dpc-muted" }, item.realDir ? "源目录" : "没有源目录（在官方 asar 里，或宿主半边还没重载）"),
+													item.realDir ? h("code", { className: "dpc-path" }, item.realDir) : null,
+													item.realDir
+														? h(
+																"button",
+																{
+																	className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copiedPath ? " is-on" : ""),
+																	onClick: () => {
+																		const copied = copyText(item.realDir);
+																		setCopiedPath(copied);
+																		if (!copied) set({ notice: "复制失败：渲染进程不让写剪贴板，请手动选中目录复制" });
+																	},
+																},
+																copiedPath ? "已复制" : "复制",
+															)
+														: null,
+												),
+												h(
+													"div",
+													{ className: "dpc-muted" },
+													item.inAsar
+														? "安装形态：在官方 asar 包内 —— 不能直接改，随 DSH 升级走"
+														: item.isLink
+															? "安装形态：junction / symlink —— 源目录就在工作区，改源码立即生效"
+															: "安装形态：实体目录（profile 里的副本）—— 改工作区那份不会被加载",
+												),
+												/* dependency 是布尔：这个包有没有被写进 profile 的 package.json dependencies。
+												   传递依赖/自动装的包在下次整理依赖树时可能消失 —— 这正是「上次还好的、这次没了」的常见来源。 */
+												item.dependency
+													? h("div", { className: "dpc-muted" }, "写在 profile 的 package.json dependencies 里 —— 不会被依赖树整理顺手清掉")
+													: h("div", { className: "dpc-muted" }, "不在 profile 的 dependencies 里（传递依赖 / 自动装的）—— 整理依赖树时可能消失"),
+												/* 体积：懒算（浮窗打开后才问一次 /size），删之前先看看它能省多少 */
+												h(
+													"div",
+													{ className: "dpc-row" },
+													h("span", { className: "dpc-muted" }, "体积"),
+													state.size
+														? h("span", null, fmtBytes(state.size.bytes) + " · " + fmtNumber(state.size.files) + " 个文件" + (state.size.truncated ? "（超过 1.5 秒/2 万文件，只算到这里）" : ""))
+														: state.sizeError
+															? h("span", { className: "dpc-muted" }, state.sizeError)
+															: h("span", { className: "dpc-muted" }, "正在量…"),
+												),
+											)
+										: null,
 									/* 来源与证据 */
 									h(
 										"div",
@@ -653,6 +982,22 @@ window.__ModuleLoader__.load({
 									),
 									/* 标签 */
 									h(TagEditor, { item, all }),
+									/* 副本同步：一份是加载的、另一份是源码 / staging —— 不同步意味着你改的那份不会被用 */
+									(() => {
+										const drift = (state.data && state.data.drift && state.data.drift[item.id]) || null;
+										if (!drift) return null;
+										const label = driftLabel(drift);
+										const prefix = drift.staged ? "staging 同步" : "源码同步";
+										const body =
+											drift.verdict === "linked"
+												? prefix + "：junction 指向工作区 —— 只有一份，改源码立即生效"
+												: drift.verdict === "no-copy"
+													? prefix + "：工作区里没有同名源码目录（只能改 profile 里这份）"
+													: label
+														? prefix + "：" + label + " —— " + driftDetail(drift).replace(/\n/g, "；")
+														: prefix + "：两份一致";
+										return h("div", { className: "dpc-block" }, h("div", { className: "dpc-block-title" }, "副本同步"), h("div", { className: "dpc-muted" }, body));
+									})(),
 									/* 仓库与操作 */
 									h(
 										"div",
@@ -808,20 +1153,106 @@ window.__ModuleLoader__.load({
 				let list = items.filter((item) => {
 					if (state.kind !== "all" && item.kind !== state.kind) return false;
 					if (state.source !== "any" && item.source !== state.source) return false;
+					/* 「用没用」五视角：未使用 / 有调用 / 有报错 / 仅子代理 */
+					if (state.usage === "unused" && !isUnused(item)) return false;
+					if (state.usage === "used" && isUnused(item)) return false;
+					if (state.usage === "errors" && !hasErrors(item)) return false;
+					if (state.usage === "subonly" && !isSubagentOnly(item)) return false;
 					if (query !== "") {
-						const haystack = [item.name, item.title, item.descriptionZh, item.descriptionEn, (item.sourceWhy || []).join(" ")].join(" ").toLowerCase();
+						/* ★ 工具名也要进搜索域 —— 否则「pwsh 是谁给的」只能一个个点开看 */
+						const haystack = [item.name, item.title, item.descriptionZh, item.descriptionEn, (item.sourceWhy || []).join(" "), (item.toolNames || []).join(" ")].join(" ").toLowerCase();
 						if (!haystack.includes(query)) return false;
 					}
 					return true;
 				});
 				list = list.slice().sort((a, b) => {
 					if (state.sort === "calls") return (b.calls || 0) - (a.calls || 0);
+					/* 报错优先按次数排；同次数再看调用量，否则 1 次/1 次的一堆条目顺序随机 */
+					if (state.sort === "errors") return (b.errors || 0) - (a.errors || 0) || (b.calls || 0) - (a.calls || 0);
+					/* 报错率：6/6 排在 23/252 前面 —— 次数排序看不出后者其实很健康 */
+					if (state.sort === "rate") return errorRate(b) - errorRate(a) || (b.errors || 0) - (a.errors || 0);
 					if (state.sort === "recent") return (b.lastUsed || 0) - (a.lastUsed || 0);
 					if (state.sort === "time") return (b.createdAt || 0) - (a.createdAt || 0);
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.sort]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort]);
+
+			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
+			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
+			const insightCounts = useMemo(() => {
+				const pool = items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source));
+				return {
+					any: pool.length,
+					used: pool.filter((item) => !isUnused(item)).length,
+					unused: pool.filter((item) => isUnused(item)).length,
+					errors: pool.filter((item) => hasErrors(item)).length,
+					subonly: pool.filter((item) => isSubagentOnly(item)).length,
+				};
+			}, [items, state.kind, state.source]);
+
+			/* 缓存太旧就自动补一次增量刷新。
+			   ★ 三条闸门缺一不可：本挂载只刷一次（否则 20 秒轮询会变成循环刷新）、
+			     没有任务在跑（否则和后台任务抢）、确实超过 AUTO_REFRESH_MS。 */
+			const autoRefreshed = useRef(false);
+			const builtAt = data && data.stats && data.stats.meta ? Number(data.stats.meta.builtAt) || 0 : 0;
+			useEffect(() => {
+				if (autoRefreshed.current || !builtAt) return;
+				if (data.job && data.job.running) return;
+				if (Date.now() - builtAt < AUTO_REFRESH_MS) return;
+				autoRefreshed.current = true;
+				post("/refresh", { what: "stats" })
+					.then(() => setTimeout(() => refresh(), 1200))
+					.catch(() => {});
+			}, [builtAt]);
+
+			/* 快捷键：`/` 聚焦搜索、`Esc` 清空 —— 127 条里找一条，手不用离开键盘 */
+			useEffect(() => {
+				const onKey = (event) => {
+					const action = hotkeyOf(event);
+					if (action === "focus-search") {
+						event.preventDefault();
+						const input = document.getElementById("dpc-search");
+						if (input && typeof input.focus === "function") input.focus();
+					} else if (action === "clear-search" && store.query !== "") {
+						set({ query: "", page: 1 });
+					}
+				};
+				if (typeof window.addEventListener !== "function") return undefined;
+				window.addEventListener("keydown", onKey);
+				return () => window.removeEventListener("keydown", onKey);
+			}, []);
+
+			/* 选中项的体积：一次问一批（服务端并发 4），250ms 防抖避免连点卡片打出一串请求 */
+			const pickedKey = state.picked.join(",");
+			useEffect(() => {
+				if (state.picked.length === 0) return undefined;
+				let alive = true;
+				const timer = setTimeout(async () => {
+					try {
+						const result = await post("/sizes", { ids: store.picked });
+						if (alive && result && result.ok) set({ pickedBytes: result.totalBytes, pickedSizes: result.sizes, pickedBusy: false });
+					} catch (error) {
+						if (alive) set({ pickedBusy: false });
+					}
+				}, 250);
+				return () => {
+					alive = false;
+					clearTimeout(timer);
+				};
+			}, [pickedKey]);
+
+			/* 重载（改客户端代码后必然发生一次）或刷新之后，把滚动位置放回原处。
+			   ★ 只在**第一次拿到数据**时恢复一次：之后每次轮询重渲染都别把人拽回去。 */
+			const restoredScroll = useRef(false);
+			useEffect(() => {
+				if (restoredScroll.current || !data) return;
+				restoredScroll.current = true;
+				const top = Number(store.scrollTop) || 0;
+				if (!top) return;
+				const panel = typeof document !== "undefined" && typeof document.getElementById === "function" ? document.getElementById("dpc-panel") : null;
+				if (panel) panel.scrollTop = top;
+			}, [Boolean(data)]);
 
 			/* 分页：过滤/排序一改就回第 1 页；pageSize 为 0 表示「全部」 */
 			const rawSize = Number(state.pageSize);
@@ -866,6 +1297,25 @@ window.__ModuleLoader__.load({
 				}, 1500);
 			}
 
+			/* 导出**当前这一屏**（顺序就是屏幕顺序，并带筛选条件说明）——
+			   「我刚筛出来的这批要发给谁」不用再解释一遍筛了什么。 */
+			async function runExport(ids) {
+				set({ exportBusy: true });
+				try {
+					const result = await post("/export", { ids, filters: { query: state.query, source: state.source, kind: state.kind, usage: state.usage, sort: state.sort } });
+					if (result && result.ok) set({ exportBusy: false, exportPath: result.path, exportCount: result.count, notice: null });
+					else set({ exportBusy: false, notice: "导出失败：" + String((result && result.error) || "未知错误") });
+				} catch (error) {
+					set({ exportBusy: false, notice: "导出失败：" + String((error && error.message) || error) });
+				}
+			}
+			function exportFiltered() {
+				return runExport(filtered.map((item) => item.id));
+			}
+			function exportPicked() {
+				return runExport(store.picked.slice());
+			}
+
 			if (state.loading && !data) {
 				return h("div", { className: "dpc-panel" }, h("div", { className: "dpc-muted dpc-pad" }, "读取插件目录…"));
 			}
@@ -883,10 +1333,13 @@ window.__ModuleLoader__.load({
 			const job = data.job || { running: false };
 			const totals = data.totals || {};
 			const weeklyDue = data.weeklyDue || {};
+			/* 副本漂移：哪些插件的工作区源码与加载的副本不同步 */
+			const driftMap = (data && data.drift) || {};
+			const driftBad = Object.keys(driftMap).filter((id) => driftLabel(driftMap[id]) !== "");
 
 			return h(
 				"div",
-				{ className: "dpc-panel" },
+				{ className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll },
 				/* 头部 */
 				h(
 					"div",
@@ -927,6 +1380,31 @@ window.__ModuleLoader__.load({
 					: null,
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
+				state.exportPath
+					? h(							"div",
+							{ className: "dpc-note" },
+							"已导出 " + state.exportCount + " 条 → ",
+							h("code", { className: "dpc-path" }, state.exportPath),
+							" ",
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ notice: copyText(state.exportPath) ? null : "复制失败：渲染进程不让写剪贴板" }) }, "复制路径"),
+						)
+					: null,
+				/* 副本漂移公告：改源码不生效的第一现场 */
+				driftBad.length > 0
+					? h(
+							"div",
+							{ className: "dpc-note dpc-note-warn" },
+							"有 " +
+								driftBad.length +
+								" 个条目的两份副本不同步：" +
+								driftBad
+									.slice(0, 5)
+									.map((id) => (items.find((entry) => entry.id === id) || {}).name || id)
+									.join("、") +
+								(driftBad.length > 5 ? " 等" : "") +
+								" —— 插件看卡片上的「副本不同步」，Skill 看「staging 不同步」（发布的是 staging 那份）",
+						)
+					: null,
 				data.weekly && data.weekly.gap && data.reports && data.reports.gap && data.reports.gap.repos > 0
 					? h(
 							"div",
@@ -938,7 +1416,7 @@ window.__ModuleLoader__.load({
 				h(
 					"div",
 					{ className: "dpc-toolbar" },
-					h("input", { className: "dpc-search", placeholder: "搜索名称 / 简介 / 判定依据…", value: state.query, onChange: (event) => set({ query: event.target.value, page: 1 }) }),
+					h("input", { id: "dpc-search", className: "dpc-search", placeholder: "搜索名称 / 简介 / 工具名…（/ 聚焦）", value: state.query, onChange: (event) => set({ query: event.target.value, page: 1 }) }),
 					h(
 						"div",
 						{ className: "dpc-seg" },
@@ -964,12 +1442,73 @@ window.__ModuleLoader__.load({
 						),
 					),
 					h("span", { className: "dpc-muted" }, filtered.length + " 条"),
+					h(
+						"div",
+						{ className: "dpc-toolbar-actions" },
+						h(
+							"button",
+							{ className: "dpc-btn dpc-btn-sm" + (state.picking ? " is-on" : ""), onClick: togglePicking, title: "多选：点卡片选中，再一次性导出这批（选中项不跨重载保留）" },
+							state.picking ? "退出选择" : "选择",
+						),
+						h(
+							"button",
+							{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-export", onClick: exportFiltered, disabled: state.exportBusy || filtered.length === 0, title: "把当前这一屏（含筛选条件）写成 Markdown，存到数据目录 reports/ 下" },
+							state.exportBusy ? "导出中…" : "导出这 " + filtered.length + " 条",
+						),
+					),
+				),
+				/* 选择模式下的批次条：已选几条、一共多大、一次导出 */
+				state.picking
+					? h(
+							"div",
+							{ className: "dpc-pickedbar" },
+							h("span", { className: "dpc-picked-count" }, "已选 " + state.picked.length + " 条"),
+							h(
+								"span",
+								{ className: "dpc-muted" },
+								state.picked.length === 0
+									? "点卡片即可选中（再点取消）；可以跨筛选凑一批"
+									: state.pickedBytes === null
+										? "正在量总体积…"
+										: "约 " +
+											fmtBytes(state.pickedBytes) +
+											(() => {
+												const sizes = state.pickedSizes || {};
+												const missing = state.picked.filter((id) => !(Number(sizes[id]) > 0)).length;
+												return missing > 0 ? "（" + missing + " 条没有独立目录，按 0 计）" : "";
+											})(),
+							),
+							h("button", { className: "dpc-btn dpc-btn-sm", onClick: exportPicked, disabled: state.exportBusy || state.picked.length === 0 }, "导出选中"),
+							h(
+								"button",
+								{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ picked: filtered.slice(0, 200).map((item) => item.id), pickedBytes: null, pickedBusy: true }), disabled: filtered.length === 0 },
+								"选中当前 " + Math.min(200, filtered.length) + " 条",
+							),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ picked: [], pickedBytes: null, pickedSizes: null }), disabled: state.picked.length === 0 }, "清空"),
+						)
+					: null,
+				/* 洞察条：一眼看出「哪些没用、哪些在报错」，点一下就是一次筛选 */
+				h(
+					"div",
+					{ className: "dpc-insights" },
+					USAGE_FILTERS.map((option) =>
+						h(
+							"button",
+							{
+								key: option.id,
+								className: "dpc-insight" + (state.usage === option.id ? " is-on" : "") + (option.id === "errors" && insightCounts.errors > 0 ? " is-warn" : "") + (insightCounts[option.id] === 0 ? " is-empty" : ""),
+								title: USAGE_HINTS[option.id] || "按「用没用」筛选",
+								onClick: () => set({ usage: option.id, page: 1 }),
+							},
+							option.label + " " + insightCounts[option.id],
+						),
+					),
 				),
 				/* 卡片网格 */
 				h(
 					"div",
 					{ className: "dpc-grid" },
-					pageItems.map((item) => h(Card, { key: item.id, item, tags: all })),
+					pageItems.map((item) => h(Card, { key: item.id, item, tags: all, hits: toolHits(item, state.query), picking: state.picking, picked: state.picked.includes(item.id), onPick: togglePick, drift: (data.drift || {})[item.id] || null })),
 					pageItems.length === 0 ? h("div", { className: "dpc-muted dpc-pad" }, "没有匹配的条目。") : null,
 				),
 				/* 列表分页条 */
@@ -1090,6 +1629,44 @@ window.__ModuleLoader__.load({
 .dpc-inline select,.dpc-add-form select{font-size:12px;padding:5px 8px;border-radius:7px;
   border:1px solid var(--dpc-line);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 55%,transparent);
   color:var(--dsw-alias-label-primary,#1f2937)}
+/* ── 洞察条（R2）：一眼看出「哪些没用、哪些在报错」 ── */
+.dpc-insights{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.dpc-insight{appearance:none;border:1px solid var(--dpc-line);background:transparent;color:inherit;
+  font-size:11.5px;padding:3px 10px;border-radius:999px;cursor:pointer;font-variant-numeric:tabular-nums;
+  transition:border-color .15s ease,box-shadow .15s ease,background .15s ease,color .15s ease}
+.dpc-insight:hover{border-color:rgba(0,47,167,.55);box-shadow:0 0 0 1px rgba(0,47,167,.14),0 0 14px rgba(0,47,167,.16)}
+.dpc-insight.is-on{border-color:#002fa7;background:rgba(0,47,167,.10);color:#002fa7;font-weight:600}
+.dpc-insight.is-warn{color:#b45309}
+.dpc-insight.is-warn.is-on{border-color:#b45309;background:rgba(217,119,6,.12);color:#8a5a06}
+/* 数字为 0 的档位置灰：仍然可点（点开是空态 + 解释），但别让它看起来和有用的一样重 */
+.dpc-insight.is-empty{opacity:.55}
+.dpc-insight.is-empty.is-on{opacity:1}
+/* 导出按钮靠右，和「N 条」拉开距离，避免误点 */
+.dpc-export{margin-left:auto}
+/* ── 多选（清理决策）──
+   选择模式下点卡片 = 选中；选中项用克莱因蓝描边 + 勾徽章，一眼看出"这批是我圈的" */
+.dpc-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.dpc-card.is-picking{cursor:copy}
+.dpc-card.is-picked{border-color:#002fa7;
+  box-shadow:0 0 0 1px rgba(0,47,167,.45),0 0 20px -6px var(--dpc-klein-glow)}
+.dpc-pick-badge{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+  border-radius:50%;background:#002fa7;color:#fff;font-size:11px;font-weight:700;flex:0 0 auto}
+/* 副本不同步：琥珀色短标签，别用红 —— 红色已经表示"报错" */
+.dpc-drift{font-size:10.5px;line-height:1.5;padding:1px 6px;border-radius:999px;font-weight:600;flex:0 0 auto;
+  color:#8a5a06;background:rgba(217,119,6,.14);border:1px solid rgba(217,119,6,.35)}
+.dpc-pickedbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 11px;border-radius:11px;
+  border:1px dashed color-mix(in srgb,#002fa7 45%,var(--dpc-line));background:rgba(0,47,167,.06);font-size:12px}
+.dpc-picked-count{font-weight:650;color:#002fa7;font-variant-numeric:tabular-nums}
+/* 搜索命中的工具名：蓝色等宽，和简介区分开，一眼看到「命中的是哪个工具」 */
+.dpc-hit{font-size:11px;line-height:1.5;color:#002fa7;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  word-break:break-all}
+/* 报错 chip：只有 errors>0 才出现，标题里带错误率 */
+.dpc-err{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid rgba(185,28,28,.45);
+  color:#b91c1c;background:rgba(220,38,38,.10);font-variant-numeric:tabular-nums}
+.dpc-calls.is-zero{color:var(--dsw-alias-label-secondary,#8b93a1);font-weight:500}
+.dpc-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all;
+  color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);padding:2px 6px;border-radius:6px;
+  border:1px solid var(--dpc-line-soft)}
 .dpc-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
 .dpc-card{appearance:none;text-align:left;display:flex;flex-direction:column;gap:7px;padding:14px 15px;
   border-radius:14px;border:1px solid var(--dpc-line);position:relative;overflow:hidden;
@@ -1278,6 +1855,9 @@ window.__ModuleLoader__.load({
 			PANEL_LABEL,
 			SOURCE_META,
 			SORTS,
+			USAGE_FILTERS,
+			USAGE_HINTS,
+			AUTO_REFRESH_MS,
 			store,
 			refresh,
 			loadDetail,
@@ -1296,8 +1876,25 @@ window.__ModuleLoader__.load({
 			CatalogIcon,
 			fmtNumber,
 			fmtMs,
+			fmtBytes,
+			loadSize,
 			ago,
 			tagLabel,
+			isUnused,
+			hasErrors,
+			errorRate,
+			isSubagentOnly,
+			togglePick,
+			togglePicking,
+			driftLabel,
+			driftDetail,
+			toolHits,
+			hotkeyOf,
+			copyText,
+			VIEW_KEY,
+			VIEW_KEYS,
+			readView,
+			writeView,
 		};
 		return exports;
 	},

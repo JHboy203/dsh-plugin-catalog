@@ -48,15 +48,29 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalog`). Clicking it opens:
 
 - **Cards**: name, introduction (Chinese preferred; when there is no Chinese text the English is used as the body, instead of stamping a placeholder line on every card), source badge, tags, creation/download time, total call count (with subagent breakdown)
-- **Search**: filter by name / introduction / classification rationale
+- **Search**: name / introduction / classification rationale, **and tool names** — typing `acp_status` or `catalog_export` jumps straight to the plugin that provides it (the card then shows "Tools: xxx")
+- **Insight bar**: five chips — all / used / unused / with-errors / **subagent-only** — carry the counts, and one click filters by them (a chip whose count is 0 is **dimmed but kept**, so you can see "nobody on this machine is like that"; clicking it shows the empty state plus the explanation). Each chip has a one-line explanation on hover. The numbers only follow the **source / type** filters, never the keyword, so opening "unused" cannot make the counts collapse to 0 and look like data loss. "Subagent-only" means every call happened inside a subagent session: deleting such an entry **fails silently rather than loudly** — the next delegated run just gets worse
 - **Filter**: source (all/official/self-written/third-party/hybrid/to-be-tagged) × type (all/plugin/Skill)
-- **Sort**: call count / recently used / time / name
+- **Sort**: call count / **error count** / **error rate** / recently used / time / name
+  (The rate exposes what counts hide: on this machine `@liustack/modlens` failed 6 out of 6 calls = 100%, while `dsh-vision-router` had the most raw errors, 23, yet sits at a healthy 9% of 252 calls.)
+- **View memory**: filter / query / sort / page / page size / **scroll position** are kept in localStorage, so the panel comes back exactly where you were after a hot reload (client code change) or a page refresh; changing a filter or page scrolls back to the top, because otherwise the first card of page 2 lands off-screen. A disabled or corrupt storage falls back to the default view instead of breaking the panel
+- **Selection batches**: the "Select" button enters selection mode; clicking a card selects it (click again to deselect), and selected cards get a blue outline plus a check badge. The batch bar shows **N selected · ~X MB** (sizes are asked in one batch, the server fans out four at a time; entries without their own directory are called out as "N have no separate directory, counted as 0") and offers "Export selected", "Select current N" and "Clear". The selection **survives filter changes** (pick a few unused ones, switch to with-errors, pick a few more), but it is **not written to localStorage** — clearing it on reload is deliberate, so half a batch never lingers unnoticed
+- **Export this view**: the "Export these N" button on the right of the toolbar writes the **current filter result** (screen order, filter conditions, error rate, install location) to `reports/catalog-filtered-<timestamp>.md` and shows the copyable path; it is disabled when the result is empty. For a full snapshot (source breakdown, call top, attribution coverage) use `catalog_export` instead
+- **Size (computed lazily)**: the popup's "Location and install form" block shows e.g. "9.6 MB · 579 files" — **only the single directory of the opened entry is measured** (5-minute cache; it stops at 1.5 s or 20,000 files and says so). It never runs during catalog builds, which would push panel opening from seconds to tens of seconds; junctions and symlinks are **never followed** (following them can leave the profile or even loop)
+- **Copy sync**: a banner plus per-card badges answer **"is the copy I edit the copy that is loaded?"**
+  For plugins it compares four key files (`package.json` / `index.js` / `client.js` / `cordis.patch.yml`) by size + mtime; for Skills it compares `SKILL.md`.
+  A junction-installed plugin simply says "one copy only — edit the source and it takes effect". When copies disagree the badge reads "副本不同步 / 副本较旧 / 工作区较旧",
+  and a Skill's staged copy reads "staging 不同步" — **publishing pushes the staged copy, so a stale stage means you ship an old version**.
+  The scan is cached for 60 s and invalidated by a catalog rebuild; it compares lengths and timestamps only, never file contents, so 71 packages cost well under 100 ms
+- **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
+- **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
 - **Appearance**: dark and light themes share one local palette mixed from `label-primary`, so dark mode no longer shows harsh white outlines; hovering a card emits a soft **Klein Blue `#002FA7`** glow around its edge, and keyboard `:focus-visible` gets the same blue ring
 - **Popup** (click a card, centered on screen, close by clicking outside or pressing Esc):
   - Each tool's own call count, errors, average duration, most recent call, number of involved sessions
   - Session list: **session nickname** + count + whether a subagent (including parent session name), paginated, with selectable page size (10/20/50/100)
   - Source classification rationale (listing item by item why it was classified this way), tag editing, creation time, repo link
+  - "Location and install form": the source directory (one-click copy), whether it is a junction or a real copy inside the profile, and its **disk size and file count** — the first thing to look at when a plugin is installed but does not work, and also when deciding whether to delete it
   - Self-written/hybrid items additionally have "Upload / Update to GitHub" and "Gap analysis"
   - A misclassified source can be manually tagged once (stored in `.dsh-plugin-catalog/overrides.json`, not asked again afterwards)
 
@@ -76,7 +90,8 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 | `catalog_review` | Review a plugin (gap analysis + security review, suggestions only) |
 | `catalog_publish` | Upload backup: `plan` → `apply` (requires `planId` + `confirm`, may include `ackRepos`) → `public` (separate gate) |
 | `catalog_export` | **Export a Markdown snapshot** to `<数据目录>/reports/`: inventory, source distribution, call Top, repos and git status, to-be-tagged sources, attribution coverage, weekly findings |
-| `catalog_health` | Self-check: which version is running, path resolution, stats coverage, attribution coverage, AI channel, asar mode |
+| `catalog_health` | Self-check: which version is running, path resolution, stats coverage, attribution coverage, AI channel, asar mode, **whether copies are in sync** |
+| `catalog_skill_sync` | A Skill has **two copies**: `plan` lists those whose staging copy is stale (publishing pushes staging, so a stale stage ships an old version); `apply` + `confirm:true` copies **live → staging only**, backing up each overwritten file as `SKILL.md.bak-<timestamp>` first |
 
 ## Data and privacy
 
@@ -238,22 +253,22 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 ## Self-check
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式契约（181 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索排序/列表分页/浮窗/计划浮窗/空态（70 项，无需 DSH）
-node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (239 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting / pagination / popup / size states / selection batches / copy sync / export / empty states (118 checks, no DSH needed)
+node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
-Host side (no need to restart DSH):
+Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验（86 项）
-node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
-node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
-node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率
-node dev/probe-publish.mjs   # 只读预演上传计划（不建仓、不提交、不推送）
-node dev/probe-export.mjs    # 用真实数据导出一份 Markdown 快照到 reports/
-node dev/probe-init.mjs      # 量启动成本（init/state/entryDetail 的毫秒数）
-node dev/warm-cache.mjs      # 预热真实数据目录，让第一次打开就有数据
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / batch sizes / export write / copy-sync verdicts / skill_sync plan and confirm gate (120 checks)
+node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
+node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
+node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas
+node dev/probe-publish.mjs   # dry-runs the upload plan (creates no repo, commits nothing, pushes nothing)
+node dev/probe-export.mjs    # exports a Markdown snapshot of real data into reports/
+node dev/probe-init.mjs      # measures startup cost (milliseconds for init/state/entryDetail)
+node dev/warm-cache.mjs      # warms the real data directory so the first open already has data
 ```
 
 Why `dev/preview.mjs` exists: headless self-checks can only verify structure/copy, not **layout** (whether the popup is centered,

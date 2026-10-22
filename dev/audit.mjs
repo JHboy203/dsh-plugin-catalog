@@ -73,7 +73,7 @@ const stubService = new Proxy(
 );
 const tools = buildCatalogTools({ service: stubService });
 ok("工具数量 ≥ 6", tools.length >= 6, "实际 " + tools.length);
-const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health"];
+const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync"];
 for (const name of requiredNames) {
 	ok("存在工具 " + name, tools.some((tool) => tool.name === name));
 }
@@ -467,6 +467,99 @@ ok("克莱因蓝被指定为 #002fa7", cssSource.includes("--dpc-klein:#002fa7")
 ok("卡片悬停有克莱因蓝光效", /\.dpc-card:hover\{[^}]*rgba\(0,47,167/.test(cssSource));
 ok("卡片边框不再直接用 --dsw-alias-border", !/\.dpc-card\{[^}]*--dsw-alias-border/.test(cssSource));
 ok("列表分页的类名与页大小常量都在", cssSource.includes(".dpc-listbar") && cssSource.includes(".dpc-page-pill") && clientSource.includes("const LIST_PAGE_SIZES"));
+
+/* ─────────── 客户端行为契约（2026-10-22 R2 这一轮） ───────────
+   R1 锁的是「样式别退回坏口径」，R2 锁的是「面板靠不靠得住」：
+     · 搜索域没有工具名 → 「这个工具是谁给的」只能一个个点开看
+     · 洞察条的口径若受关键词影响 → 点开筛选后数字自己变 0，看起来像数据丢了
+     · 自动刷新没有闸门 → 20 秒轮询会把它变成"一直在刷新"
+     · 快捷键只挂监听器不算数 → 判定必须抽成纯函数，才能被断言
+   行为正确性由 dev/render-check.cjs 真渲染断言；这里锁常量、结构、类名。 */
+const serviceSource = readFileSync(new URL("../lib/service.mjs", import.meta.url), "utf8");
+const usageBlock = clientSource.slice(clientSource.indexOf("const USAGE_FILTERS"), clientSource.indexOf("const AUTO_REFRESH_MS"));
+
+ok("服务端给列表项带上 toolNames（按工具名搜索的数据来源）", serviceSource.includes("toolNames: usage.tools.map"));
+ok("服务端给列表项带上 realDir / isLink（装上了却不工作时要看这两个）", serviceSource.includes("realDir: plugin.realDir") && serviceSource.includes("isLink: Boolean(plugin.isLink)"));
+ok("搜索域包含工具名", clientSource.includes('(item.toolNames || []).join(" ")'));
+ok("洞察条五个视角齐全（any / used / unused / errors / subonly）", ["any", "used", "unused", "errors", "subonly"].every((id) => usageBlock.includes('id: "' + id + '"')));
+ok("自动刷新的三条闸门都在（只刷一次 / 有任务不抢 / 阈值判断）", /autoRefreshed\.current/.test(clientSource) && clientSource.includes("data.job && data.job.running") && /if \(Date\.now\(\) - builtAt < AUTO_REFRESH_MS\)/.test(clientSource));
+ok("自动刷新阈值不小于 5 分钟（20 秒轮询下更短会退化成一直刷新）", (() => {
+	const match = clientSource.match(/AUTO_REFRESH_MS = (\d+) \* 60 \* 1000/);
+	return Boolean(match) && Number(match[1]) >= 5;
+})());
+ok("快捷键判定是纯函数（不碰 DOM 也能断言）", /function hotkeyOf\(event\)/.test(clientSource));
+ok("面板挂载后真的把 keydown 接上了（window 而非 document）", /window\.addEventListener\("keydown"/.test(clientSource));
+ok("排序里有「报错次数」", /SORTS[\s\S]{0,400}id: "errors"/.test(clientSource));
+ok("未调用的条目降级显示（dpc-calls is-zero）", clientSource.includes('"dpc-calls" + (isUnused(item) ? " is-zero" : "")'));
+ok("报错 chip 只在有报错时渲染", clientSource.includes("hasErrors(item)") && cssSource.includes(".dpc-err{"));
+ok("浮窗能复制源目录：clipboard + execCommand 两条路都有", /function copyText/.test(clientSource) && clientSource.includes('execCommand("copy")'));
+ok("新增样式类都有定义（洞察条 / 命中工具 / 报错 chip / 源目录）", [".dpc-insights{", ".dpc-insight.is-on{", ".dpc-hit{", ".dpc-err{", ".dpc-path{"].every((needle) => cssSource.includes(needle)));
+
+/* ─────────── R3（2026-10-22 第二轮）：仅子代理 / 报错率 / 视图持久化 ───────────
+   这里锁的是**静默失效点**：localStorage 在无头环境不存在、在浏览器里也可能被策略禁用，
+   所以读/写/恢复三步都必须包 try，且恢复只能发生一次（否则每次轮询都把滚动拽回顶部或底部）。 */
+ok("排序里有「报错率」（率与次数是两种问题）", /SORTS[\s\S]{0,400}id: "rate"/.test(clientSource));
+ok("五个 chip 都配了说明书（数字要有解释，否则「仅子代理 0」像坏了）", (() => {
+	const hints = clientSource.slice(clientSource.indexOf("const USAGE_HINTS"), clientSource.indexOf("const AUTO_REFRESH_MS"));
+	return ["any", "used", "unused", "errors", "subonly"].every((id) => new RegExp(id + ': "').test(hints)) && hints.includes("委派链");
+})());ok("按报错率排序用 errorRate 而不是次数差", /state\.sort === "rate"\) return errorRate\(b\) - errorRate\(a\)/.test(clientSource));
+ok("「仅子代理」是纯函数且要求 calls > 0", /function isSubagentOnly\(item\)/.test(clientSource) && /calls > 0 && calls === \(Number\(item && item\.subagentCalls\) \|\| 0\)/.test(clientSource));
+ok("视图持久化的读、写都有 try（存储被禁用时不拖垮渲染）", (() => {
+	const readBlock = clientSource.slice(clientSource.indexOf("function readView"), clientSource.indexOf("function writeView"));
+	const writeBlock = clientSource.slice(clientSource.indexOf("function writeView"), clientSource.indexOf("function touchesView"));
+	return readBlock.includes("try {") && readBlock.includes("catch (error)") && writeBlock.includes("try {") && writeBlock.includes("catch (error)");
+})());
+ok("读视图前先判断 typeof localStorage（无头 / 禁用存储都不能假设存在）", /typeof localStorage !== "undefined" \? localStorage\.getItem/.test(clientSource) && clientSource.includes('if (typeof localStorage === "undefined") return false'));
+ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page"\]/.test(clientSource));
+ok("滚动位置恢复只发生一次（用 ref 挡后续轮询重渲染）", /const restoredScroll = useRef\(false\)/.test(clientSource) && /if \(restoredScroll\.current \|\| !data\) return;/.test(clientSource));
+ok("换筛选 / 换页后回到顶部（否则第 2 页第一条落在屏幕外）", clientSource.includes('"page" in patch') && clientSource.includes("panel.scrollTop = 0"));
+ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
+ok("滚动落盘有节流（300ms 内不重复写 localStorage）", /if \(now - scrollSavedAt < 300\) return;/.test(clientSource));
+
+/* ─────────── R4（2026-10-22 第三轮）：体积懒算 / 导出当前筛选 / 0 值置灰 ───────────
+   锁的是性能与安全红线：体积绝不能进目录构建（会把打开从秒级拖到十秒级），
+   跟随 junction 会走出 profile 甚至成环；导出必须由服务端定路径，不能让调用方指定。 */
+const routeSource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+ok("路由 /size 与 /export 都注册了", routeSource.includes('path === "/size" && method === "GET"') && routeSource.includes('path === "/export" && method === "POST"'));
+ok("体积是懒算（dirSize + 5 分钟缓存 / 2 万文件 / 1.5 秒三道闸门）", serviceSource.includes("export async function dirSize(dir)") && /SIZE_TTL_MS = 5 \* 60 \* 1000/.test(serviceSource) && /SIZE_MAX_FILES = 20000/.test(serviceSource) && /SIZE_BUDGET_MS = 1500/.test(serviceSource));
+ok("体积不跟随符号链接 / junction（只推入真目录）", serviceSource.includes("if (entry.isDirectory())") && serviceSource.includes("queue.push(join(current, entry.name))"));
+ok("构建目录时不算体积（dirSize 只在 /size 与 /sizes 两条路里被调用）", (serviceSource.match(/await dirSize\(/g) || []).length === 2);
+ok("没有独立目录时如实返回 size:null + 原因（不返回 0）", serviceSource.includes("Skill 没有独立目录") && serviceSource.includes("在官方 asar 里，没有独立目录"));
+ok("导出的落盘路径由服务端决定（reports/catalog-filtered-<时间戳>.md）", serviceSource.includes('"catalog-filtered-" + stamp + ".md"'));
+ok("导出文件写明条数与「只覆盖这一屏」", serviceSource.includes("这份清单只覆盖") && serviceSource.includes("共 **"));
+ok("导出按钮在筛选结果为 0 时禁用", /disabled: state\.exportBusy \|\| filtered\.length === 0/.test(clientSource));
+ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dpc-insight.is-empty{") && clientSource.includes('(insightCounts[option.id] === 0 ? " is-empty" : "")'));
+
+/* ─────────── R5（2026-10-22 第四轮）：多选 + 批量体积 + 导出选中 ───────────
+   锁三件事：批量体积有上限（不能把宿主线程占满）、选中项**不进 localStorage**
+   （半个批次被忘在存储里比丢掉更糟）、选择模式与打开浮窗必须互斥。 */
+ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
+ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
+ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, wanted.length)"));
+ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
+ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
+ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
+ok("选中态与批次条都有样式（is-picked / dpc-pickedbar / dpc-pick-badge）", [".dpc-card.is-picked{", ".dpc-pickedbar{", ".dpc-pick-badge{"].every((needle) => cssSource.includes(needle)));
+ok("「导出选中」走同一个导出函数（口径不分叉）", /function exportPicked\(\) \{\s*return runExport\(store\.picked\.slice\(\)\)/.test(clientSource) && /function exportFiltered\(\) \{\s*return runExport\(filtered\.map/.test(clientSource));
+
+/* ─────────── R6（2026-10-22 第五轮）：副本漂移 ───────────
+   锁判据而不是文案：只比 4 个关键文件的 size+mtime（不读内容）、只看 size 与 60 秒容差、
+   链接安装不进"漂移"（它本来就只有一份）、缓存必须能作废。 */
+ok("漂移只看 4 个关键文件（不读内容，71 个包也快）", /const DRIFT_FILES = \["package\.json", "index\.js", "client\.js", "cordis\.patch\.yml"\]/.test(serviceSource));
+ok("只差修改时间时有 60 秒容差（否则每次保存都报不同步）", /DRIFT_MTIME_TOLERANCE = 60 \* 1000/.test(serviceSource));
+ok("大小不同即判 differs，不靠 mtime", /if \(left\.size !== right\.size\) \{\s*differs\.push\(name\)/.test(serviceSource));
+ok("junction 安装单独记为 linked（只有一份，不算漂移）", /verdict: "linked"/.test(serviceSource) && /if \(plugin\.isLink\)/.test(serviceSource));
+ok("漂移结果有 60 秒缓存，且重建目录会作废", serviceSource.includes("async driftOf()") && serviceSource.includes("this.driftCache = null;"));
+ok("state 里带 drift 映射", /drift: await this\.driftOf\(\)/.test(serviceSource) && /\.dpc-drift\{/.test(cssSource));
+ok("卡片上的漂移标签走纯函数（可断言）", /function driftLabel\(drift\)/.test(clientSource) && /function driftDetail\(drift\)/.test(clientSource));
+ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /fingerprintDir\(liveDir, \["SKILL\.md"\]\)/.test(serviceSource) && /staged: true/.test(serviceSource));
+ok("Skill 的真实目录来自 catalog 的 dir 字段（root 只是 skills 根，拼错会静默比错路径）", /const liveDir = skill\.dir \|\| skill\.root;/.test(serviceSource) && /dir: join\(root, entry\.name\)/.test(readFileSync(new URL("../lib/catalog.mjs", import.meta.url), "utf8")));
+ok("staged 的标签与插件分开（staging 不同步 / staging 较旧）", /staged \? "staging 不同步" : "副本不同步"/.test(clientSource));
+
+/* ─────────── R6b：build.label 的缓存必须有 TTL ───────────
+   坑：Cordis 重载插件不会重新执行 hostinfo.js，永久缓存会让头部一直写升级前的版本号。 */
+const hostinfoSource = readFileSync(new URL("../lib/hostinfo.js", import.meta.url), "utf8");
+ok("buildStamp 缓存有 5 秒 TTL（否则升级后头部版本号不更新）", /BUILD_CACHE_MS = 5000/.test(hostinfoSource) && /Date\.now\(\) - cachedBuildAt < BUILD_CACHE_MS/.test(hostinfoSource) && /cachedBuildAt = Date\.now\(\)/.test(hostinfoSource));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

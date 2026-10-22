@@ -247,6 +247,21 @@ export async function apply(ctx) {
 					return json(res, 200, catalog.entryDetail(id, { page, pageSize }));
 				}
 
+				if (path === "/size" && method === "GET") {
+					/* 懒算：只有打开浮窗才问一次，带 5 分钟缓存 */
+					return json(res, 200, await catalog.entrySize(url.searchParams.get("id") || ""));
+				}
+
+				if (path === "/sizes" && method === "POST") {
+					const body = await readJsonBody(req);
+					return json(res, 200, await catalog.entrySizes(Array.isArray(body.ids) ? body.ids : []));
+				}
+
+				if (path === "/export" && method === "POST") {
+					const body = await readJsonBody(req);
+					return json(res, 200, await catalog.exportFiltered({ ids: Array.isArray(body.ids) ? body.ids : [], filters: body.filters && typeof body.filters === "object" ? body.filters : {} }));
+				}
+
 				if (path === "/job" && method === "GET") return json(res, 200, catalog.jobSnapshot());
 
 				if (path === "/refresh" && method === "POST") {

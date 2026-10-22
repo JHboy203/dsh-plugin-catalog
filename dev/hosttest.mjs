@@ -13,7 +13,7 @@
  *   DSH_CATALOG_DIR=<临时目录> node dev/hosttest.mjs
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -166,9 +166,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 8 个工具", registeredTools.length, 8);
+eq("注册了 9 个工具", registeredTools.length, 9);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_stats", "catalog_tag"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -316,10 +316,41 @@ ok("统计缓存里有会话昵称字段", statsRaw.includes('"t"'));
 /* 拿一个有调用的条目看详情 */
 const entries = readyState.json?.entries || [];
 const busiest = entries.slice().sort((a, b) => (b.calls || 0) - (a.calls || 0))[0];
+
+/* R2（2026-10-22）：面板要能回答「这个工具是谁给的」和「它到底装在哪」。
+   这两组字段是客户端搜索与浮窗的数据来源，缺了客户端不会报错 —— 只会静默搜不到，
+   所以必须在服务端这一层断言。 */
+const pluginsWithTools = entries.filter((entry) => entry.kind === "plugin");
+ok(
+	"列表项带上 toolNames（按工具名搜索的数据来源）",
+	pluginsWithTools.length > 0 && pluginsWithTools.every((entry) => Array.isArray(entry.toolNames)),
+	JSON.stringify(pluginsWithTools.slice(0, 2).map((entry) => entry.toolNames)),
+);
+ok(
+	"toolNames 与 toolCount 口径一致",
+	pluginsWithTools.every((entry) => (entry.toolNames || []).length === (entry.toolCount || 0)),
+	JSON.stringify(pluginsWithTools.filter((entry) => (entry.toolNames || []).length !== (entry.toolCount || 0)).slice(0, 2).map((entry) => ({ name: entry.name, toolCount: entry.toolCount, toolNames: entry.toolNames }))),
+);
+ok(
+	"列表项带上 realDir / isLink（装上了却不工作时要看这两个）",
+	pluginsWithTools.every((entry) => typeof entry.realDir === "string") && pluginsWithTools.every((entry) => typeof entry.isLink === "boolean"),
+	JSON.stringify(pluginsWithTools.slice(0, 2).map((entry) => ({ name: entry.name, realDir: entry.realDir, isLink: entry.isLink }))),
+);
+ok(
+	"实体目录的插件 realDir 指向 profile 下的 node_modules",
+	pluginsWithTools.some((entry) => entry.realDir.includes("node_modules") || entry.realDir === ""),
+	JSON.stringify(pluginsWithTools.slice(0, 3).map((entry) => entry.realDir)),
+);
+
 if (busiest) {
 	const detail = await callRoute("/entry?id=" + encodeURIComponent(busiest.id) + "&page=1&pageSize=10");
 	ok("详情路由 200", detail.status === 200);
 	ok("详情带分工具统计", Array.isArray(detail.json?.tools));
+	ok(
+		"详情里的工具名都在列表项的 toolNames 里（两处口径一致）",
+		(detail.json?.tools || []).length === 0 || (detail.json?.tools || []).every((tool) => (busiest.toolNames || []).includes(tool.name)),
+		JSON.stringify({ toolNames: busiest.toolNames, detailTools: (detail.json?.tools || []).map((tool) => tool.name) }),
+	);
 	ok("详情带分页会话列表", Array.isArray(detail.json?.sessions?.items) && typeof detail.json.sessions.total === "number");
 	ok("会话列表项只有 id/昵称/次数，没有正文", (detail.json?.sessions?.items || []).every((session) => {
 		const keys = Object.keys(session);
@@ -330,6 +361,98 @@ if (busiest) {
 } else {
 	ok("详情：没有条目可测", false, "entries 为空");
 }
+
+/* ── R4：目录体积（懒算）与「导出当前筛选」 ──
+   体积只用一条路验：造一个已知大小的目录，看递归结果对不对、缓存有没有生效。
+   导出用真写盘验：文件必须存在、只含选中的条目、并且写明筛选条件。 */
+const { dirSize } = await import("../lib/service.mjs");
+const sizeDir = join(dataDir, "size-fixture");
+mkdirSync(join(sizeDir, "nested"), { recursive: true });
+writeFileSync(join(sizeDir, "a.bin"), Buffer.alloc(1500));
+writeFileSync(join(sizeDir, "nested", "b.bin"), Buffer.alloc(2500));
+const measured = await dirSize(sizeDir);
+ok("dirSize 递归统计字节与文件数（1500 + 2500 = 4000 / 2 个）", measured.bytes === 4000 && measured.files === 2 && measured.truncated === false, JSON.stringify(measured));
+const measuredAgain = await dirSize(sizeDir);
+ok("dirSize 命中 5 分钟缓存（第二次返回同一份结果）", measuredAgain === measured);
+
+const sizeRoute = await callRoute("/size?id=" + encodeURIComponent(busiest?.id || ""));
+ok("/size 路由 200，插件给出 bytes/files", sizeRoute.status === 200 && (sizeRoute.json?.size === null || typeof sizeRoute.json?.size?.bytes === "number"), JSON.stringify(sizeRoute.json).slice(0, 240));
+const skillEntry = entries.find((entry) => entry.kind === "skill");
+if (skillEntry) {
+	const skillSize = await callRoute("/size?id=" + encodeURIComponent(skillEntry.id));
+	ok("Skill 没有独立目录时返回 size:null + 一句原因", skillSize.json?.ok === true && skillSize.json?.size === null && typeof skillSize.json?.reason === "string", JSON.stringify(skillSize.json));
+} else {
+	ok("体积：没有 Skill 可测", false, "entries 里没有 skill");
+}
+
+const exportPicked = entries.slice(0, 3);
+const skipped = entries[5];
+const exportRoute = await callRoute("/export", "POST", { ids: exportPicked.map((entry) => entry.id), filters: { query: "test", source: "any", kind: "all", usage: "unused", sort: "rate" } });
+ok("/export 路由 200 且真的写盘（返回 path + count）", exportRoute.status === 200 && exportRoute.json?.ok === true && typeof exportRoute.json?.path === "string" && exportRoute.json?.count === exportPicked.length, JSON.stringify(exportRoute.json).slice(0, 240));
+const exportText = exportRoute.json?.path ? readFileSync(exportRoute.json.path, "utf8") : "";
+ok("导出文件只含选中的那几条（未选中的不出现）", exportPicked.every((entry) => exportText.includes(entry.name)) && (!skipped || !exportText.includes(skipped.name)), JSON.stringify({ picked: exportPicked.map((entry) => entry.name), skipped: skipped?.name }));
+ok("导出文件写明条数与筛选条件", exportText.includes("共 **3** 条") && exportText.includes("搜索 `test`") && exportText.includes("用法 unused") && exportText.includes("排序 rate"));
+ok("导出文件是表格且带报错率列", exportText.includes("| 报错率 |") && exportText.includes("`" + exportPicked[0].name + "`"));
+
+/* R5：批量体积（多选时一次问一批） */
+const sizeIds = exportPicked.map((entry) => entry.id);
+const sizeBatch = await callRoute("/sizes", "POST", { ids: sizeIds });
+const sumBytes = sizeIds.reduce((sum, id) => sum + (Number(sizeBatch.json?.sizes?.[id]) || 0), 0);
+ok("/sizes 批量路由 200 且逐条给出字节数", sizeBatch.status === 200 && sizeBatch.json?.ok === true && sizeBatch.json?.count === sizeIds.length, JSON.stringify(sizeBatch.json).slice(0, 240));
+ok("批量总体积 = 各条之和", Number(sizeBatch.json?.totalBytes) === sumBytes, JSON.stringify({ total: sizeBatch.json?.totalBytes, sum: sumBytes }));
+if (skillEntry) {
+	const withSkill = await callRoute("/sizes", "POST", { ids: [sizeIds[0], skillEntry.id] });
+	ok("Skill 在批量里返回 null 且不计入总量", withSkill.json?.sizes?.[skillEntry.id] === null && Number(withSkill.json?.totalBytes) === (Number(withSkill.json?.sizes?.[sizeIds[0]]) || 0), JSON.stringify(withSkill.json).slice(0, 240));
+} else {
+	ok("批量体积：没有 Skill 可测", false, "entries 里没有 skill");
+}
+const oversized = await callRoute("/sizes", "POST", { ids: Array.from({ length: 500 }, (_, index) => "plugin:fake-" + index) });
+ok("批量体积上限 200 条（再多也只处理 200）", oversized.json?.count === 200, JSON.stringify(oversized.json).slice(0, 120));
+
+/* ── R6：副本漂移（工作区源码 vs profile 里加载的副本） ──
+   用两个已知内容的临时目录验判据，再用真 /state 验"junction 记为 linked"，
+   以及"不同步会被标出来"。这三条合起来才对得上卡片上那枚「副本不同步」。 */
+const { fingerprintDir, compareFingerprints } = await import("../lib/service.mjs");
+const driftA = join(dataDir, "drift-a");
+const driftB = join(dataDir, "drift-b");
+mkdirSync(driftA, { recursive: true });
+mkdirSync(driftB, { recursive: true });
+writeFileSync(join(driftA, "package.json"), '{"version":"1.0.0"}');
+writeFileSync(join(driftB, "package.json"), '{"version":"1.0.0"}');
+writeFileSync(join(driftA, "client.js"), "// a\n");
+const onlyOne = compareFingerprints(await fingerprintDir(driftA), await fingerprintDir(driftB));
+ok("只有一边有的关键文件 → differs 且点名文件", onlyOne.verdict === "differs" && onlyOne.differs.some((name) => name.includes("client.js")), JSON.stringify(onlyOne));
+writeFileSync(join(driftB, "client.js"), "// a\n");
+const identical = compareFingerprints(await fingerprintDir(driftA), await fingerprintDir(driftB));
+ok("两边同样大小且时间接近 → same（只比 size+mtime，不读内容）", identical.verdict === "same", JSON.stringify(identical));
+writeFileSync(join(driftA, "client.js"), "// a 加长一点\n");
+const longer = compareFingerprints(await fingerprintDir(driftA), await fingerprintDir(driftB));
+ok("内容长度不同 → differs（即使时间一样）", longer.verdict === "differs" && longer.differs.some((name) => name.includes("client.js")), JSON.stringify(longer));
+writeFileSync(join(driftB, "client.js"), "// a 加长一点\n");
+/* 判据是**两边各自最新的修改时间**（只看 4 个关键文件里的 max），
+   所以要让"加载的那份"整体更旧：A 的两个文件都改老，B 的 package.json 也改老，只留 B/client.js 是新的。 */
+const twoHoursAgo = new Date(Date.now() - 7200000);
+utimesSync(join(driftA, "package.json"), twoHoursAgo, twoHoursAgo);
+utimesSync(join(driftA, "client.js"), twoHoursAgo, twoHoursAgo);
+utimesSync(join(driftB, "package.json"), twoHoursAgo, twoHoursAgo);
+const staleLoaded = compareFingerprints(await fingerprintDir(driftA), await fingerprintDir(driftB));
+ok("一边整体更新时给出 newer-workspace（按各自最新修改时间比）", staleLoaded.verdict === "newer-workspace", JSON.stringify(staleLoaded));
+
+const finalState = await callRoute("/state");
+const drift = finalState.json?.drift || {};
+ok("/state 带 drift 映射", drift && typeof drift === "object" && Object.keys(drift).length > 0, JSON.stringify(Object.keys(drift).slice(0, 5)));
+const linkedEntries = Object.values(drift).filter((entry) => entry.verdict === "linked");
+ok("junction 安装记为 linked（源目录就是工作区，只有一份）", linkedEntries.length > 0, JSON.stringify(Object.values(drift).slice(0, 3)));
+ok("没有 realDir 的插件不进 drift（asar / Skill 没有可比的工作区副本）", Object.keys(drift).every((id) => id.startsWith("plugin:") || drift[id].staged === true), JSON.stringify(Object.keys(drift).slice(0, 3)));
+const skillDrift = Object.keys(drift).filter((id) => id.startsWith("skill:"));
+ok("有 staging 副本的 Skill 也进 drift（带 staged 标记）", skillDrift.every((id) => drift[id].staged === true) && (skillDrift.length === 0 || skillDrift.every((id) => typeof drift[id].verdict === "string")), "skillDrift=" + skillDrift.length);
+
+/* catalog_skill_sync：默认只出计划；apply 不带 confirm 必须被拒（这条会写盘） */
+const syncPlan = await callTool("catalog_skill_sync", { action: "plan" });
+ok("catalog_skill_sync plan 不写盘且给出方向", syncPlan?.ok === true && typeof syncPlan?.count === "number" && syncPlan?.applied !== true && /live → staging/.test(String(syncPlan?.text || "")), String(syncPlan?.count));
+ok("计划项都带两个绝对目录（live 与 staging 不同）", (syncPlan?.items || []).every((item) => typeof item.loadedDir === "string" && typeof item.stagedDir === "string" && item.loadedDir !== item.stagedDir));
+const syncNoConfirm = await callTool("catalog_skill_sync", { action: "apply" });
+ok("apply 不带 confirm 被拒（绝不静默覆盖 staging）", syncNoConfirm?.ok === false && /confirm/.test(String(syncNoConfirm?.error || "")), JSON.stringify(syncNoConfirm?.error));
 
 /* ── 标签：新增（必须带解释）→ 打标 → AI 分类读自定义标签 ── */
 const noGloss = await callRoute("/tags", "POST", { action: "add", label: "视频剪辑", dimension: "purpose" });

@@ -4,7 +4,7 @@
  * 做法：给 client.js 一个极小的 React 替身（只实现 useState/useEffect/useMemo/useRef），
  * 把 __test 里的组件真的渲染一遍，然后对输出的虚拟树断言：
  *   · 卡片上有没有名字/中文简介/英文原文/来源徽章/调用次数/时间
- *   · 搜索与四种排序是否真的改变结果顺序
+ *   · 搜索与各种排序是否真的改变结果顺序
  *   · 浮窗是否渲染出「分工具次数 / 会话列表（含昵称与子代理标记）/ 标签 / 来源依据」
  *   · 上传计划浮窗是否把密钥命中与「因密钥跳过」摊开
  *   · 空数据、坏数据时是否给出人话而不是崩
@@ -192,7 +192,8 @@ function makeItem(overrides) {
 		repoUrl: "https://github.com/JHboy203/dsh-screenshot",
 		createdAt: 1760000000000,
 		calls: 12345,
-		errors: 7,
+		errors: 9,
+		toolNames: ["screenshot", "shot_probe", "shot_longshot"],
 		lastUsed: Date.now() - 3600000,
 		sessions: 42,
 		subagentCalls: 500,
@@ -225,9 +226,13 @@ const data = {
 	reports: { gap: { repos: 0 }, security: { repos: 0 } },
 	entries: [
 		makeItem({}),
-		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit." }),
-		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] } }),
-		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"] }),
+		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"] }),
+		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, errors: 0, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] } }),
+		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"] }),
+		/* R2：一条从未被调用过的条目 —— 洞察条的「未使用」与「从未调用」全靠它验 */
+		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"] }),
+		/* R3：一条只被子代理调过的条目 —— 删它不会当场报错，只会让某条委派链悄悄变差 */
+		makeItem({ id: "plugin:dsh-delegate-only", name: "dsh-delegate-only", calls: 5, errors: 0, subagentCalls: 5, sessions: 0, descriptionZh: "只被子代理用过的插件。", descriptionEn: "Delegate only." }),
 	],
 	hostCore: { id: "host-core", kind: "host", name: "宿主核心工具", calls: 38000, tools: [{ name: "pwsh", calls: 13000 }, { name: "read", calls: 8000 }, { name: "edit", calls: 7000 }] },
 	totals: { plugins: 70, skills: 55, calls: 13000, errors: 7, subagentCalls: 500, hostCoreCalls: 38000, bySource: { official: 7, self: 22, third: 40, hybrid: 1, pending: 1 }, askUser: 1 },
@@ -255,7 +260,7 @@ ok("卡片显示「含子代理」", panelText.includes("含子代理"));
 ok("卡片显示标签", panelText.includes("截图"));
 ok("待标记条目显示「待确认」", panelText.includes("待确认"));
 ok("有搜索框", findAll(panel, (node) => node.props && typeof node.props.placeholder === "string" && node.props.placeholder.includes("搜索")).length > 0);
-ok("有四种排序选项", T.SORTS.length === 4 && T.SORTS.map((s) => s.id).join(",") === "calls,recent,time,name");
+ok("有六种排序选项（R2 加「报错次数」、R3 加「报错率」）", T.SORTS.length === 6 && T.SORTS.map((s) => s.id).join(",") === "calls,errors,rate,recent,time,name");
 ok("有来源筛选（官方/自写/第三方/混血/待标记）", ["全部", "官方", "自写", "第三方", "混血", "待标记"].every((label) => panelText.includes(label)));
 ok("宿主核心工具单列", panelText.includes("宿主核心工具"));
 ok("宿主核心说明里写明「不把这些量算到插件头上」", panelText.includes("不把这些量算到插件头上"));
@@ -333,10 +338,242 @@ ok("分页条显示总条数", (() => {
 T.store.pageSize = 24;
 T.store.page = 1;
 
+/* ②.6 R2（2026-10-22）：洞察条 / 工具名搜索 / 报错排序 / 快捷键 */
+T.store.pageSize = 0;
+T.store.page = 1;
+T.store.query = "";
+T.store.source = "any";
+T.store.kind = "all";
+T.store.usage = "any";
+T.store.sort = "calls";
+
+const allText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+ok("洞察条五个 chip 都在（全部 / 有调用 / 未使用 / 有报错 / 仅子代理）", ["全部", "有调用", "未使用", "有报错", "仅子代理"].every((label) => allText.includes(label)));
+ok(
+	"每个 chip 都有说明书（「仅子代理 0」必须能解释成「这台机器上没有这种人」，而不是坏了）",
+	T.USAGE_HINTS && T.USAGE_HINTS.subonly.includes("委派链") && ["any", "used", "unused", "errors", "subonly"].every((id) => typeof T.USAGE_HINTS[id] === "string" && T.USAGE_HINTS[id].length > 6),
+);
+ok("洞察条给出「未使用」的条数（夹具里 1 条从未调用）", /未使用\s*1(?![0-9])/.test(allText), allText.slice(0, 240));
+ok(
+	"洞察条把「有报错」标成告警色",
+	findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("is-warn")).length > 0,
+);
+
+T.store.usage = "unused";
+const unusedCards = visibleNames();
+ok("点「未使用」只剩从未调用的条目", unusedCards.length === 1 && unusedCards[0].includes("dsh-never-used"), JSON.stringify(unusedCards).slice(0, 200));
+T.store.usage = "errors";
+const errorCards = visibleNames();
+ok("点「有报错」只剩有报错的条目", errorCards.length === 3 && errorCards.every((text) => text.includes("报错")), JSON.stringify(errorCards).slice(0, 240));
+ok(
+	"洞察条的数字不随筛选跳（点开「有报错」后「未使用」仍是 1）",
+	/未使用\s*1(?![0-9])/.test(textsOf(expand(render(T.Panel, {}))).join(" | ")),
+);
+T.store.usage = "any";
+
+/* R3：只被子代理调过 —— 删掉不会当场报错，清理前必须单独看见 */
+T.store.usage = "subonly";
+const subOnlyCards = visibleNames();
+ok("点「仅子代理」只剩「每一次调用都发生在子代理里」的条目", subOnlyCards.length === 1 && subOnlyCards[0].includes("dsh-delegate-only"), JSON.stringify(subOnlyCards).slice(0, 240));
+ok(
+	"isSubagentOnly 不把「从没调用」和「自己也用过」混进来",
+	!T.isSubagentOnly({ calls: 0, subagentCalls: 0 }) && !T.isSubagentOnly({ calls: 9, subagentCalls: 4 }) && T.isSubagentOnly({ calls: 4, subagentCalls: 4 }) && !T.isSubagentOnly(null),
+);
+T.store.usage = "any";
+
+T.store.query = "vision_ground";
+const toolSearched = visibleNames();
+ok("搜索能命中工具名（vision_ground → vision-toolkit）", toolSearched.length === 1 && toolSearched[0].includes("@anionex/dsh-vision-toolkit"), JSON.stringify(toolSearched).slice(0, 240));
+ok("卡片把命中的工具名显示出来", toolSearched.length === 1 && toolSearched[0].includes("工具：vision_ground"), JSON.stringify(toolSearched).slice(0, 240));
+T.store.query = "";
+
+T.store.sort = "errors";
+const errSorted = visibleNames();ok(
+	"排序「报错次数」把报错多的排前面（9 / 2 / 1）",
+	errSorted.length >= 3 && errSorted[0].includes("dsh-screenshot") && errSorted[1].includes("dsh-vision-toolkit") && errSorted[2].includes("dsh-ofm-ops"),
+	JSON.stringify(errSorted.map((text) => text.slice(0, 24))).slice(0, 240),
+);
+
+/* R3：报错率 —— 1/3 远比 9/12345 严重，按次数排会把前者埋掉 */
+T.store.sort = "rate";
+const rateSorted = visibleNames();
+ok(
+	"排序「报错率」把 1/3 排在 9/12345 前面（次数排序看不出这个差别）",
+	rateSorted[0].includes("dsh-ofm-ops") && rateSorted[1].includes("dsh-vision-toolkit") && rateSorted[2].includes("dsh-screenshot"),
+	JSON.stringify(rateSorted.map((text) => text.slice(0, 24))).slice(0, 240),
+);
+ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate({ calls: 0, errors: 0 }) === 0 && T.errorRate({ calls: 0, errors: 3 }) === 0);
+
+/* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
+ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+
+/* R4：导出当前筛选 / 0 值档位置灰 */
+T.store.kind = "all";
+T.store.usage = "any";
+T.store.pageSize = 0;
+T.store.page = 1;
+const exportButtons = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-export"));
+const exportTexts = exportButtons.map((node) => textsOf(node).join(""));
+ok("工具条有「导出这 N 条」，N 就是当前筛选条数", exportButtons.length === 1 && exportTexts[0].includes("导出这 6 条"), JSON.stringify(exportTexts));
+T.store.kind = "skill";
+const zeroChips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-insight") && String(node.props.className).includes("is-empty")).map((node) => textsOf(node).join(""));
+ok("计数为 0 的档位置灰但不隐藏（点开是空态 + 说明书）", zeroChips.length >= 1 && zeroChips.some((text) => text.includes("有报错 0")), JSON.stringify(zeroChips));
+T.store.usage = "subonly";
+const emptyExport = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-export")).map((node) => ({ text: textsOf(node).join(""), disabled: Boolean(node.props.disabled) }));
+ok("筛选结果为 0 时导出按钮禁用（不让用户导出一个空文件）", emptyExport.length === 1 && emptyExport[0].disabled === true && emptyExport[0].text.includes("导出这 0 条"), JSON.stringify(emptyExport));
+T.store.usage = "any";
+T.store.kind = "all";
+
+/* R5：多选（选中一批 → 看总体积 → 导出这批） */
+T.store.pageSize = 0;
+T.store.picking = true;
+T.store.picked = ["plugin:dsh-screenshot"];
+T.store.pickedBytes = 12.3 * 1024 * 1024;
+const pickTree = expand(render(T.Panel, {}));
+const pickText = textsOf(pickTree).join(" | ");
+const pickedCards = findAll(pickTree, (node) => {
+	const tokens = String((node.props && node.props.className) || "").split(/\s+/);
+	return tokens.includes("dpc-card") && tokens.includes("is-picked");
+});
+ok("选择模式下被选中的卡片有 is-picked 与勾徽章", pickedCards.length === 1 && textsOf(pickedCards[0]).join(" ").includes("dsh-screenshot") && textsOf(pickedCards[0]).join(" ").includes("✓"), JSON.stringify(pickedCards.length));
+ok("批次条显示「已选 1 条 · 约 12.3 MB」", pickText.includes("已选 1 条") && pickText.includes("约 12.3 MB"));
+ok(
+	"体积里没有独立目录的条数如实点出（不假装它们是 0 字节的插件）",
+	(() => {
+		const saved = { sizes: T.store.pickedSizes, picked: T.store.picked };
+		T.store.picked = ["plugin:dsh-screenshot", "skill:vex-ops"];
+		T.store.pickedSizes = { "plugin:dsh-screenshot": 1000, "skill:vex-ops": null };
+		const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+		T.store.pickedSizes = saved.sizes;
+		T.store.picked = saved.picked;
+		return text.includes("1 条没有独立目录");
+	})(),
+);
+ok("批次条有三个动作（导出选中 / 选中当前 / 清空）", pickText.includes("导出选中") && pickText.includes("选中当前 6 条") && pickText.includes("清空"));
+ok("工具条「选择」在选择模式下变成「退出选择」", pickText.includes("退出选择"));
+ok(
+	"togglePick 可重复取消（再点一次回到未选中）",
+	(() => {
+		const before = T.store.picked.slice();
+		T.togglePick("plugin:dsh-screenshot");
+		const removed = T.store.picked.length === 0;
+		T.togglePick("plugin:dsh-screenshot");
+		const restored = T.store.picked.length === 1;
+		T.store.picked = before;
+		return removed && restored;
+	})(),
+);
+ok(
+	"退出选择模式会清空选中（不留幽灵批次）",
+	(() => {
+		const saved = { picking: T.store.picking, picked: T.store.picked };
+		T.store.picking = true;
+		T.store.picked = ["plugin:dsh-screenshot"];
+		T.togglePicking(); /* → 退出 */
+		const cleared = T.store.picking === false && T.store.picked.length === 0;
+		T.store.picking = saved.picking;
+		T.store.picked = saved.picked;
+		return cleared;
+	})(),
+);
+ok("选中项不进 localStorage（视图键里没有 picked）", !T.VIEW_KEYS.includes("picked") && !T.VIEW_KEYS.includes("picking"));
+T.store.picking = false;
+T.store.picked = [];
+T.store.pickedBytes = null;
+
+/* R6：副本漂移（工作区源码 vs 加载的 profile 副本） */
+ok(
+	"driftLabel 只给三种人看的标签（linked / same / no-copy 都不标）",
+	T.driftLabel({ verdict: "differs" }) === "副本不同步" &&
+		T.driftLabel({ verdict: "newer-workspace" }) === "副本较旧" &&
+		T.driftLabel({ verdict: "newer-loaded" }) === "工作区较旧" &&
+		T.driftLabel({ verdict: "linked" }) === "" &&
+		T.driftLabel({ verdict: "same" }) === "" &&
+		T.driftLabel(null) === "",
+);
+ok(
+	"Skill 的副本叫 staging（那是发布上去的那份）",
+	T.driftLabel({ verdict: "differs", staged: true }) === "staging 不同步" && T.driftLabel({ verdict: "newer-loaded", staged: true }) === "staging 较旧" && T.driftLabel({ verdict: "newer-workspace", staged: true }) === "staging 较新",
+);
+ok(
+	"driftDetail 点出两个目录与「改哪份才生效」",
+	(() => {
+		const text = T.driftDetail({ verdict: "newer-workspace", differs: ["client.js"], workspaceDir: "D:\\w\\dsh-x", loadedDir: "D:\\p\\dsh-x" });
+		return text.includes("工作区：D:\\w\\dsh-x") && text.includes("加载的：D:\\p\\dsh-x") && text.includes("改它才会生效") && text.includes("client.js");
+	})(),
+);
+const baseData = T.store.data;
+T.store.data = { ...baseData, drift: { "plugin:dsh-screenshot": { verdict: "differs", differs: ["client.js"], workspaceDir: "D:\\w\\DSH-Plugin\\dsh-screenshot", loadedDir: "D:\\p\\node_modules\\dsh-screenshot" } } };
+const driftTree = expand(render(T.Panel, {}));
+const driftText = textsOf(driftTree).join(" | ");
+ok("不同步的卡片有琥珀色「副本不同步」chip", findAll(driftTree, (node) => String((node.props && node.props.className) || "").includes("dpc-drift")).length >= 1 && driftText.includes("副本不同步"));
+ok("顶部公告点出不同步的条目名", driftText.includes("个条目的两份副本不同步") && driftText.includes("dsh-screenshot"));
+T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 20 };
+/* 这里还不能用后面那个完整夹具（`detail` 在下方才定义），用最小可渲染的详情即可 ——
+   要验的是「浮窗里有没有源码同步这句话」，不是详情字段。 */
+T.store.detail = {
+	ok: true,
+	item: T.store.data.entries.find((entry) => entry.id === "plugin:dsh-screenshot"),
+	tools: [],
+	sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] },
+	descendants: 0,
+	statsMeta: {},
+	statsLimited: false,
+	readme: null,
+};
+const modalDrift = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok("浮窗写清「副本同步」结论", modalDrift.includes("副本同步") && modalDrift.includes("源码同步") && modalDrift.includes("副本不同步"));
+/* Skill 走同一条路：staging 是发布上去的那份 */
+T.store.open = { id: "skill:vex-ops", page: 1, pageSize: 20 };
+T.store.data = { ...baseData, drift: { "skill:vex-ops": { verdict: "differs", staged: true, differs: ["SKILL.md"], workspaceDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops", loadedDir: "D:\\w\\.dsh\\skills\\vex-ops" } } };
+T.store.detail = {
+	ok: true,
+	item: T.store.data.entries.find((entry) => entry.id === "skill:vex-ops"),
+	tools: [],
+	sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] },
+	descendants: 0,
+	statsMeta: {},
+	statsLimited: true,
+	readme: null,
+};
+const skillDriftText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok("Skill 浮窗写的是「staging 同步」并给出同步建议", skillDriftText.includes("staging 同步") && skillDriftText.includes("发布前先同步这两份"), skillDriftText.slice(0, 200));
+T.store.data = baseData;
+T.store.open = null;
+T.store.detail = null;
+T.store.sort = "calls";
+
+ok(
+	"isUnused / hasErrors / errorRate 口径一致",
+	T.isUnused({ calls: 0 }) && !T.isUnused({ calls: 1 }) && T.hasErrors({ errors: 1 }) && !T.hasErrors({ errors: 0 }) && Math.round(T.errorRate({ calls: 4, errors: 1 }) * 100) === 25,
+);
+ok("toolHits 少于两个字符不搜（否则一个字母点亮全站）", T.toolHits({ toolNames: ["pwsh"] }, "p").length === 0 && T.toolHits({ toolNames: ["pwsh"] }, "pw").length === 1);
+ok(
+	"报错 chip 只对有报错的条目出现",
+	(() => {
+		const cards = visibleNames();
+		const never = cards.find((text) => text.includes("dsh-never-used")) || "";
+		return never !== "" && !never.includes("报错") && cards[0].includes("报错 9");
+	})(),
+);
+ok(
+	"快捷键 /：非输入框里聚焦搜索、输入框里不抢",
+	T.hotkeyOf({ key: "/", target: { tagName: "DIV" } }) === "focus-search" && T.hotkeyOf({ key: "/", target: { tagName: "INPUT" } }) === "",
+);
+ok("快捷键 Esc：清空搜索", T.hotkeyOf({ key: "Escape", target: { tagName: "BODY" } }) === "clear-search");
+ok("AUTO_REFRESH_MS 落在 5~60 分钟（太短会退化成一直刷新）", T.AUTO_REFRESH_MS >= 300000 && T.AUTO_REFRESH_MS <= 3600000);
+
 /* ③ 浮窗：条目详情 */
 const detail = {
 	ok: true,
-	item: { ...data.entries[0], tags: { purpose: ["screenshot"], context: ["web-gui"], origin: ["src-self"] } },
+	item: {
+		...data.entries[0],
+		realDir: "D:\\信息库\\AI工作区\\DSH-Plugin\\dsh-screenshot",
+		isLink: true,
+		dependency: true,
+		tags: { purpose: ["screenshot"], context: ["web-gui"], origin: ["src-self"] },
+	},
 	tools: [
 		{ name: "screenshot", calls: 8000, errors: 2, avgMs: 420, lastUsed: Date.now() - 3600000, sessions: 30 },
 		{ name: "shot_probe", calls: 4345, errors: 5, avgMs: 1200, lastUsed: Date.now() - 7200000, sessions: 12 },
@@ -380,6 +617,54 @@ ok("子代理会话被单独标记", modalText.includes("子代理") && modalTex
 ok("会话分页控件在", modalText.includes("第 1 / 3 页") && modalText.includes("上一页") && modalText.includes("下一页"));
 ok("每页条数可选", modalText.includes("10") && modalText.includes("100"));
 ok("来源判定依据展示出来", modalText.includes("link/junction 安装"));
+ok("浮窗显示位置与安装形态（R2）", modalText.includes("位置与安装形态") && modalText.includes("源目录") && modalText.includes("junction / symlink"));
+ok("浮窗给出源目录与复制按钮（R2）", modalText.includes("D:\\信息库\\AI工作区\\DSH-Plugin\\dsh-screenshot") && modalText.includes("复制"));
+ok("浮窗说清依赖来源（写进 dependencies 的不会被清理）", modalText.includes("不会被依赖树整理顺手清掉"));
+
+/* R4：体积（懒算）—— 三态都要有话说：量好了 / 正在量 / 量不了 */
+ok("fmtBytes 口径（B / KB / MB / GB）", T.fmtBytes(512) === "512 B" && T.fmtBytes(2048) === "2 KB" && T.fmtBytes(12.3 * 1024 * 1024) === "12.3 MB" && T.fmtBytes(3 * 1024 * 1024 * 1024) === "3.0 GB");
+ok(
+	"量好体积时浮窗显示「12.3 MB · 318 个文件」",
+	(() => {
+		const saved = T.store.size;
+		T.store.size = { bytes: 12.3 * 1024 * 1024, files: 318, truncated: false };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.size = saved;
+		return text.includes("体积") && text.includes("12.3 MB · 318 个文件");
+	})(),
+);
+ok(
+	"体积超预算时如实标注「只算到这里」",
+	(() => {
+		const saved = T.store.size;
+		T.store.size = { bytes: 4096, files: 20000, truncated: true };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.size = saved;
+		return text.includes("只算到这里");
+	})(),
+);
+ok(
+	"没有独立目录时显示原因而不是 0 B（Skill / asar）",
+	(() => {
+		const saved = { size: T.store.size, error: T.store.sizeError };
+		T.store.size = null;
+		T.store.sizeError = "Skill 没有独立目录";
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.size = saved.size;
+		T.store.sizeError = saved.error;
+		return text.includes("Skill 没有独立目录") && !text.includes("0 B");
+	})(),
+);
+ok(
+	"浮窗对「传递依赖」给出会消失的警告",
+	(() => {
+		const saved = T.store.detail;
+		T.store.detail = { ...detail, item: { ...detail.item, dependency: false } };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.detail = saved;
+		return text.includes("整理依赖树时可能消失");
+	})(),
+);
 ok("可以手工改来源（标一次不再问）", modalText.includes("判错了就标一次"));
 ok("自写条目有上传/更新按钮", modalText.includes("上传 / 更新到 GitHub"));
 ok("自写条目有缺口分析入口", modalText.includes("缺口分析"));
