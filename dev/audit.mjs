@@ -510,7 +510,7 @@ ok("视图持久化的读、写都有 try（存储被禁用时不拖垮渲染）
 	return readBlock.includes("try {") && readBlock.includes("catch (error)") && writeBlock.includes("try {") && writeBlock.includes("catch (error)");
 })());
 ok("读视图前先判断 typeof localStorage（无头 / 禁用存储都不能假设存在）", /typeof localStorage !== "undefined" \? localStorage\.getItem/.test(clientSource) && clientSource.includes('if (typeof localStorage === "undefined") return false'));
-ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page"\]/.test(clientSource));
+ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"\]/.test(clientSource));
 ok("滚动位置恢复只发生一次（用 ref 挡后续轮询重渲染）", /const restoredScroll = useRef\(false\)/.test(clientSource) && /if \(restoredScroll\.current \|\| !data\) return;/.test(clientSource));
 ok("换筛选 / 换页后回到顶部（否则第 2 页第一条落在屏幕外）", clientSource.includes('"page" in patch') && clientSource.includes("panel.scrollTop = 0"));
 ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
@@ -541,7 +541,7 @@ ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dp
 ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
 ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
 ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, Math.max(1, queue.length))"));
-ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
+ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
 ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
 ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
 ok("选中态与批次条都有样式（is-picked / dpc-pickedbar / dpc-pick-badge）", [".dpc-card.is-picked{", ".dpc-pickedbar{", ".dpc-pick-badge{"].every((needle) => cssSource.includes(needle)));
@@ -587,18 +587,53 @@ ok("批量体积命中快照时不再递归（measured 才记录真实递归条�
 ok("/refresh what=sizes 起后台任务", routeSource.includes('catalog.startJob("sizes"'));
 ok("Skill 条目带上自己的目录（浮窗位置与体积都靠它）", /realDir: skill\.dir \|\| ""/.test(serviceSource) && /dir: join\(dir, entry\.name\)/.test(catalogSource));
 ok("插件自带的 Skill 也带 dir（root 与 dir 语义不同，别混用）", /kind: "skill", root: dir, dir,/.test(catalogSource) && /kind: "skill", root: join\(dir, entry\.name\), dir: join\(dir, entry\.name\)/.test(catalogSource));
-ok("条目形状变了 → CATALOG_VERSION 跟着 +1（5）", /export const CATALOG_VERSION = 5;/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION 跟着 +1（R8 曾把它抬到 5，R9 又抬到 6）", /export const CATALOG_VERSION = \d+;/.test(catalogSource) && Number((catalogSource.match(/export const CATALOG_VERSION = (\d+);/) || [])[1]) >= 5);
 ok("客户端有「体积」排序（清理决策的第一问是能省多少）", /SORTS[\s\S]{0,600}id: "size", label: "体积"/.test(clientSource));
 ok("体积排序按字节降序，量不到的按 0 排后面", /state\.sort === "size"[\s\S]{0,260}sizeOfItem\(b, sizeMap\) \|\| 0\) - \(sizeOfItem\(a, sizeMap\) \|\| 0\)/.test(clientSource));
 ok("sizeOfItem 量不到返回 null（绝不返回 0）", /function sizeOfItem\(item, sizeMap\)[\s\S]{0,200}return Number\.isFinite\(value\) \? value : null/.test(clientSource));
 ok("卡片上有体积 chip，且有样式定义", cssSource.includes(".dpc-size{") && clientSource.includes('className: "dpc-size"'));
 ok("量不到的条目卡片上不显示体积（于是也不会出现「0 B」）", /props\.size\s*\n\s*\? h\(\s*\n\s*"span",\s*\n\s*\{\s*\n\s*className: "dpc-size"/.test(clientSource) && clientSource.includes('fmtBytes(props.size) + (props.sizeTruncated ? "+" : "")'));
 ok("超预算的条目带「+」并在 title 里说明（数字是下限）", clientSource.includes("只算到这里（实际只会更大）") && /fmtBytes\(props\.size\) \+ \(props\.sizeTruncated \? "\+" : ""\)/.test(clientSource));
-ok("工具条显示当前筛选的体积合计，并点出「无可量目录」条数", clientSource.includes('"合计 " + fmtBytes(filteredWeight.bytes)') && clientSource.includes("条无可量目录"));
+ok("工具条显示当前筛选的体积合计，并点出「无可量目录」条数", clientSource.includes('"合计 " +') && clientSource.includes("条无可量目录") && clientSource.includes("条还没量"));
 ok("自动量体积有闸门：本挂载一次 + 有任务不抢 + 过期才量", /const autoSized = useRef\(false\)/.test(clientSource) && /if \(data\.job && data\.job\.running\) return;/.test(clientSource) && /const SIZES_TTL_MS = 24 \* 60 \* 60 \* 1000/.test(clientSource));
-ok("导出的表格带体积列（清单拿出去也要能支撑决策）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 位置 |"'));
+ok("导出的表格带体积列（清单拿出去也要能支撑决策）", serviceSource.includes("| 体积 |") && serviceSource.includes("formatBytes(bytes)"));
 ok("Skill 浮窗也有「位置与体积」块（不再只有插件才看得到）", clientSource.includes('"位置与体积"') && clientSource.includes("技能目录"));
 ok("面板有「量体积」入口（不必等 24 小时的自动刷新）", clientSource.includes('sizesAt ? "重量体积" : "量体积"'));
+
+/* ─────────── R9（2026-10-22 第九轮）：依赖归属 ───────────
+   回答「体积 Top 里那个 354 MB 的二进制是谁带进来的」「删它会不会弄坏别人」。
+   锁四件事，都是"结论错得很安静"的那种：
+   ① 依赖图必须读**所有**包的 package.json —— 只读 DSH 插件会得出"没人依赖它、可以删"的错误结论；
+   ② 「无人依赖」只能是**候选**（文案必须带确认），嵌套更深的声明可能漏读；
+   ③ 嵌套 node_modules 至少展开一层，否则只被嵌套声明的包会被误判；
+   ④ 条目形状变了 → CATALOG_VERSION 6。 */
+const toolsSource = readFileSync(new URL("../lib/tools.mjs", import.meta.url), "utf8");
+ok(
+	"依赖图读所有包（先记依赖，再看它像不像 DSH 插件）",
+	/const depIndex = new Map\(\)/.test(catalogSource) &&
+		/if \(meta\) depIndex\.set\(meta\.name, meta\.deps\)/.test(catalogSource) &&
+		catalogSource.indexOf("depIndex.set(meta.name") < catalogSource.indexOf("const looksLikeDshPlugin"),
+);
+ok("依赖收集含 dependencies / optionalDependencies / peerDependencies 三类", /for \(const key of \["dependencies", "optionalDependencies", "peerDependencies"\]\)/.test(catalogSource));
+ok("嵌套 node_modules 展开一层（否则只被嵌套声明的包会被误判成没人要）", /const nested = join\(dir, "node_modules"\)/.test(catalogSource) && /name\.startsWith\("@\"\) \? \(await readdir\(join\(nested, name\)\)/.test(catalogSource));
+ok("反向索引：谁声明了它（一个依赖可被多个包声明）", /const dependentsOf = new Map\(\)/.test(catalogSource) && /dependentsOf\.get\(dep\)\.push\(name\)/.test(catalogSource));
+ok(
+	"条目带 dependents / dependentCount / dependsOn / dependsOnCount",
+	["dependents: pack.dependents || []", "dependentCount: pack.dependentCount || 0", "dependsOn: pack.dependsOn || []", "dependsOnCount: pack.dependsOnCount || 0"].every((needle) => catalogSource.includes(needle)),
+);
+ok("条目形状变了 → CATALOG_VERSION = 6", /export const CATALOG_VERSION = 6;/.test(catalogSource));
+ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0 \}/.test(catalogSource));
+ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
+ok("导出清单加「被依赖」列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 位置 |"'));
+ok("体积 Top 表也带被依赖（大二进制不是可删插件）", serviceSource.includes('"| 名称 | 类型 | 来源 | 体积 | 文件数 | 被依赖 | 调用 | 最近 |"'));
+ok("catalog_health 报依赖图（工具面也能问「能删什么」）", toolsSource.includes("依赖图：") && toolsSource.includes("health.dependency.scanned"));
+ok("catalog_list 的条目点出被依赖 / 无人依赖", toolsSource.includes("被 ${item.dependentCount} 个包依赖") && toolsSource.includes("无人依赖（候选）"));
+ok("客户端有 isOrphanHint / depLabel 两个纯函数（可直接断言）", /function isOrphanHint\(item\)/.test(clientSource) && /function depLabel\(item\)/.test(clientSource));
+ok("卡片上有依赖 chip（有依赖=中性，无人依赖=琥珀）", cssSource.includes(".dpc-dep{") && cssSource.includes(".dpc-dep.is-orphan{") && clientSource.includes("depLabel(item)"));
+ok("浮窗有「依赖关系」块（被谁依赖 / 它依赖谁）", clientSource.includes('"依赖关系"') && clientSource.includes("它自己声明依赖 "));
+ok("工具条有「无人依赖」筛选按钮", clientSource.includes('"无人依赖 " + orphanCount'));
+ok("候选措辞带「确认」（不许把候选写成结论）", clientSource.includes("这是候选，动之前用 npm ls / pnpm why 确认") && clientSource.includes("仍需 npm ls / pnpm why 确认"));
+ok("「被依赖」的体积在合计里单独点出（不算可回收空间）", clientSource.includes("被其它插件依赖（删了会连带弄坏），不能算作可回收空间") && clientSource.includes("lockedBytes"));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

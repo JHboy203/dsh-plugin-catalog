@@ -62,6 +62,17 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   - entries exceeding the 1.5 s / 20,000-file budget are marked with **"+"**: the number is a lower bound, and the total says so as well.
   In the popup it still uses the lazy `/size` route (measures only the opened entry, 5-minute cache) and **never runs during catalog builds** —
   recursively sizing 71 packages would push panel opening from seconds to tens of seconds; junctions and symlinks are **never followed** (following them can leave the profile or even loop)
+- **Dependencies (who pulled it in / what breaks if you delete it)**: cards carry a chip —
+  **"depended on by N"** (deleting it breaks those packages; hover lists them) and **"nobody depends on it"** (a candidate, amber).
+  The data comes from a **full dependency graph** built while scanning: every `package.json` in the profile
+  (`dependencies` / `optionalDependencies` / `peerDependencies`, **not just DSH plugins**, plus one level of nested `node_modules`),
+  reverse-indexed into "who declares it". The toolbar also has a "nobody depends on it N" filter.
+  - Why "is it in the profile's dependencies" is not enough: `@dsh-ops/bash-win32-x64` (354 MB) is **both** —
+    listed in the profile *and* required by `dsh-ops`; deleting it breaks dsh-ops immediately. On this machine **651.8 MB**
+    of the 850.6 MB total belongs to such "runtime dependencies"; the total's tooltip calls that out and does not count it as reclaimable space.
+  - The popup's "Dependencies" block gives three facts: where it is declared, who depends on it (full names), and what it declares itself (the source of the size top list).
+  - **"Nobody depends on it" is only a candidate**: nesting is expanded one level, so deeper declarations may be missed —
+    the wording always says "confirm with `npm ls` / `pnpm why`", never "safe to delete".
 - **Copy sync**: a banner plus per-card badges answer **"is the copy I edit the copy that is loaded?"**
   For plugins it compares four key files (`package.json` / `index.js` / `client.js` / `cordis.patch.yml`) by size + mtime; for Skills it compares `SKILL.md`.
   A junction-installed plugin simply says "one copy only — edit the source and it takes effect". When copies disagree the badge reads "副本不同步 / 副本较旧 / 工作区较旧",
@@ -198,6 +209,13 @@ Security review **does not run automatically** — the panel shows a "Security r
    it is re-measured automatically after 24 hours, or on demand via "Re-measure" (which overwrites the snapshot).
 8. **Size measurement has a budget**: at most 20,000 files / 1.5 s per directory. Entries beyond that report a lower bound
    (marked with "+" in the UI; one entry on this machine). This keeps a single huge directory from stalling the whole run.
+9. **"Nobody depends on it" is a heuristic**: only one level of nested `node_modules` is read. Deeper nesting
+   (`a/node_modules/b/node_modules/c`) or packages pulled in by a runtime `require` can be missed.
+   So it stays a **candidate**, and the UI always says "confirm with `npm ls` / `pnpm why`". On this machine 2 of 220 packages qualify
+   (`dpi-probe-bundle`, `dsh-toolfold`).
+10. **The dependency graph ignores devDependencies**: packages installed into a profile should not have any, so only runtime declarations are read.
+11. **pnpm's `.pnpm` virtual store is not expanded** (this machine uses `nodeLinker: hoisted`, so it does not exist);
+    switching to isolated linking would degrade the graph.
 
 ## Troubleshooting: plugin installed and panel appears, but no tools/routes
 
@@ -264,15 +282,15 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 ## Self-check
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (262 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / selection batches / copy sync / export / empty states (127 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (280 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips and block / selection batches / copy sync / export / empty states (137 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / export write / copy-sync verdicts / skill_sync plan and confirm gate (135 checks)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / dependency graph fields and who-depends-on-what cross-checks / export write / copy-sync verdicts / skill_sync plan and confirm gate (150 checks)
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas
@@ -280,6 +298,7 @@ node dev/probe-publish.mjs   # dry-runs the upload plan (creates no repo, commit
 node dev/probe-export.mjs    # exports a Markdown snapshot of real data into reports/
 node dev/probe-init.mjs      # measures startup cost (milliseconds for init/state/entryDetail)
 node dev/warm-cache.mjs      # warms the real data directory so the first open already has data
+node dev/rm.mjs              # fire extinguisher: delete files/directories in the workspace (the sandbox denies unlink; runs via host_selfcheck)
 ```
 
 Why `dev/preview.mjs` exists: headless self-checks can only verify structure/copy, not **layout** (whether the popup is centered,

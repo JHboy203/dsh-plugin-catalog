@@ -225,14 +225,17 @@ const data = {
 	weeklyDue: { gap: true, security: true },
 	reports: { gap: { repos: 0 }, security: { repos: 0 } },
 	entries: [
-		makeItem({}),
-		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"] }),
+		/* R9：依赖字段 —— 直接写在 profile、但没有任何包依赖它（不是候选，因为它是显式装的） */
+		makeItem({ dependency: true, dependents: [], dependentCount: 0, dependsOn: ["@deepseek-ai/cordis"], dependsOnCount: 1, orphanHint: false }),
+		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"], dependency: true, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: false }),
 		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, errors: 0, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] }, realDir: "D:\\信息库\\AI工作区\\.dsh\\skills\\vex-ops", isLink: false, inAsar: false }),
-		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"] }),
-		/* R2：一条从未被调用过的条目 —— 洞察条的「未使用」与「从未调用」全靠它验 */
-		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"] }),
+		/* R9：被 2 个包依赖 —— 删它会让它们坏（卡片上要看得见） */
+		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"], dependency: false, dependents: ["dsh-diag", "dsh-testbed"], dependentCount: 2, dependsOn: ["@dsh-ops/pwsh-win32-x64"], dependsOnCount: 1, orphanHint: false }),
+		/* R2：一条从未被调用过的条目 —— 洞察条的「未使用」与「从未调用」全靠它验
+		   R9：同时是「无人依赖」的候选（没人声明依赖它、也不在 profile 的 dependencies 里） */
+		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"], dependency: false, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: true }),
 		/* R3：一条只被子代理调过的条目 —— 删它不会当场报错，只会让某条委派链悄悄变差 */
-		makeItem({ id: "plugin:dsh-delegate-only", name: "dsh-delegate-only", calls: 5, errors: 0, subagentCalls: 5, sessions: 0, descriptionZh: "只被子代理用过的插件。", descriptionEn: "Delegate only." }),
+		makeItem({ id: "plugin:dsh-delegate-only", name: "dsh-delegate-only", calls: 5, errors: 0, subagentCalls: 5, sessions: 0, descriptionZh: "只被子代理用过的插件。", descriptionEn: "Delegate only.", dependency: false, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: false }),
 	],
 	hostCore: { id: "host-core", kind: "host", name: "宿主核心工具", calls: 38000, tools: [{ name: "pwsh", calls: 13000 }, { name: "read", calls: 8000 }, { name: "edit", calls: 7000 }] },
 	totals: { plugins: 70, skills: 55, calls: 13000, errors: 7, subagentCalls: 500, hostCoreCalls: 38000, bySource: { official: 7, self: 22, third: 40, hybrid: 1, pending: 1 }, askUser: 1 },
@@ -359,9 +362,49 @@ ok(
 	"sizeOfItem：量不到返回 null（绝不返回 0），量到返回字节数",
 	T.sizeOfItem({ id: "a" }, { a: 12 }) === 12 && T.sizeOfItem({ id: "b" }, { a: 12 }) === null && T.sizeOfItem({ id: "c" }, { c: null }) === null && T.sizeOfItem(null, {}) === null,
 );
+
+/* R9：依赖归属 —— 「删了会弄坏谁」「那个大二进制是谁带进来的」 */
+ok(
+	"depLabel：被依赖 → 「被 N 依赖」；无人依赖 → 「无人依赖」；Skill 与普通直接依赖不显示",
+	T.depLabel({ dependents: ["a", "b"], dependentCount: 2 }) === "被 2 依赖" &&
+		T.depLabel({ dependents: [], dependentCount: 0, orphanHint: true }) === "无人依赖" &&
+		T.depLabel({ kind: "skill", dependents: [], dependentCount: 0, orphanHint: true }) === "" &&
+		T.depLabel({ dependents: [], dependentCount: 0, dependency: true }) === "" &&
+		T.depLabel(null) === "",
+);
+ok("isOrphanHint 只认服务端给的候选标记", T.isOrphanHint({ orphanHint: true }) === true && T.isOrphanHint({}) === false && T.isOrphanHint(null) === false);
+ok(
+	"卡片上有依赖 chip：「被 2 依赖」与「无人依赖」各一枚",
+	(() => {
+		const chips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-dep"));
+		const labels = chips.map((chip) => textsOf(chip).join(" "));
+		return chips.length === 2 && labels.some((label) => label.includes("被 2 依赖")) && labels.some((label) => label.includes("无人依赖"));
+	})(),
+);
+ok(
+	"无人依赖的 chip 带「需确认」口径（候选不是结论）",
+	(() => {
+		const chip = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-dep") && textsOf(node).join(" ").includes("无人依赖"))[0];
+		const title = String((chip && chip.props && chip.props.title) || "");
+		return title.includes("候选") && title.includes("npm ls");
+	})(),
+);
+ok(
+	"工具条有「无人依赖 N」筛选按钮，点开只剩候选",
+	(() => {
+		const before = textsOf(expand(render(T.Panel, {}))).join(" | ");
+		if (!/无人依赖 1(?![0-9])/.test(before)) return false;
+		const saved = { orphanOnly: T.store.orphanOnly, kind: T.store.kind, source: T.store.source };
+		T.store.orphanOnly = true;
+		const names = visibleNames();
+		T.store.orphanOnly = saved.orphanOnly;
+		return names.length === 1 && names[0].includes("dsh-never-used");
+	})(),
+);
 T.store.sort = "calls";
 T.store.kind = "all";
 T.store.source = "any";
+T.store.orphanOnly = false;
 
 T.store.query = "vision";
 const searched = visibleNames();
@@ -472,7 +515,7 @@ ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate
 
 /* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
 ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
-ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
 
 /* R4：导出当前筛选 / 0 值档位置灰 */
 T.store.kind = "all";
@@ -767,6 +810,22 @@ ok("Skill 浮窗不显示工具明细表（无工具可归属）", !skillModal.i
 ok("Skill 浮窗也有「位置与体积」块（不再只有插件才有）", skillModal.includes("位置与体积") && skillModal.includes("技能目录"));
 ok("Skill 浮窗给出技能目录路径与复制按钮", skillModal.includes(".dsh\\skills\\vex-ops") && skillModal.includes("复制"));
 ok("Skill 浮窗的体积来自全量快照（4 KB），不是「0 B」", skillModal.includes("4 KB（全量快照）") && !skillModal.includes("0 B"));
+
+/* R9：浮窗的「依赖关系」块 —— 插件才有（Skill 之间没有 npm 依赖） */
+ok("插件的浮窗有「依赖关系」块（直接声明 / 被谁依赖 / 它依赖谁）", modalText.includes("依赖关系") && modalText.includes("直接声明"));
+ok("直接写在 profile 的依赖会说明（要删得同时改 package.json）", modalText.includes("写在 profile 的 package.json dependencies 里"));
+ok("它依赖谁也要写出来（体积 Top 的运行时二进制就是这么来的）", modalText.includes("它自己声明依赖 1 个包") && modalText.includes("@deepseek-ai/cordis"));
+ok("Skill 浮窗不显示「依赖关系」（Skill 不在 npm 依赖图里）", !skillModal.includes("依赖关系"));
+ok(
+	"被 N 依赖的条目在浮窗里点名依赖者，并说明「删它会让这些包直接坏掉」",
+	(() => {
+		const saved = T.store.detail;
+		T.store.detail = { ...detail, item: data.entries[3] };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.detail = saved;
+		return text.includes("被 2 个包依赖") && text.includes("dsh-diag") && text.includes("删它会让这些包直接坏掉");
+	})(),
+);
 
 /* ④ 上传计划浮窗 */
 T.store.open = null;

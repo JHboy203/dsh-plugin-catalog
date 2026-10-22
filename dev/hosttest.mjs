@@ -481,6 +481,57 @@ const exportWithSizes = await callRoute("/export", "POST", { ids: sizeIds, filte
 const exportWithSizesText = exportWithSizes.json?.path ? readFileSync(exportWithSizes.json.path, "utf8") : "";
 ok("导出表格带体积列，并写明这份的合计", exportWithSizesText.includes("| 体积 |") && /合计 \*\*[\d.]+ (B|KB|MB|GB)\*\*/.test(exportWithSizesText), exportWithSizesText.split("\n").slice(0, 4).join(" / ").slice(0, 240));
 
+/* ── R9：依赖归属（「那个 354 MB 的二进制是谁带进来的」「删它会不会弄坏别人」） ──
+   走真数据：这台机器的 profile 里 dsh-ops 声明了 @dsh-ops/*-win32-x64 三个运行时包，
+   所以反向索引必须把它们指回 dsh-ops；判据靠 package.json，不靠目录名猜。 */
+const depPlugins = entries.filter((entry) => entry.kind === "plugin" && !entry.inAsar);
+ok(
+	"插件条目带依赖四字段（dependents / dependentCount / dependsOn / dependsOnCount）",
+	depPlugins.length > 0 && depPlugins.every((entry) => Array.isArray(entry.dependents) && typeof entry.dependentCount === "number" && Array.isArray(entry.dependsOn) && typeof entry.dependsOnCount === "number"),
+	JSON.stringify(depPlugins.slice(0, 2).map((entry) => ({ name: entry.name, dependents: entry.dependents, dependentCount: entry.dependentCount }))),
+);
+ok(
+	"dependentCount 与 dependents 截断口径一致（不会互相对不上）",
+	depPlugins.every((entry) => entry.dependentCount >= entry.dependents.length && (entry.dependentCount <= 12 || entry.dependents.length === 12)),
+	JSON.stringify(depPlugins.filter((entry) => entry.dependentCount < entry.dependents.length).slice(0, 2).map((entry) => entry.name)),
+);
+ok(
+	"orphanHint 的判据 =「不在 profile 依赖里 + 无人依赖」（不是随手标的）",
+	depPlugins.every((entry) => entry.orphanHint === (!entry.dependency && entry.dependentCount === 0)),
+	JSON.stringify(depPlugins.filter((entry) => entry.orphanHint !== (!entry.dependency && entry.dependentCount === 0)).slice(0, 3).map((entry) => entry.name)),
+);
+const dependedEntry = depPlugins.find((entry) => entry.dependentCount > 0);
+ok(
+	"至少一条插件「被别的包依赖」，且依赖者名字都在条目列表里（本机实测 dsh-ops → @dsh-ops/*-win32-x64）",
+	Boolean(dependedEntry) &&
+		dependedEntry.dependents.length > 0 &&
+		dependedEntry.dependents.every((name) => entries.some((entry) => entry.name === name)),
+	JSON.stringify({ name: dependedEntry?.name, dependents: dependedEntry?.dependents, count: dependedEntry?.dependentCount }),
+);
+const platformDep = depPlugins.find((entry) => entry.dependents.includes("dsh-ops"));
+ok(
+	"平台运行时二进制能指回声明它的包（@dsh-ops/*-win32-x64 → dsh-ops）",
+	Boolean(platformDep),
+	JSON.stringify(depPlugins.filter((entry) => entry.name.startsWith("@dsh-ops/")).map((entry) => ({ name: entry.name, dependents: entry.dependents }))),
+);
+const dshOpsEntry = depPlugins.find((entry) => entry.name === "dsh-ops");
+ok(
+	"dsh-ops 自己声明了运行时依赖（体积 Top 的来源就是它）",
+	Boolean(dshOpsEntry) && dshOpsEntry.dependsOnCount > 0 && dshOpsEntry.dependsOn.some((name) => name.startsWith("@dsh-ops/")),
+	JSON.stringify({ name: dshOpsEntry?.name, dependsOn: dshOpsEntry?.dependsOn, count: dshOpsEntry?.dependsOnCount }),
+);
+const depMetaState = readyState.json?.dependency || (await callRoute("/state")).json?.dependency || null;
+ok("state 带依赖图自述（scanned / direct / orphanHint）", Boolean(depMetaState) && depMetaState.scanned > 0 && depMetaState.direct > 0 && typeof depMetaState.orphanHint === "number", JSON.stringify(depMetaState));
+const healthWithDep = (await callRoute("/health")).json || {};
+ok("/health 带依赖图", Boolean(healthWithDep.dependency) && healthWithDep.dependency.scanned === depMetaState.scanned, JSON.stringify(healthWithDep.dependency));
+const healthToolWithDep = await callTool("catalog_health", {});
+ok("catalog_health 文本里有依赖图一行", /依赖图：\d+ 个包 \/ \d+ 个直接依赖 \/ \d+ 个「无人依赖」候选/.test(healthToolWithDep.text), healthToolWithDep.text.split("\n").filter((line) => line.startsWith("依赖图")).join(" | "));
+const listToolWithDep = await callTool("catalog_list", { limit: 60 });
+ok("catalog_list 的条目点出被依赖 / 无人依赖", /被 \d+ 个包依赖|无人依赖（候选）/.test(listToolWithDep.text), listToolWithDep.text.split("\n").filter((line) => line.includes("被 ") && line.includes("个包依赖")).slice(0, 2).join(" | "));
+const depExport = await callRoute("/export", "POST", { ids: depPlugins.slice(0, 6).map((entry) => entry.id), filters: {} });
+const depExportText = depExport.json?.path ? readFileSync(depExport.json.path, "utf8") : "";
+ok("导出清单带「被依赖」列（拿出去也要能判断）", depExportText.includes("| 被依赖 |") && depExportText.includes("直接依赖"), depExportText.split("\n")[8] || "");
+
 /* ── R6：副本漂移（工作区源码 vs profile 里加载的副本） ──
    用两个已知内容的临时目录验判据，再用真 /state 验"junction 记为 linked"，
    以及"不同步会被标出来"。这三条合起来才对得上卡片上那枚「副本不同步」。 */

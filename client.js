@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r8.0";
+		const BUILD = "r9.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -119,6 +119,8 @@ window.__ModuleLoader__.load({
 			pickedBytes: null,
 			pickedSizes: null,
 			pickedBusy: false,
+			/* R9：只看「无人依赖」的候选（清理决策；候选不是结论，界面会带说明） */
+			orphanOnly: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -126,7 +128,7 @@ window.__ModuleLoader__.load({
 		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
 		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
 		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
-		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page"];
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"];
 
 		function readView() {
 			try {
@@ -428,6 +430,26 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * R9：无人依赖的**候选**。服务端在 profile 里（含一层嵌套）扫描了每个 package.json 的
+		 * dependencies / optionalDependencies / peerDependencies，没有任何一个声明依赖它。
+		 * ★ 候选不是结论：嵌套更深的声明可能漏读，界面文案一律带"需确认"，不许写成"可以删"。
+		 */
+		function isOrphanHint(item) {
+			return Boolean(item && item.orphanHint);
+		}
+
+		/**
+		 * R9：卡片上的依赖 chip 文案（纯函数，自检可直接断言）。
+		 * 「被 N 依赖」= 删了会让这些包坏；「无人依赖」= 候选。
+		 */
+		function depLabel(item) {
+			if (!item || item.kind === "skill") return "";
+			if (Number(item.dependentCount) > 0) return "被 " + item.dependentCount + " 依赖";
+			if (item.orphanHint) return "无人依赖";
+			return "";
+		}
+
+		/**
 		 * 搜索命中：把**命中的工具名**挑出来（最多 4 个）。
 		 * 这是面板要能回答的第二个问题 —— 「这个工具是谁提供的」。
 		 * 少于 2 个字符不搜，免得一个 `a` 把所有条目都点亮。
@@ -599,6 +621,23 @@ window.__ModuleLoader__.load({
 											: "这个目录在磁盘上占 " + props.size + " 字节",
 								},
 								fmtBytes(props.size) + (props.sizeTruncated ? "+" : ""),
+							)
+						: null,
+					/* R9：依赖关系 —— 「删了会弄坏谁」必须在卡片上就看得见，不能等点开浮窗 */
+					depLabel(item)
+						? h(
+								"span",
+								{
+									className: "dpc-dep" + (Number(item.dependentCount) > 0 ? "" : " is-orphan"),
+									title:
+										Number(item.dependentCount) > 0
+											? "被这些包依赖：" +
+												(item.dependents || []).join("、") +
+												(Number(item.dependentCount) > (item.dependents || []).length ? " 等 " + item.dependentCount + " 个" : "") +
+												" —— 删它会让它们直接坏掉"
+											: "profile 里没有任何包的 package.json 声明依赖它（嵌套只展开了一层）。这是候选，动之前用 npm ls / pnpm why 确认",
+								},
+								depLabel(item),
 							)
 						: null,
 					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "从没被调用过" : "总调用次数" }, fmtNumber(item.calls)),
@@ -1013,6 +1052,50 @@ window.__ModuleLoader__.load({
 												h("div", { className: "dpc-muted" }, "安装形态：Skill 目录 —— DSH 直接读这里的 SKILL.md，改完立即生效；发布推的是它的 staging 副本（见上面「副本同步」）"),
 												sizeRow(),
 											),
+									/* R9：依赖关系 —— 「那个 354 MB 的二进制是谁带进来的」「删这个会弄坏谁」 */
+									item.kind === "plugin"
+										? h(
+												"div",
+												{ className: "dpc-block" },
+												h("div", { className: "dpc-block-title" }, "依赖关系"),
+												h(
+													"div",
+													{ className: "dpc-row" },
+													h("span", { className: "dpc-muted" }, "直接声明"),
+													h("span", null, item.dependency ? "写在 profile 的 package.json dependencies 里" : "不在 profile 的 dependencies 里（传递依赖 / 自动装的）"),
+												),
+												Number(item.dependentCount) > 0
+													? h(
+															"div",
+															{ className: "dpc-muted" },
+															"被 " +
+																item.dependentCount +
+																" 个包依赖：" +
+																(item.dependents || []).join("、") +
+																(Number(item.dependentCount) > (item.dependents || []).length ? " 等" : "") +
+																" —— 删它会让这些包直接坏掉（体积合计里这部分不算可回收空间）",
+														)
+													: h(
+															"div",
+															{ className: "dpc-muted" },
+															item.orphanHint
+																? "没有任何包的 package.json 声明依赖它 —— 候选（很可能你早卸了用它的那个插件）。仍需 npm ls / pnpm why 确认后再动。"
+																: "没有任何包声明依赖它，但它写在 profile 的 dependencies 里 —— 要删得同时改 profile 的 package.json。",
+														),
+												(Number(item.dependsOnCount) || 0) > 0
+													? h(
+															"div",
+															{ className: "dpc-muted" },
+															"它自己声明依赖 " +
+																item.dependsOnCount +
+																" 个包：" +
+																(item.dependsOn || []).join("、") +
+																(Number(item.dependsOnCount) > (item.dependsOn || []).length ? " 等" : "") +
+																" —— 体积 Top 里那些 @dsh-ops/*-win32-x64 就是这一类（删了会连带弄坏它）",
+														)
+													: h("div", { className: "dpc-muted" }, "它没有声明任何运行时依赖（纯代码/单文件插件）"),
+											)
+										: null,
 									/* 来源与证据 */
 									h(
 										"div",
@@ -1233,6 +1316,8 @@ window.__ModuleLoader__.load({
 					if (state.usage === "used" && isUnused(item)) return false;
 					if (state.usage === "errors" && !hasErrors(item)) return false;
 					if (state.usage === "subonly" && !isSubagentOnly(item)) return false;
+					/* R9：只看无人依赖的候选（Skill 永远不参与：它们之间没有 npm 依赖） */
+					if (state.orphanOnly && !isOrphanHint(item)) return false;
 					if (query !== "") {
 						/* ★ 工具名也要进搜索域 —— 否则「pwsh 是谁给的」只能一个个点开看 */
 						const haystack = [item.name, item.title, item.descriptionZh, item.descriptionEn, (item.sourceWhy || []).join(" "), (item.toolNames || []).join(" ")].join(" ").toLowerCase();
@@ -1256,7 +1341,7 @@ window.__ModuleLoader__.load({
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.usage, state.sort, sizeMap]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, sizeMap]);
 
 			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
 			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
@@ -1271,17 +1356,32 @@ window.__ModuleLoader__.load({
 				};
 			}, [items, state.kind, state.source]);
 
+			/* R9：「无人依赖」候选数（与洞察条同口径：只受来源/类型影响，不被关键词带着跳） */
+			const orphanCount = useMemo(() => {
+				return items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source) && isOrphanHint(item)).length;
+			}, [items, state.kind, state.source]);
+
 			/* 当前筛选结果的体积合计：回答「删这批能省多少」，不用逐个点开浮窗。
 			   noDir = 量不到的条数（官方包在 asar 里 / 没有独立目录）—— 它们不计入合计，但要说出来。 */
 			const filteredWeight = useMemo(() => {
 				let bytes = 0;
 				let noDir = 0;
+				/* 量不到有两种：**没有可量目录**（asar / 无独立目录）与**还没量**（快照里没有它）。
+				   混成一句会让"刚装上的插件"看起来像"不占空间"，所以分开数。 */
+				let unmeasured = 0;
+				/* R9：其中有多少字节是"别人依赖的运行时" —— 删它不能单独删，合计里要区分开 */
+				let lockedBytes = 0;
 				for (const item of filtered) {
 					const size = sizeOfItem(item, sizeMap);
-					if (size === null) noDir += 1;
-					else bytes += size;
+					if (size === null) {
+						if (item.realDir && !item.inAsar) unmeasured += 1;
+						else noDir += 1;
+						continue;
+					}
+					bytes += size;
+					if (Number(item.dependentCount) > 0) lockedBytes += size;
 				}
-				return { bytes, noDir };
+				return { bytes, noDir, unmeasured, lockedBytes };
 			}, [filtered, sizeMap]);
 
 			/* 缓存太旧就自动补一次增量刷新。
@@ -1556,15 +1656,41 @@ window.__ModuleLoader__.load({
 						),
 					),
 					h("span", { className: "dpc-muted" }, filtered.length + " 条"),
+					/* R9：只看「无人依赖」的候选 —— 与体积合计配合就是"能安全省多少"的入口 */
+					orphanCount > 0 || state.orphanOnly
+						? h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.orphanOnly ? " is-on" : ""),
+									onClick: () => set({ orphanOnly: !state.orphanOnly, page: 1 }),
+									title:
+										"只看无人依赖的条目：profile 里所有 package.json（含一层嵌套）都没声明依赖它们。" +
+										"这是候选不是结论 —— 动之前用 npm ls / pnpm why 确认；反过来说，「被 N 依赖」的条目删了会直接弄坏别人。",
+								},
+								(state.orphanOnly ? "✓ " : "") + "无人依赖 " + orphanCount,
+							)
+						: null,
 					/* 当前筛选这一屏一共占多少盘 —— 点「未使用」就能直接看到"删这批能省多少" */
 					filtered.length > 0 && sizesAt
 						? h(
 								"span",
 								{
 									className: "dpc-sum",
-									title: "当前筛选结果的磁盘体积合计" + (filteredWeight.noDir > 0 ? "；" + filteredWeight.noDir + " 条没有可量目录（官方 asar 内 / Skill 没有独立目录），不计入" : "") + (sizeTruncated.length > 0 ? "；" + sizeTruncated.length + " 条超过预算只算了一部分（标 + 的那些）" : "") + "。数据来自后台全量快照（" + ago(sizesAt) + "）",
+									title:
+										"当前筛选结果的磁盘体积合计" +
+										(filteredWeight.noDir > 0 ? "；" + filteredWeight.noDir + " 条没有可量目录（官方 asar 内 / Skill 没有独立目录），不计入" : "") +
+										(filteredWeight.unmeasured > 0 ? "；" + filteredWeight.unmeasured + " 条还没量过体积（装/删之后点「重量体积」就能补上），不计入" : "") +
+										(filteredWeight.lockedBytes > 0 ? "；其中 " + fmtBytes(filteredWeight.lockedBytes) + " 被其它插件依赖（删了会连带弄坏），不能算作可回收空间" : "") +
+										(sizeTruncated.length > 0 ? "；" + sizeTruncated.length + " 条超过预算只算了一部分（标 + 的那些）" : "") +
+										"。数据来自后台全量快照（" + ago(sizesAt) + "）",
 								},
-								"合计 " + fmtBytes(filteredWeight.bytes) + (filteredWeight.noDir > 0 ? "（" + filteredWeight.noDir + " 条无可量目录）" : ""),
+								"合计 " +
+									fmtBytes(filteredWeight.bytes) +
+									(filteredWeight.noDir > 0 || filteredWeight.unmeasured > 0
+										? "（" +
+											[filteredWeight.noDir > 0 ? filteredWeight.noDir + " 条无可量目录" : "", filteredWeight.unmeasured > 0 ? filteredWeight.unmeasured + " 条还没量" : ""].filter(Boolean).join("，") +
+											"）"
+										: ""),
 							)
 						: null,
 					h(
@@ -1790,6 +1916,10 @@ window.__ModuleLoader__.load({
 /* 体积 chip：清理决策要看得到；量不到（asar / 还没量）就干脆不出现，别写「0 B」 */
 .dpc-size{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
   color:var(--dsw-alias-label-secondary,#6b7280);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
+/* 依赖 chip（R9）：有依赖者=不能单独删（中性色）；无人依赖=候选（琥珀色，与「待确认」同族但更淡） */
+.dpc-dep{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
+.dpc-dep.is-orphan{color:#8a5a06;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.32)}
 .dpc-calls.is-zero{color:var(--dsw-alias-label-secondary,#8b93a1);font-weight:500}
 .dpc-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all;
   color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);padding:2px 6px;border-radius:6px;
@@ -2013,6 +2143,8 @@ window.__ModuleLoader__.load({
 			hasErrors,
 			errorRate,
 			isSubagentOnly,
+			isOrphanHint,
+			depLabel,
 			togglePick,
 			togglePicking,
 			driftLabel,

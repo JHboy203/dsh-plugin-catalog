@@ -62,6 +62,16 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   - 超过 1.5 秒 / 2 万文件预算的条目**带「+」**，数字是下限，合计里也一样标出来。
   浮窗里仍是懒算的 `/size`（打开哪一个才算哪一个，5 分钟缓存），**绝不在目录构建里递归** ——
   71 个包逐个 du 会把面板打开从秒级拖到十秒级；统计时**不跟随 junction / 符号链接**（跟随会走出 profile 甚至成环）
+- **依赖关系（谁把它带进来的 / 删它会弄坏谁）**：卡片上直接有 chip ——
+  **「被 N 依赖」**（删了会连带弄坏这些包；悬停列出是谁）与 **「无人依赖」**（候选，琥珀色）。
+  数据来自构建目录时扫的**全量依赖图**：profile 里每个 `package.json` 的
+  `dependencies` / `optionalDependencies` / `peerDependencies`（**不只 DSH 插件**，还展开一层嵌套 `node_modules`），
+  反向索引成「谁声明的它」。工具条还有「无人依赖 N」筛选，勾上只剩候选。
+  - 为什么不能只看"在不在 profile 的 dependencies 里"：`@dsh-ops/bash-win32-x64`（354 MB）**两方面都占** ——
+    既写在 profile 里，又被 `dsh-ops` 依赖；删了 dsh-ops 立刻坏。本机 850.6 MB 里有 **651.8 MB** 属于这种"被依赖的运行时"，
+    合计的 tooltip 会单独点出来，不算可回收空间。
+  - 浮窗「依赖关系」块给出三件事：直接声明在哪、被谁依赖（全名）、它自己声明依赖了谁（就是体积 Top 的来源）。
+  - **「无人依赖」只是候选**：嵌套只展开一层，更深的声明可能漏读 —— 文案一律带"用 `npm ls` / `pnpm why` 确认"，绝不写成"可以删"。
 - **副本同步**：面板顶部公告 + 卡片标签告诉你**「你改的那份，真的是加载的那份吗」**。
   插件比 4 个关键文件（`package.json` / `index.js` / `client.js` / `cordis.patch.yml`）的 size + mtime，Skill 比 `SKILL.md`；
   junction 安装直接说「只有一份，改源码立即生效」；发现不同步则标「副本不同步 / 副本较旧 / 工作区较旧」，
@@ -197,6 +207,12 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
    超过 24 小时自动重量一次，也可以随时点「重量体积」（量完覆盖快照）。
 8. **体积有预算**：单个目录最多 2 万文件 / 1.5 秒。超过的条目报下限（界面上带「+」，本机实测 1 条）。
    这是为了不让一个巨型目录把整次测量拖住。
+9. **「无人依赖」是启发式**：只读 profile 里 `node_modules` 下**一层**嵌套的 `package.json`，
+   更深的嵌套（`a/node_modules/b/node_modules/c`）或运行时 `require` 出来的包可能漏判成"没人依赖"。
+   所以它只做**候选**，界面上永远带"用 `npm ls` / `pnpm why` 确认"。本机实测 220 个包里 2 个候选
+   （`dpi-probe-bundle`、`dsh-toolfold`），都被更深的依赖链排除过一轮。
+10. **依赖图不区分 devDependencies**：装进 profile 的包本来就不该有 dev 依赖，这里只按运行时声明判断。
+11. **pnpm 的 `.pnpm` 虚拟仓库不展开**（本机 `nodeLinker: hoisted`，不存在该目录）；换成 isolated 链接模式时，依赖图会退化。
 
 ## 排错：插件装了、面板也出来了，但没有工具/路由
 
@@ -264,15 +280,15 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 ## 自检
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约（262 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/多选批次/副本同步/导出/空态（127 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约（280 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/**依赖 chip 与「依赖关系」块**/多选批次/副本同步/导出/空态（137 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（135 项）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / **依赖图四字段与「谁依赖谁」互指** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（150 项）
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率
@@ -280,6 +296,7 @@ node dev/probe-publish.mjs   # 只读预演上传计划（不建仓、不提交�
 node dev/probe-export.mjs    # 用真实数据导出一份 Markdown 快照到 reports/
 node dev/probe-init.mjs      # 量启动成本（init/state/entryDetail 的毫秒数）
 node dev/warm-cache.mjs      # 预热真实数据目录，让第一次打开就有数据
+node dev/rm.mjs              # 救火：删工作区里的文件/目录（工具沙箱不让 unlink；经 host_selfcheck 执行）
 ```
 
 `dev/preview.mjs` 为什么存在：无头自检只能验结构/文案，验不了**版式**（浮窗是否居中、
