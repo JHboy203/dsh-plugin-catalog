@@ -69,27 +69,30 @@ if (!lines.length) {
   say("nothing to commit（工作区本来就干净）");
 }
 
-git(["add", "-A"]);
-try {
-  const out = execFileSync(
-    "git",
-    [
-      "-c", "user.name=DSH Catalog Round",
-      "-c", "user.email=catalog@local",
-      "-c", "core.quotepath=false",
-      "-c", "i18n.commitEncoding=UTF-8",
-      "commit", "-F", msgFile,
-    ],
-    { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-  );
-  say(out.trim());
-} catch (err) {
-  const stderr = err?.stderr ? String(err.stderr) : String(err?.message || err);
-  const stdout = err?.stdout ? String(err.stdout) : "";
-  say(`commit 输出: ${stdout.trim()}`);
-  say(`commit 失败: ${stderr.trim()}`);
-  // “nothing to commit”不算失败
-  if (!/nothing to commit|no changes added/i.test(stderr + stdout)) process.exit(3);
+if (!lines.length) {
+  say("无改动可提交（工作区本来就干净）—— 跳过 commit，直接看是否要 push");
+} else {
+  git(["add", "-A"]);
+  try {
+    const out = execFileSync(
+      "git",
+      [
+        "-c", "user.name=DSH Catalog Round",
+        "-c", "user.email=catalog@local",
+        "-c", "core.quotepath=false",
+        "-c", "i18n.commitEncoding=UTF-8",
+        "commit", "-F", msgFile,
+      ],
+      { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    say(out.trim());
+  } catch (err) {
+    const stderr = err?.stderr ? String(err.stderr) : String(err?.message || err);
+    const stdout = err?.stdout ? String(err.stdout) : "";
+    say(`commit 输出: ${stdout.trim()}`);
+    say(`commit 失败: ${stderr.trim()}`);
+    process.exit(3);
+  }
 }
 
 const head = git(["rev-parse", "HEAD"]).trim();
