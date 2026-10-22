@@ -534,6 +534,25 @@ ok("筛选结果为 0 时导出按钮禁用（不让用户导出一个空文件�
 T.store.usage = "any";
 T.store.kind = "all";
 
+/* R10：头部「自检」按钮（一条命令的发版体检） */
+/* 注意：textsOf 会把 title 属性也算进文本（R9 踩过），所以这里按 title 认按钮、再验文案 */
+const preflightButtons = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && String((node.props && node.props.title) || "").includes("发版体检"));
+ok(
+	"头部有「自检」按钮，并说明它跑的是三层自检 + 版本一致性",
+	preflightButtons.length === 1 && textsOf(preflightButtons[0]).join("").includes("自检") && String(preflightButtons[0].props.title).includes("版本号与构建戳"),
+	JSON.stringify(preflightButtons.map((node) => ({ title: node.props && node.props.title, disabled: node.props && node.props.disabled }))),
+);
+ok(
+	"有任务在跑时「自检」禁用（单任务闸，不会两个后台任务互踩）",
+	(() => {
+		const saved = T.store.data;
+		T.store.data = { ...data, job: { running: true, kind: "catalog", progress: { done: 1, total: 3 } } };
+		const disabled = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && String((node.props && node.props.title) || "").includes("发版体检")).every((node) => node.props.disabled === true);
+		T.store.data = saved;
+		return disabled;
+	})(),
+);
+
 /* R5：多选（选中一批 → 看总体积 → 导出这批） */
 T.store.pageSize = 0;
 T.store.picking = true;

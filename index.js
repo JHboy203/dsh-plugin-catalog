@@ -287,6 +287,16 @@ export async function apply(ctx) {
 					return json(res, 400, { ok: false, error: "unknown what" });
 				}
 
+				if (path === "/preflight" && method === "POST") {
+					const body = await readJsonBody(req);
+					/* dry=true：只回"会跑什么"，不起子进程（自检脚本本身不该在自检里跑一遍） */
+					if (body.dry === true) {
+						return json(res, 200, { ok: true, dry: true, script: "dev/ship.mjs", checks: ["audit", "render-check.cjs", "hosttest"], route: "/preflight", job: "preflight" });
+					}
+					const started = catalog.startJob("preflight", async (progress) => await catalog.runPreflight({ onProgress: progress }));
+					return json(res, 200, started);
+				}
+
 				if (path === "/tags" && method === "POST") {
 					const body = await readJsonBody(req);
 					const action = String(body.action || "list");

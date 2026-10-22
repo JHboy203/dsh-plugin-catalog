@@ -281,16 +281,27 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
+**Before shipping or handing off, run just this one** (three checks + version consistency + git, ~40 s):
+
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (280 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips and block / selection batches / copy sync / export / empty states (137 checks, no DSH needed)
+node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
+```
+
+It catches three kinds of "shipped but not actually there": a red check, `package.json` version not matching
+`client.js`'s `BUILD`, and (reported, not blocking) uncommitted changes or a local HEAD that differs from `origin/main`.
+
+Run the pieces individually:
+
+```bash
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (293 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips and block / self-check button / selection batches / copy sync / export / empty states (139 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / dependency graph fields and who-depends-on-what cross-checks / export write / copy-sync verdicts / skill_sync plan and confirm gate (150 checks)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / dependency graph fields and who-depends-on-what cross-checks / shipping-preflight route (dry) / export write / copy-sync verdicts / skill_sync plan and confirm gate (153 checks under the host; 152 + 1 SKIP in plain node)
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas
@@ -299,7 +310,12 @@ node dev/probe-export.mjs    # exports a Markdown snapshot of real data into rep
 node dev/probe-init.mjs      # measures startup cost (milliseconds for init/state/entryDetail)
 node dev/warm-cache.mjs      # warms the real data directory so the first open already has data
 node dev/rm.mjs              # fire extinguisher: delete files/directories in the workspace (the sandbox denies unlink; runs via host_selfcheck)
+node dev/ship.mjs            # the shipping preflight above; --json is what the panel's /preflight route calls
 ```
+
+★ When `dev/ship.mjs` runs under **plain node**, the hosttest asar assertion is marked `SKIP` (no `process.resourcesPath`),
+so it reports 149 passed / 1 skipped; clicking "Self-check" in the panel (host process spawning the child) gives the full 150.
+Both are printed as they are — never silently swallowed.
 
 Why `dev/preview.mjs` exists: headless self-checks can only verify structure/copy, not **layout** (whether the popup is centered,
 whether the card grid is squeezed into a single column, whether badges overflow in narrow cards). It serializes the component tree into HTML and injects the same CSS;

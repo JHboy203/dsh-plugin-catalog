@@ -14,12 +14,23 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 const results = [];
 function ok(name, condition, detail = "") {
 	results.push({ name, pass: Boolean(condition), detail: condition ? "" : detail });
+}
+/**
+ * 跳过一条断言（不算失败，但必须响亮地打出来）。
+ * ★ 目前只有一类：asar 断言。它需要 `process.resourcesPath` ——
+ *   普通 `node.exe` 没有，只有 Electron 进程（或 `ELECTRON_RUN_AS_NODE=1` 的宿主 exe）才有。
+ *   在普通 node 里把这类断言算"失败"会让 `node dev/hosttest.mjs` 永远红，
+ *   而把它静默略过又会掩盖"asar 真的读不到" —— 所以单列一类 SKIP。
+ */
+function skip(name, why) {
+	results.push({ name, pass: true, skipped: true, detail: why });
 }
 function eq(name, actual, expected) {
 	ok(name, JSON.stringify(actual) === JSON.stringify(expected), "期望 " + JSON.stringify(expected) + "，实际 " + JSON.stringify(actual));
@@ -261,6 +272,18 @@ ok("/health 里有构建标记", typeof healthRoute.json?.build?.label === "stri
 ok("/health 里统计了自注册的工具数", healthRoute.json?.toolsRegistered === 8, String(healthRoute.json?.toolsRegistered));
 ok("/health 报告了归属统计", healthRoute.json?.attribution !== null && healthRoute.json?.attribution !== undefined);
 
+/* ── R10：发版体检（/preflight）──
+   只测 dry 那一支：真跑一次要 40 秒，而且是"在自检里再跑自检"。
+   dry 必须**不起子进程**，所以它能证明路由、参数与返回形状都对，又不会把自检拖成两分钟。 */
+const preflightDry = await callRoute("/preflight", "POST", { dry: true });
+ok(
+	"/preflight dry=true 只回「会跑什么」，不起子进程",
+	preflightDry.status === 200 && preflightDry.json?.ok === true && preflightDry.json?.dry === true && Array.isArray(preflightDry.json?.checks) && preflightDry.json.checks.length === 3,
+	JSON.stringify(preflightDry.json).slice(0, 240),
+);
+ok("service 暴露 runPreflight（宿主侧跑 dev/ship.mjs 并解析结论）", typeof (await import("../lib/service.mjs")).CatalogService?.prototype?.runPreflight === "function");
+ok("dev/ship.mjs 存在且可被当子进程调用", existsSync(join(dirname(fileURLToPath(import.meta.url)), "..", "dev", "ship.mjs")));
+
 /* ── 工具真跑（只读） ── */
 const listTool = await callTool("catalog_list", { limit: 5 });
 ok("catalog_list 列出了条目", (listTool.items || []).length > 0);
@@ -388,7 +411,8 @@ if (asarEntry) {
 		JSON.stringify(asarSize.json).slice(0, 240),
 	);
 } else {
-	ok("asar：没有官方包可测", false, "entries 里没有 inAsar");
+	/* 普通 node 里读不到 app.asar（没有 process.resourcesPath）→ 这条断言无法执行，明确 SKIP */
+	skip("官方包在 asar 里：/size 说清原因，绝不返回 0 B", "当前环境读不到 app.asar（不是 Electron 进程；用 host_selfcheck 或在面板点「自检」跑完整版）");
 }
 const skillEntry = entries.find((entry) => entry.kind === "skill");
 if (skillEntry) {
@@ -654,11 +678,14 @@ ok("面板能读到客户端上报", withReport.json?.clientReport?.build === "r
 
 /* ── 汇总 ── */
 const failed = results.filter((item) => !item.pass);
+const skippedItems = results.filter((item) => item.skipped);
 console.log("");
 console.log("dsh-plugin-catalog / hosttest");
 console.log("  dataDir: " + dataDir);
-console.log("  passed: " + (results.length - failed.length));
+console.log("  passed: " + (results.length - failed.length - skippedItems.length));
 console.log("  failed: " + failed.length);
+if (skippedItems.length > 0) console.log("  skipped: " + skippedItems.length + "（无法在本环境执行，见下方 SKIP）");
+for (const item of skippedItems) console.log("  · SKIP " + item.name + (item.detail ? " — " + item.detail : ""));
 if (failed.length > 0) {
 	console.log("");
 	for (const item of failed) console.log("  ✗ " + item.name + (item.detail ? " — " + item.detail : ""));

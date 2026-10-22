@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r9.0";
+		const BUILD = "r10.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -80,6 +80,9 @@ window.__ModuleLoader__.load({
 		const LIST_PAGE_SIZES = [12, 24, 48, 96, 0]; /* 0 = 全部 */
 
 		/* ── 迷你 store（模块级：面板关着时图标也在用） ── */
+
+		/* 上一次已经抬到提示条的体检结论时间戳（20 秒轮询不重复刷屏） */
+		let preflightNoticeAt = 0;
 
 		const store = {
 			data: null,
@@ -238,10 +241,31 @@ window.__ModuleLoader__.load({
 			return payload;
 		}
 
+		/**
+		 * R10：体检跑完把结论抬到提示条（同一次结论只抬一次，20 秒轮询不刷屏）。
+		 * ★ 必须**两处都调**：`refresh()`（挂载 / 点按钮后）与轮询 tick（后台跑完那一刻）。
+		 *   本轮真 bug：逻辑只写在 refresh 里，而 20 秒轮询走的是自己的 fetch —— 于是"点自检 → 结果永远不出现"，
+		 *   界面看起来像"点了没反应"，其实任务早跑完了。
+		 */
+		function notePreflight(data) {
+			const job = data && data.job;
+			if (!job || job.running || job.kind !== "preflight" || !job.result || !job.finishedAt) return;
+			if (job.finishedAt === preflightNoticeAt) return;
+			preflightNoticeAt = job.finishedAt;
+			const result = job.result || {};
+			const parts = (result.checks || []).map((check) => check.id + " " + (check.passed ?? "?") + (check.failed > 0 ? "（失败 " + check.failed + "）" : ""));
+			set({
+				notice: result.ok
+					? "自检全绿：" + parts.join(" / ") + "，共 " + Math.round((result.durationMs || 0) / 1000) + " 秒｜报告 " + (result.reportPath || "")
+					: "自检失败：" + (result.error || (result.checks || []).filter((check) => !check.ok).map((check) => check.id).join("、") || "未知原因") + "｜" + (result.reportPath || ""),
+			});
+		}
+
 		async function refresh() {
 			try {
 				const data = await api("/state");
 				set({ data, loading: false, error: null });
+				notePreflight(data);
 				if (store.open) await loadDetail(store.open.id, store.open.page || 1, store.open.pageSize);
 			} catch (error) {
 				set({ loading: false, error: String((error && error.message) || error) });
@@ -298,6 +322,8 @@ window.__ModuleLoader__.load({
 				try {
 					const data = await api("/state");
 					set({ data, loading: false, error: null });
+					/* ★ 这条路必须也调：后台任务跑完的那一刻，只有轮询会看到（refresh 不一定被触发） */
+					notePreflight(data);
 					if (store.open && !store.detail) await loadDetail(store.open.id, 1, 20);
 				} catch (error) {
 					set({ error: String((error && error.message) || error) });
@@ -1490,6 +1516,14 @@ window.__ModuleLoader__.load({
 				await refresh();
 			}
 
+			/* 发版体检（R10）：三层自检 + 版本一致性 + git，结论落在 .cache/ship-*.md。
+			   已有任务在跑时服务端会拒绝（单任务闸），这里把原因说出来而不是静默。 */
+			async function runPreflight() {
+				const result = await post("/preflight", {});
+				if (!result || result.ok === false) set({ notice: (result && result.error) || "起不来自检任务（可能已有任务在跑）" });
+				await refresh();
+			}
+
 			async function runClassify() {
 				await post("/classify", {});
 				await refresh();
@@ -1578,6 +1612,17 @@ window.__ModuleLoader__.load({
 						/* 体积是清理决策的主要依据之一：给一个显式入口，不必等自动刷新 */
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runSizes, disabled: job.running, title: "量一遍全部条目的磁盘体积（后台任务；卡片体积、按体积排序、筛选合计都靠它）" }, sizesAt ? "重量体积" : "量体积"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: refreshCatalog, disabled: job.running }, "重新扫描"),
+						/* R10：一条命令的发版体检（三层自检 + 版本一致性 + git），换会话前点一次就够 */
+						h(
+							"button",
+							{
+								className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+								onClick: runPreflight,
+								disabled: job.running,
+								title: "发版体检：跑三层自检（audit / render-check / hosttest）+ 版本号与构建戳一致性 + git 状态；结论写进 .cache/ship-*.md。约 40 秒",
+							},
+							"自检",
+						),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runIntros }, "生成中文简介"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runClassify }, "AI 分类标签"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (weeklyDue.gap ? " is-due" : ""), onClick: () => runWeekly("gap"), disabled: state.reportBusy }, weeklyDue.gap ? "缺口分析（已到期）" : "缺口分析"),

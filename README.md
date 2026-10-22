@@ -279,16 +279,27 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
+**发版 / 交接前只跑这一条**（三条自检 + 版本一致性 + git，约 40 秒）：
+
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约（280 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/**依赖 chip 与「依赖关系」块**/多选批次/副本同步/导出/空态（137 项，无需 DSH）
+node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
+```
+
+它会拦下三类「发出去了但其实没上」：自检有红、`package.json` 版本与 `client.js` 的 `BUILD` 对不上、
+（只报告不拦）工作区有未提交改动 / 本地 HEAD 与 `origin/main` 不一致。
+
+分项跑：
+
+```bash
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约（293 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/**依赖 chip 与「依赖关系」块**/**自检按钮**/多选批次/副本同步/导出/空态（139 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / **依赖图四字段与「谁依赖谁」互指** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（150 项）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / **依赖图四字段与「谁依赖谁」互指** / **发版体检路由（dry）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 153 项；普通 node 152 + 1 SKIP）
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率
@@ -297,7 +308,11 @@ node dev/probe-export.mjs    # 用真实数据导出一份 Markdown 快照到 re
 node dev/probe-init.mjs      # 量启动成本（init/state/entryDetail 的毫秒数）
 node dev/warm-cache.mjs      # 预热真实数据目录，让第一次打开就有数据
 node dev/rm.mjs              # 救火：删工作区里的文件/目录（工具沙箱不让 unlink；经 host_selfcheck 执行）
+node dev/ship.mjs            # 发版体检（上面那条）；--json 供面板 /preflight 调用
 ```
+
+★ `dev/ship.mjs` 在**普通 node** 里跑时，hosttest 的 asar 断言会标 `SKIP`（读不到 `app.asar`），
+所以显示 149 通过 / 1 跳过；从面板点「自检」（宿主进程起子进程）才是完整 150 项。两者都如实打出来，不静默。
 
 `dev/preview.mjs` 为什么存在：无头自检只能验结构/文案，验不了**版式**（浮窗是否居中、
 卡片网格会不会被挤成一列、窄卡片里徽章是否溢出）。它把组件树序列化成 HTML 并注入同一份 CSS，

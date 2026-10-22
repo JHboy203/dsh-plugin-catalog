@@ -635,6 +635,33 @@ ok("工具条有「无人依赖」筛选按钮", clientSource.includes('"无人�
 ok("候选措辞带「确认」（不许把候选写成结论）", clientSource.includes("这是候选，动之前用 npm ls / pnpm why 确认") && clientSource.includes("仍需 npm ls / pnpm why 确认"));
 ok("「被依赖」的体积在合计里单独点出（不算可回收空间）", clientSource.includes("被其它插件依赖（删了会连带弄坏），不能算作可回收空间") && clientSource.includes("lockedBytes"));
 
+/* ─────────── R10（2026-10-22 第十轮）：把验收固定成一条命令 ───────────
+   以前"发版体检"= 人跑三条命令 + 人眼对数字 + 人看 git 干净不干净，换会话时最容易漏。
+   现在：dev/ship.mjs 一条命令跑完，面板头部「自检」按钮走同一条路（POST /preflight）。
+   锁四件事：① 体检必须走子进程（三条脚本会 process.exit，import 进来会把宿主带死）；
+             ② 解释器要用宿主 exe + ELECTRON_RUN_AS_NODE（否则 asar 断言只能 SKIP）；
+             ③ 版本号与构建戳不一致要算失败（"改了代码忘了抬版本"的固定防线）；
+             ④ 环境跑不了的断言记 SKIP 而不是 FAIL，但要响亮地打出来。 */
+const shipSource = readFileSync(new URL("../dev/ship.mjs", import.meta.url), "utf8");
+const indexSource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+const hosttestSource = readFileSync(new URL("../dev/hosttest.mjs", import.meta.url), "utf8");
+ok("发版体检脚本存在，且默认跑三项（audit / render / hosttest）", shipSource.includes('{ id: "audit"') && shipSource.includes('{ id: "render"') && shipSource.includes('{ id: "hosttest"'));
+ok("体检脚本可被面板当接口用：--json 只输出一段 JSON，进度走 stderr", shipSource.includes("if (asJson) {") && shipSource.includes('process.stderr.write("ship:check:start:') && shipSource.includes("delete env.DSH_CATALOG_KEEP"));
+ok("版本号 ↔ 构建戳对不上要算失败（并给出期望前缀）", /export function versionVerdict/.test(shipSource) && shipSource.includes("对不上（应形如 "));
+ok("自检输出解析成 passed / failed / skipped（三条脚本格式一致）", /export function parseCheckOutput/.test(shipSource) && shipSource.includes('pick("skipped")'));
+ok("结论只看「版本一致 + 三条全绿」，git 脏只报不拦", shipSource.includes("const ok = version.ok && results.every((result) => result.ok)") && shipSource.includes("只报不拦"));
+ok("报告写在 .cache/ship-<时间戳>.md（.cache 不入库，路径给面板）", shipSource.includes('join(REPO, ".cache", "ship-" + stamp + ".md")'));
+ok("宿主侧体检走子进程 + ELECTRON_RUN_AS_NODE（否则 asar 断言只能 SKIP）", serviceSource.includes("async runPreflight(") && serviceSource.includes('env.ELECTRON_RUN_AS_NODE = "1"') && serviceSource.includes("spawn(process.execPath, [script, \"--json\"]"));
+ok("子进程结论解析不出来时如实报错（不假装通过）", serviceSource.includes("体检脚本没有给出 JSON 结论") && serviceSource.includes("体检结论不是合法 JSON"));
+ok("路由 POST /preflight：dry=true 只回会跑什么，否则起后台任务", indexSource.includes('path === "/preflight"') && indexSource.includes("catalog.startJob(\"preflight\"") && indexSource.includes("body.dry === true"));
+ok("面板头部有「自检」按钮，跑的时候禁用（单任务闸）", clientSource.includes('onClick: runPreflight') && clientSource.includes('"自检"') && /disabled: job\.running,\s*\n\s*title: "发版体检/.test(clientSource));
+ok(
+	"体检结论抬到提示条；且 refresh 与轮询**两条取数路径**都调（本轮真 bug：只写在 refresh 里 → 点完永远看不到结果）",
+	clientSource.includes("function notePreflight(data)") && (clientSource.match(/notePreflight\(data\)/g) || []).length >= 2 && clientSource.includes("preflightNoticeAt") && clientSource.includes(`自检全绿："`),
+);
+ok("环境跑不了的断言记 SKIP（不算失败，但要打出来）", /function skip\(name, why\)/.test(hosttestSource) && hosttestSource.includes("skippedItems.length > 0"));
+ok("README 双语都写了这一条命令", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("node dev/ship.mjs") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("node dev/ship.mjs"));
+
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
 
