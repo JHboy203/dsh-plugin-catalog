@@ -227,7 +227,7 @@ const data = {
 	entries: [
 		makeItem({}),
 		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"] }),
-		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, errors: 0, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] } }),
+		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, errors: 0, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] }, realDir: "D:\\信息库\\AI工作区\\.dsh\\skills\\vex-ops", isLink: false, inAsar: false }),
 		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"] }),
 		/* R2：一条从未被调用过的条目 —— 洞察条的「未使用」与「从未调用」全靠它验 */
 		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"] }),
@@ -237,6 +237,22 @@ const data = {
 	hostCore: { id: "host-core", kind: "host", name: "宿主核心工具", calls: 38000, tools: [{ name: "pwsh", calls: 13000 }, { name: "read", calls: 8000 }, { name: "edit", calls: 7000 }] },
 	totals: { plugins: 70, skills: 55, calls: 13000, errors: 7, subagentCalls: 500, hostCoreCalls: 38000, bySource: { official: 7, self: 22, third: 40, hybrid: 1, pending: 1 }, askUser: 1 },
 	publishing: { skillsRepo: "my-dsh-skills", skillsStageDir: "x" },
+	/* R8：体积快照 —— 卡片体积 / 按体积排序 / 筛选合计都读它。
+	   dsh-delegate-only 故意**不在**快照里：它是"量不到"的那一类（官方 asar 内或没有独立目录），
+	   合计里要被排除、并点出条数，而不是当成 0 字节。 */
+	sizes: {
+		at: Date.now() - 5 * 60 * 1000,
+		count: 5,
+		totalBytes: 10137524 + 6000575 + 4096 + 34567 + 2012345,
+		byId: {
+			"plugin:dsh-screenshot": 10137524,
+			"plugin:@anionex/dsh-vision-toolkit": 6000575,
+			"skill:vex-ops": 4096,
+			"plugin:dsh-ofm-ops": 34567,
+			"plugin:dsh-never-used": 2012345,
+		},
+	},
+	drift: {},
 };
 
 /* ① 列表：卡片内容 */
@@ -260,7 +276,7 @@ ok("卡片显示「含子代理」", panelText.includes("含子代理"));
 ok("卡片显示标签", panelText.includes("截图"));
 ok("待标记条目显示「待确认」", panelText.includes("待确认"));
 ok("有搜索框", findAll(panel, (node) => node.props && typeof node.props.placeholder === "string" && node.props.placeholder.includes("搜索")).length > 0);
-ok("有六种排序选项（R2 加「报错次数」、R3 加「报错率」）", T.SORTS.length === 6 && T.SORTS.map((s) => s.id).join(",") === "calls,errors,rate,recent,time,name");
+ok("有七种排序选项（R2 报错次数 / R3 报错率 / R8 体积）", T.SORTS.length === 7 && T.SORTS.map((s) => s.id).join(",") === "calls,errors,rate,size,recent,time,name");
 ok("有来源筛选（官方/自写/第三方/混血/待标记）", ["全部", "官方", "自写", "第三方", "混血", "待标记"].every((label) => panelText.includes(label)));
 ok("宿主核心工具单列", panelText.includes("宿主核心工具"));
 ok("宿主核心说明里写明「不把这些量算到插件头上」", panelText.includes("不把这些量算到插件头上"));
@@ -296,6 +312,56 @@ const byCalls = visibleNames();
 T.store.sort = "name";
 const byName = visibleNames();
 ok("排序「调用次数」与「名称」结果不同", JSON.stringify(byCalls) !== JSON.stringify(byName));
+
+/* R8：体积成了一等公民 —— 卡片上有体积、能按体积排序、筛选合计说得清 */
+T.store.sort = "size";
+const bySize = visibleNames();
+ok(
+	"排序「体积」按字节降序（9.7 MB 的排第一，量不到的排最后）",
+	bySize[0].includes("dsh-screenshot") && bySize[bySize.length - 1].includes("delegate-only"),
+	JSON.stringify(bySize.map((text) => text.slice(0, 40))).slice(0, 300),
+);
+ok(
+	"卡片上有体积 chip（.dpc-size 里是 9.7 MB）",
+	(() => {
+		const chips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-size"));
+		/* ★ textsOf 会连 props 里的字符串一起收（title 里写着字节数），所以只能 contains，不能全等 */
+		const labels = chips.map((chip) => textsOf(chip).join(" "));
+		return chips.length === 5 && labels.some((label) => label.includes("9.7 MB")) && labels.some((label) => label.includes("4 KB"));
+	})(),
+);
+ok(
+	"量不到的条目（不在快照里）不显示体积，也不写「0 B」",
+	(() => {
+		const cards = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-card") && textsOf(node).join(" ").includes("delegate-only"));
+		return cards.length === 1 && !textsOf(cards[0]).join(" ").includes("0 B");
+	})(),
+);
+ok(
+	"工具条显示当前筛选的体积合计（点「未使用」就能看到能省多少）",
+	(() => {
+		const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+		/* 6 条里 5 条有体积：10137524+6000575+4096+34567+2012345 = 18189107 B → 17.3 MB，另外 1 条量不到 */
+		return text.includes("合计 17.3 MB") && text.includes("1 条无可量目录");
+	})(),
+);
+ok(
+	"没有体积快照时不显示合计（也不编一个 0 MB 出来）",
+	(() => {
+		const saved = T.store.data;
+		T.store.data = { ...data, sizes: null };
+		const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+		T.store.data = saved;
+		return !text.includes("合计 ") && !text.includes("无可量目录");
+	})(),
+);
+ok(
+	"sizeOfItem：量不到返回 null（绝不返回 0），量到返回字节数",
+	T.sizeOfItem({ id: "a" }, { a: 12 }) === 12 && T.sizeOfItem({ id: "b" }, { a: 12 }) === null && T.sizeOfItem({ id: "c" }, { c: null }) === null && T.sizeOfItem(null, {}) === null,
+);
+T.store.sort = "calls";
+T.store.kind = "all";
+T.store.source = "any";
 
 T.store.query = "vision";
 const searched = visibleNames();
@@ -697,6 +763,10 @@ T.store.detail = {
 const skillModal = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
 ok("Skill 浮窗如实说明机制限制", skillModal.includes("机制限制") && skillModal.includes("无法细分到会话"));
 ok("Skill 浮窗不显示工具明细表（无工具可归属）", !skillModal.includes("平均耗时"));
+/* R8：Skill 也有自己的目录（catalog 的 dir）—— 位置与体积不再只有插件才看得到 */
+ok("Skill 浮窗也有「位置与体积」块（不再只有插件才有）", skillModal.includes("位置与体积") && skillModal.includes("技能目录"));
+ok("Skill 浮窗给出技能目录路径与复制按钮", skillModal.includes(".dsh\\skills\\vex-ops") && skillModal.includes("复制"));
+ok("Skill 浮窗的体积来自全量快照（4 KB），不是「0 B」", skillModal.includes("4 KB（全量快照）") && !skillModal.includes("0 B"));
 
 /* ④ 上传计划浮窗 */
 T.store.open = null;

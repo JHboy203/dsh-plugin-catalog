@@ -13,7 +13,7 @@
  *   DSH_CATALOG_DIR=<临时目录> node dev/hosttest.mjs
  */
 
-import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -377,10 +377,28 @@ ok("dirSize 命中 5 分钟缓存（第二次返回同一份结果）", measured
 
 const sizeRoute = await callRoute("/size?id=" + encodeURIComponent(busiest?.id || ""));
 ok("/size 路由 200，插件给出 bytes/files", sizeRoute.status === 200 && (sizeRoute.json?.size === null || typeof sizeRoute.json?.size?.bytes === "number"), JSON.stringify(sizeRoute.json).slice(0, 240));
+/* R8：官方包在 asar 里 —— realDir 是**虚拟成员路径**，量不出来。以前会静默返回 0 B，
+   看起来像"它不占空间"；现在必须说清原因。 */
+const asarEntry = entries.find((entry) => entry.inAsar);
+if (asarEntry) {
+	const asarSize = await callRoute("/size?id=" + encodeURIComponent(asarEntry.id));
+	ok(
+		"官方包在 asar 里：/size 说清原因，绝不返回 0 B",
+		asarSize.json?.ok === true && asarSize.json?.size === null && /asar/.test(String(asarSize.json?.reason)),
+		JSON.stringify(asarSize.json).slice(0, 240),
+	);
+} else {
+	ok("asar：没有官方包可测", false, "entries 里没有 inAsar");
+}
 const skillEntry = entries.find((entry) => entry.kind === "skill");
 if (skillEntry) {
 	const skillSize = await callRoute("/size?id=" + encodeURIComponent(skillEntry.id));
-	ok("Skill 没有独立目录时返回 size:null + 一句原因", skillSize.json?.ok === true && skillSize.json?.size === null && typeof skillSize.json?.reason === "string", JSON.stringify(skillSize.json));
+	/* R8 口径：Skill 有自己的目录（catalog 的 dir）→ 真量；没有目录才 null + 原因。
+	   以前一律 null 是判据错位（拿 root=skills 根去比），不是 Skill 不占空间。 */
+	const skillOk = skillEntry.realDir
+		? skillSize.json?.ok === true && typeof skillSize.json?.size?.bytes === "number" && skillSize.json.size.bytes > 0
+		: skillSize.json?.ok === true && skillSize.json?.size === null && typeof skillSize.json?.reason === "string";
+	ok("Skill 的 /size：有目录就给出字节数，没目录才 null + 原因", skillOk, JSON.stringify({ entry: { dir: skillEntry.realDir }, result: skillSize.json }).slice(0, 300));
 } else {
 	ok("体积：没有 Skill 可测", false, "entries 里没有 skill");
 }
@@ -402,12 +420,66 @@ ok("/sizes 批量路由 200 且逐条给出字节数", sizeBatch.status === 200 
 ok("批量总体积 = 各条之和", Number(sizeBatch.json?.totalBytes) === sumBytes, JSON.stringify({ total: sizeBatch.json?.totalBytes, sum: sumBytes }));
 if (skillEntry) {
 	const withSkill = await callRoute("/sizes", "POST", { ids: [sizeIds[0], skillEntry.id] });
-	ok("Skill 在批量里返回 null 且不计入总量", withSkill.json?.sizes?.[skillEntry.id] === null && Number(withSkill.json?.totalBytes) === (Number(withSkill.json?.sizes?.[sizeIds[0]]) || 0), JSON.stringify(withSkill.json).slice(0, 240));
+	const skillBytes = withSkill.json?.sizes?.[skillEntry.id];
+	/* R8：Skill 有独立目录 → 计入总量；没有目录才是 null（按 0 计，不许混进 totalBytes） */
+	const expectTotal = (Number(withSkill.json?.sizes?.[sizeIds[0]]) || 0) + (Number(skillBytes) || 0);
+	ok("Skill 在批量体积里：有目录计入总量，没有目录为 null（按 0 计）", Number(withSkill.json?.totalBytes) === expectTotal, JSON.stringify(withSkill.json).slice(0, 240));
 } else {
 	ok("批量体积：没有 Skill 可测", false, "entries 里没有 skill");
 }
 const oversized = await callRoute("/sizes", "POST", { ids: Array.from({ length: 500 }, (_, index) => "plugin:fake-" + index) });
 ok("批量体积上限 200 条（再多也只处理 200）", oversized.json?.count === 200, JSON.stringify(oversized.json).slice(0, 120));
+
+/* ── R8：体积成了「一等公民」（卡片显示 / 按体积排序 / 筛选合计都读这份快照） ──
+   走的还是真路由：/refresh what=sizes 起后台任务 → 等它跑完 → /state.sizes 就该有东西。
+   ★ 这份快照**只在后台任务里算**，目录构建里一次都不许出现（坑 19 的红线）。 */
+const { formatBytes } = await import("../lib/service.mjs");
+ok(
+	"formatBytes 与面板同口径（B / KB / MB / GB）",
+	formatBytes(512) === "512 B" && formatBytes(2048) === "2 KB" && formatBytes(10137524) === "9.7 MB" && formatBytes(3 * 1024 * 1024 * 1024) === "3.0 GB",
+	[formatBytes(512), formatBytes(2048), formatBytes(10137524), formatBytes(3 * 1024 * 1024 * 1024)].join(" / "),
+);
+
+const sizesStarted = await callRoute("/refresh", "POST", { what: "sizes" });
+ok("/refresh what=sizes 起了后台任务（或已有任务在跑）", sizesStarted.json?.ok === true || /已有任务/.test(String(sizesStarted.json?.error)), JSON.stringify(sizesStarted.json).slice(0, 200));
+
+const sizesDeadline = Date.now() + 180000;
+let sizesSnapshot = null;
+while (Date.now() < sizesDeadline) {
+	const snapshot = await callRoute("/state");
+	if (snapshot.json?.sizes && snapshot.json.sizes.at > 0 && !snapshot.json?.job?.running) {
+		sizesSnapshot = snapshot.json.sizes;
+		break;
+	}
+	await new Promise((resolve) => setTimeout(resolve, 1200));
+}
+ok("体积快照量完了（/state.sizes 带 at / count / byId）", Boolean(sizesSnapshot) && Object.keys(sizesSnapshot.byId || {}).length > 0, JSON.stringify(sizesSnapshot).slice(0, 240));
+ok(
+	"体积快照的 byId 是「id → 字节数」（不是对象、不是字符串）",
+	Boolean(sizesSnapshot) && Object.values(sizesSnapshot.byId).every((value) => value === null || (typeof value === "number" && value >= 0)),
+	JSON.stringify(sizesSnapshot && Object.entries(sizesSnapshot.byId).slice(0, 3)),
+);
+ok(
+	"快照总数 = 逐条字节数之和（口径一致）",
+	Boolean(sizesSnapshot) && Number(sizesSnapshot.totalBytes) === Object.values(sizesSnapshot.byId).reduce((sum, value) => sum + (Number(value) || 0), 0),
+	JSON.stringify({ total: sizesSnapshot?.totalBytes }),
+);
+ok(
+	"官方 asar 条目不进快照（量不出就不许写 0 B）",
+	Boolean(sizesSnapshot) && !entries.filter((entry) => entry.inAsar).some((entry) => typeof sizesSnapshot.byId[entry.id] === "number"),
+	JSON.stringify(entries.filter((entry) => entry.inAsar).map((entry) => entry.id).slice(0, 3)),
+);
+ok("体积快照落在 cache/sizes.json（换会话不用重量）", existsSync(join(dataDir, "cache", "sizes.json")));
+ok("快照带 truncated 清单（超预算的条目要在界面上标出来）", Boolean(sizesSnapshot) && Array.isArray(sizesSnapshot.truncated));
+const cachedBatch = await callRoute("/sizes", "POST", { ids: sizeIds });
+ok("/sizes 命中快照后不再递归（measured === 0）", cachedBatch.json?.measured === 0, JSON.stringify(cachedBatch.json).slice(0, 200));
+const healthWithSizes = (await callRoute("/health")).json || {};
+ok("/health 报告体积快照（count / totalBytes / at）", Boolean(healthWithSizes.sizes) && healthWithSizes.sizes.count > 0 && healthWithSizes.sizes.totalBytes > 0 && healthWithSizes.sizes.at > 0, JSON.stringify(healthWithSizes.sizes));
+const healthToolWithSizes = await callTool("catalog_health", {});
+ok("catalog_health 文本里有体积一行（已量 N 条 / 合计 X）", /体积：已量 \d+ 条/.test(healthToolWithSizes.text), healthToolWithSizes.text.split("\n").filter((line) => line.startsWith("体积")).join(" | "));
+const exportWithSizes = await callRoute("/export", "POST", { ids: sizeIds, filters: {} });
+const exportWithSizesText = exportWithSizes.json?.path ? readFileSync(exportWithSizes.json.path, "utf8") : "";
+ok("导出表格带体积列，并写明这份的合计", exportWithSizesText.includes("| 体积 |") && /合计 \*\*[\d.]+ (B|KB|MB|GB)\*\*/.test(exportWithSizesText), exportWithSizesText.split("\n").slice(0, 4).join(" / ").slice(0, 240));
 
 /* ── R6：副本漂移（工作区源码 vs profile 里加载的副本） ──
    用两个已知内容的临时目录验判据，再用真 /state 验"junction 记为 linked"，

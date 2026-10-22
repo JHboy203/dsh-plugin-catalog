@@ -268,6 +268,11 @@ export async function apply(ctx) {
 					const body = await readJsonBody(req);
 					const what = String(body.what || "stats");
 					if (what === "stats") return json(res, 200, catalog.refreshStatsInBackground());
+					/* 体积全量：后台任务量一遍，落 cache/sizes.json（列表显示 / 排序 / 合计都用它） */
+					if (what === "sizes") {
+						const started = catalog.startJob("sizes", async (progress) => await catalog.computeSizes({ force: false, onProgress: progress }));
+						return json(res, 200, started);
+					}
 					if (what === "catalog") {
 						const started = catalog.startJob("catalog", async () => await catalog.rebuildCatalog({ force: true }));
 						return json(res, 200, started);

@@ -51,12 +51,17 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 - **Search**: name / introduction / classification rationale, **and tool names** — typing `acp_status` or `catalog_export` jumps straight to the plugin that provides it (the card then shows "Tools: xxx")
 - **Insight bar**: five chips — all / used / unused / with-errors / **subagent-only** — carry the counts, and one click filters by them (a chip whose count is 0 is **dimmed but kept**, so you can see "nobody on this machine is like that"; clicking it shows the empty state plus the explanation). Each chip has a one-line explanation on hover. The numbers only follow the **source / type** filters, never the keyword, so opening "unused" cannot make the counts collapse to 0 and look like data loss. "Subagent-only" means every call happened inside a subagent session: deleting such an entry **fails silently rather than loudly** — the next delegated run just gets worse
 - **Filter**: source (all/official/self-written/third-party/hybrid/to-be-tagged) × type (all/plugin/Skill)
-- **Sort**: call count / **error count** / **error rate** / recently used / time / name
+- **Sort**: call count / **error count** / **error rate** / **size** / recently used / time / name
   (The rate exposes what counts hide: on this machine `@liustack/modlens` failed 6 out of 6 calls = 100%, while `dsh-vision-router` had the most raw errors, 23, yet sits at a healthy 9% of 252 calls.)
 - **View memory**: filter / query / sort / page / page size / **scroll position** are kept in localStorage, so the panel comes back exactly where you were after a hot reload (client code change) or a page refresh; changing a filter or page scrolls back to the top, because otherwise the first card of page 2 lands off-screen. A disabled or corrupt storage falls back to the default view instead of breaking the panel
 - **Selection batches**: the "Select" button enters selection mode; clicking a card selects it (click again to deselect), and selected cards get a blue outline plus a check badge. The batch bar shows **N selected · ~X MB** (sizes are asked in one batch, the server fans out four at a time; entries without their own directory are called out as "N have no separate directory, counted as 0") and offers "Export selected", "Select current N" and "Clear". The selection **survives filter changes** (pick a few unused ones, switch to with-errors, pick a few more), but it is **not written to localStorage** — clearing it on reload is deliberate, so half a batch never lingers unnoticed
 - **Export this view**: the "Export these N" button on the right of the toolbar writes the **current filter result** (screen order, filter conditions, error rate, install location) to `reports/catalog-filtered-<timestamp>.md` and shows the copyable path; it is disabled when the result is empty. For a full snapshot (source breakdown, call top, attribution coverage) use `catalog_export` instead
-- **Size (computed lazily)**: the popup's "Location and install form" block shows e.g. "9.6 MB · 579 files" — **only the single directory of the opened entry is measured** (5-minute cache; it stops at 1.5 s or 20,000 files and says so). It never runs during catalog builds, which would push panel opening from seconds to tens of seconds; junctions and symlinks are **never followed** (following them can leave the profile or even loop)
+- **Size (a first-class field)**: every card carries a size chip, the list can be sorted by **size**, and the toolbar shows the **total for the current filter** (click "unused" and you immediately see how much deleting that batch would reclaim). The data comes from a background full snapshot (`cache/sizes.json`; ~1.5 s for 120+ directories, triggered by the panel itself, plus a "Measure sizes / Re-measure" button in the header). Three honest rules:
+  - **unmeasurable entries show nothing** — never "0 B". Official packages live inside `app.asar` (`realDir` is a virtual member path, so recursion must return 0); their popup says "inside the official asar, no separate directory (size counted inside the DSH installation)";
+  - **Skills have their own size too** (using the catalog's `dir`, never the skills root — using the root is a false alarm);
+  - entries exceeding the 1.5 s / 20,000-file budget are marked with **"+"**: the number is a lower bound, and the total says so as well.
+  In the popup it still uses the lazy `/size` route (measures only the opened entry, 5-minute cache) and **never runs during catalog builds** —
+  recursively sizing 71 packages would push panel opening from seconds to tens of seconds; junctions and symlinks are **never followed** (following them can leave the profile or even loop)
 - **Copy sync**: a banner plus per-card badges answer **"is the copy I edit the copy that is loaded?"**
   For plugins it compares four key files (`package.json` / `index.js` / `client.js` / `cordis.patch.yml`) by size + mtime; for Skills it compares `SKILL.md`.
   A junction-installed plugin simply says "one copy only — edit the source and it takes effect". When copies disagree the badge reads "副本不同步 / 副本较旧 / 工作区较旧",
@@ -70,7 +75,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   - Each tool's own call count, errors, average duration, most recent call, number of involved sessions
   - Session list: **session nickname** + count + whether a subagent (including parent session name), paginated, with selectable page size (10/20/50/100)
   - Source classification rationale (listing item by item why it was classified this way), tag editing, creation time, repo link
-  - "Location and install form": the source directory (one-click copy), whether it is a junction or a real copy inside the profile, and its **disk size and file count** — the first thing to look at when a plugin is installed but does not work, and also when deciding whether to delete it
+  - "Location and install form" (plugins) and "Location and size" (Skills): the source directory (one-click copy), whether it is a junction or a real copy inside the profile, and its **disk size and file count** — the first thing to look at when a plugin is installed but does not work, and also when deciding whether to delete it
   - Self-written/hybrid items additionally have "Upload / Update to GitHub" and "Gap analysis"
   - A misclassified source can be manually tagged once (stored in `.dsh-plugin-catalog/overrides.json`, not asked again afterwards)
 
@@ -187,6 +192,12 @@ Security review **does not run automatically** — the panel shows a "Security r
    0 ambiguous, 0 unattributed). The remaining 2 are classified as host core (`plugin_manager` / `exit_plan_mode`),
    and tool ownership can still be overridden manually in the panel.
 5. **Ecosystem data such as stars/downloads is not collected** (this plugin does not go online, it only reads local facts).
+6. **Official packages (inside the asar) have no measurable disk size**: they live inside the host installation, have no separate directory,
+   and are therefore excluded from the list and the totals. To know how much they occupy, look at the size of the DSH installation itself.
+7. **The size snapshot is "as of the last measurement"**: installing, deleting or upgrading a plugin is not reflected immediately —
+   it is re-measured automatically after 24 hours, or on demand via "Re-measure" (which overwrites the snapshot).
+8. **Size measurement has a budget**: at most 20,000 files / 1.5 s per directory. Entries beyond that report a lower bound
+   (marked with "+" in the UI; one entry on this machine). This keeps a single huge directory from stalling the whole run.
 
 ## Troubleshooting: plugin installed and panel appears, but no tools/routes
 
@@ -253,15 +264,15 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 ## Self-check
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (239 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting / pagination / popup / size states / selection batches / copy sync / export / empty states (118 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (262 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / selection batches / copy sync / export / empty states (127 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / batch sizes / export write / copy-sync verdicts / skill_sync plan and confirm gate (120 checks)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / export write / copy-sync verdicts / skill_sync plan and confirm gate (135 checks)
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

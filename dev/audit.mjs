@@ -523,7 +523,12 @@ const routeSource = readFileSync(new URL("../index.js", import.meta.url), "utf8"
 ok("路由 /size 与 /export 都注册了", routeSource.includes('path === "/size" && method === "GET"') && routeSource.includes('path === "/export" && method === "POST"'));
 ok("体积是懒算（dirSize + 5 分钟缓存 / 2 万文件 / 1.5 秒三道闸门）", serviceSource.includes("export async function dirSize(dir)") && /SIZE_TTL_MS = 5 \* 60 \* 1000/.test(serviceSource) && /SIZE_MAX_FILES = 20000/.test(serviceSource) && /SIZE_BUDGET_MS = 1500/.test(serviceSource));
 ok("体积不跟随符号链接 / junction（只推入真目录）", serviceSource.includes("if (entry.isDirectory())") && serviceSource.includes("queue.push(join(current, entry.name))"));
-ok("构建目录时不算体积（dirSize 只在 /size 与 /sizes 两条路里被调用）", (serviceSource.match(/await dirSize\(/g) || []).length === 2);
+ok(
+	"构建目录 / 列表都不算体积（dirSize 只在 entrySize / entrySizes / computeSizes 三处）",
+	(serviceSource.match(/await dirSize\(/g) || []).length === 3 &&
+		!serviceSource.slice(serviceSource.indexOf("listEntries() {"), serviceSource.indexOf("totalsOf(plugins, skills)")).includes("dirSize(") &&
+		/async computeSizes\(options = \{\}\)[\s\S]{0,2000}?await dirSize\(/.test(serviceSource),
+);
 ok("没有独立目录时如实返回 size:null + 原因（不返回 0）", serviceSource.includes("Skill 没有独立目录") && serviceSource.includes("在官方 asar 里，没有独立目录"));
 ok("导出的落盘路径由服务端决定（reports/catalog-filtered-<时间戳>.md）", serviceSource.includes('"catalog-filtered-" + stamp + ".md"'));
 ok("导出文件写明条数与「只覆盖这一屏」", serviceSource.includes("这份清单只覆盖") && serviceSource.includes("共 **"));
@@ -535,7 +540,7 @@ ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dp
    （半个批次被忘在存储里比丢掉更糟）、选择模式与打开浮窗必须互斥。 */
 ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
 ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
-ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, wanted.length)"));
+ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, Math.max(1, queue.length))"));
 ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
 ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
 ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
@@ -560,6 +565,40 @@ ok("staged 的标签与插件分开（staging 不同步 / staging 较旧）", /s
    坑：Cordis 重载插件不会重新执行 hostinfo.js，永久缓存会让头部一直写升级前的版本号。 */
 const hostinfoSource = readFileSync(new URL("../lib/hostinfo.js", import.meta.url), "utf8");
 ok("buildStamp 缓存有 5 秒 TTL（否则升级后头部版本号不更新）", /BUILD_CACHE_MS = 5000/.test(hostinfoSource) && /Date\.now\(\) - cachedBuildAt < BUILD_CACHE_MS/.test(hostinfoSource) && /cachedBuildAt = Date\.now\(\)/.test(hostinfoSource));
+
+/* ─────────── R8（2026-10-22 第八轮）：体积成为一等公民 ───────────
+   锁的都是"不生效也不报错"的那类：
+   ① 快照只由**后台任务**产生（目录构建里一次都不许有 dirSize，否则面板打开从秒级到十秒级）；
+   ② 官方包在 asar 里：realDir 是虚拟成员路径，量不出来就**必须说原因**，绝不许写 0 B；
+   ③ Skill 用 catalog 的 dir（root 是 skills 根，R6 栽过一次），插件自带的也要带 dir；
+   ④ 客户端处处 null-safe：宿主还没重载时 sizes 字段缺失只会"不显示"，不许白屏。 */
+const catalogSource = readFileSync(new URL("../lib/catalog.mjs", import.meta.url), "utf8");
+ok("体积快照有版本号与并发闸（换口径就能作废旧快照）", /const SIZES_VERSION = 1/.test(serviceSource) && /const SIZES_CONCURRENCY = 4/.test(serviceSource));
+ok("体积快照落 cache/sizes.json，且走原子写", /sizesFile\(\) \{\s*return join\(this\.dir, "cache", "sizes\.json"\);/.test(serviceSource) && /await writeJson\(this\.sizesFile\(\), snapshot\)/.test(serviceSource));
+ok("computeSizes 跳过 asar 条目（虚拟路径量出来必然是 0）", /items\.filter\(\(item\) => item\.realDir && !item\.inAsar\)/.test(serviceSource));
+ok("computeSizes 按目录复用旧值，force 时连进程缓存一起作废", /known\.dir === item\.realDir/.test(serviceSource) && /SIZE_CACHE\.delete\(item\.realDir\)/.test(serviceSource));
+ok(
+	"体积快照进 state（卡片体积 / 排序 / 合计都读它）",
+	/sizes: this\.sizesSnapshot\(\),/.test(serviceSource) && /const bytes = size && Number\.isFinite\(size\.bytes\) \? size\.bytes : null;/.test(serviceSource) && /byId\[id\] = bytes;/.test(serviceSource),
+);
+ok("体积快照进 /health（换会话第一眼就看得出量没量）", serviceSource.includes("sizes: this.sizes") && routeSource.includes('path === "/health" && method === "GET"'));
+ok("entrySize 对 asar 条目给原因、绝不返回 0 B", /if \(item\.inAsar\) return \{ ok: true, size: null, reason: "在官方 asar 里/.test(serviceSource));
+ok("批量体积命中快照时不再递归（measured 才记录真实递归条数）", /measured \+= 1/.test(serviceSource) && /return \{ ok: true, count: wanted\.length, totalBytes, sizes, measured \}/.test(serviceSource));
+ok("/refresh what=sizes 起后台任务", routeSource.includes('catalog.startJob("sizes"'));
+ok("Skill 条目带上自己的目录（浮窗位置与体积都靠它）", /realDir: skill\.dir \|\| ""/.test(serviceSource) && /dir: join\(dir, entry\.name\)/.test(catalogSource));
+ok("插件自带的 Skill 也带 dir（root 与 dir 语义不同，别混用）", /kind: "skill", root: dir, dir,/.test(catalogSource) && /kind: "skill", root: join\(dir, entry\.name\), dir: join\(dir, entry\.name\)/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION 跟着 +1（5）", /export const CATALOG_VERSION = 5;/.test(catalogSource));
+ok("客户端有「体积」排序（清理决策的第一问是能省多少）", /SORTS[\s\S]{0,600}id: "size", label: "体积"/.test(clientSource));
+ok("体积排序按字节降序，量不到的按 0 排后面", /state\.sort === "size"[\s\S]{0,260}sizeOfItem\(b, sizeMap\) \|\| 0\) - \(sizeOfItem\(a, sizeMap\) \|\| 0\)/.test(clientSource));
+ok("sizeOfItem 量不到返回 null（绝不返回 0）", /function sizeOfItem\(item, sizeMap\)[\s\S]{0,200}return Number\.isFinite\(value\) \? value : null/.test(clientSource));
+ok("卡片上有体积 chip，且有样式定义", cssSource.includes(".dpc-size{") && clientSource.includes('className: "dpc-size"'));
+ok("量不到的条目卡片上不显示体积（于是也不会出现「0 B」）", /props\.size\s*\n\s*\? h\(\s*\n\s*"span",\s*\n\s*\{\s*\n\s*className: "dpc-size"/.test(clientSource) && clientSource.includes('fmtBytes(props.size) + (props.sizeTruncated ? "+" : "")'));
+ok("超预算的条目带「+」并在 title 里说明（数字是下限）", clientSource.includes("只算到这里（实际只会更大）") && /fmtBytes\(props\.size\) \+ \(props\.sizeTruncated \? "\+" : ""\)/.test(clientSource));
+ok("工具条显示当前筛选的体积合计，并点出「无可量目录」条数", clientSource.includes('"合计 " + fmtBytes(filteredWeight.bytes)') && clientSource.includes("条无可量目录"));
+ok("自动量体积有闸门：本挂载一次 + 有任务不抢 + 过期才量", /const autoSized = useRef\(false\)/.test(clientSource) && /if \(data\.job && data\.job\.running\) return;/.test(clientSource) && /const SIZES_TTL_MS = 24 \* 60 \* 60 \* 1000/.test(clientSource));
+ok("导出的表格带体积列（清单拿出去也要能支撑决策）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 位置 |"'));
+ok("Skill 浮窗也有「位置与体积」块（不再只有插件才看得到）", clientSource.includes('"位置与体积"') && clientSource.includes("技能目录"));
+ok("面板有「量体积」入口（不必等 24 小时的自动刷新）", clientSource.includes('sizesAt ? "重量体积" : "量体积"'));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

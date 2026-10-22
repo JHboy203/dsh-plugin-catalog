@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r7.0";
+		const BUILD = "r8.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -41,6 +41,8 @@ window.__ModuleLoader__.load({
 			{ id: "errors", label: "报错次数" },
 			/* 率比次数更能看出毛病：23/252 = 9% 和 6/6 = 100% 是两件事，按次数排会把后者藏起来 */
 			{ id: "rate", label: "报错率" },
+			/* 体积：清理决策的第一问是「删这个能省多少」，排序就该能按它排（数据来自后台全量快照） */
+			{ id: "size", label: "体积" },
 			{ id: "recent", label: "最近使用" },
 			{ id: "time", label: "时间" },
 			{ id: "name", label: "名称" },
@@ -69,6 +71,10 @@ window.__ModuleLoader__.load({
 		/* 缓存超过这么久就自动补一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒）。
 		   ★ 别设得更短：面板每 20 秒轮询一次，阈值太短会退化成「一直在刷新」。 */
 		const AUTO_REFRESH_MS = 10 * 60 * 1000;
+
+		/* 体积快照多久算旧：超过它就自动在后台量一遍（全量量一次约几秒；阈值别设太短，
+		   面板 20 秒轮询一次、体积又不会自己变）。 */
+		const SIZES_TTL_MS = 24 * 60 * 60 * 1000;
 
 		/* 列表每页可选条数（127 条一次铺完既卡又难扫，必须能分页） */
 		const LIST_PAGE_SIZES = [12, 24, 48, 96, 0]; /* 0 = 全部 */
@@ -368,6 +374,17 @@ window.__ModuleLoader__.load({
 			return value + " B";
 		}
 
+		/**
+		 * 一个条目的体积（字节）。
+		 * 没量过、或没有可量的目录（官方包在 asar 里 / Skill 没有独立目录）一律返回 **null**，
+		 * 绝不返回 0 —— 「0 B」和「量不到」在清理决策里是两件事。纯函数，自检可直接断言。
+		 */
+		function sizeOfItem(item, sizeMap) {
+			if (!item || !sizeMap) return null;
+			const value = sizeMap[item.id];
+			return Number.isFinite(value) ? value : null;
+		}
+
 		function ago(ms) {			if (!ms) return "从未";
 			const delta = Date.now() - Number(ms);
 			if (delta < 60000) return "刚刚";
@@ -567,6 +584,22 @@ window.__ModuleLoader__.load({
 					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
 					hasErrors(item)
 						? h("span", { className: "dpc-err", title: "报错 " + (item.errors || 0) + " 次 / 调用 " + (item.calls || 0) + " 次（" + Math.round(errorRate(item) * 100) + "%）" }, "报错 " + fmtNumber(item.errors || 0))
+						: null,
+					/* 体积：量得到才显示。显示不出来不是 bug —— 官方包在 asar 里、或还没量（面板顶部有「量体积」）。
+					   带「+」的是超过预算只算了一部分的条目，数字是下限。 */
+					props.size
+						? h(
+								"span",
+								{
+									className: "dpc-size",
+									title: props.sizeTruncated
+										? "超过 1.5 秒 / 2 万文件预算，只算到这里（实际只会更大）"
+										: item.inAsar
+											? "在官方 asar 里，体积记在 DSH 安装包内"
+											: "这个目录在磁盘上占 " + props.size + " 字节",
+								},
+								fmtBytes(props.size) + (props.sizeTruncated ? "+" : ""),
+							)
 						: null,
 					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "从没被调用过" : "总调用次数" }, fmtNumber(item.calls)),
 				),
@@ -845,6 +878,26 @@ window.__ModuleLoader__.load({
 
 			const publishable = item && (item.source === "self" || item.source === "hybrid");
 
+			/* 体积行（插件与 Skill 共用）：先用全量快照，没有再退到懒算的 /size。
+			   「量不到」必须说清原因 —— 官方包在 asar 里 / Skill 没有独立目录，都不是「0 B」。 */
+			function sizeRow() {
+				const snapshot = (state.data && state.data.sizes && state.data.sizes.byId) || {};
+				const known = Number.isFinite(snapshot[open.id]) ? snapshot[open.id] : null;
+				return h(
+					"div",
+					{ className: "dpc-row" },
+					h("span", { className: "dpc-muted" }, "体积"),
+					state.size
+						? h("span", null, fmtBytes(state.size.bytes) + " · " + fmtNumber(state.size.files) + " 个文件" + (state.size.truncated ? "（超过 1.5 秒/2 万文件，只算到这里）" : ""))
+						: /* 宿主的活答案优先于快照：它说"量不了"就是真的量不了（asar / 没目录） */
+							state.sizeError
+							? h("span", { className: "dpc-muted" }, state.sizeError)
+							: known !== null
+								? h("span", { title: "来自后台量好的全量快照" }, fmtBytes(known) + "（全量快照）")
+								: h("span", { className: "dpc-muted" }, "正在量…"),
+				);
+			}
+
 			return h(
 				"div",
 				{ className: "dpc-overlay", onClick: closeEntry, role: "dialog", "aria-label": item ? item.name : "插件详情" },
@@ -930,19 +983,36 @@ window.__ModuleLoader__.load({
 												item.dependency
 													? h("div", { className: "dpc-muted" }, "写在 profile 的 package.json dependencies 里 —— 不会被依赖树整理顺手清掉")
 													: h("div", { className: "dpc-muted" }, "不在 profile 的 dependencies 里（传递依赖 / 自动装的）—— 整理依赖树时可能消失"),
-												/* 体积：懒算（浮窗打开后才问一次 /size），删之前先看看它能省多少 */
+												/* 体积：先用全量快照（打开就有），没有再退到懒算的 /size */
+												sizeRow(),
+											)
+										: h(
+												"div",
+												{ className: "dpc-block" },
+												h("div", { className: "dpc-block-title" }, "位置与体积"),
 												h(
 													"div",
 													{ className: "dpc-row" },
-													h("span", { className: "dpc-muted" }, "体积"),
-													state.size
-														? h("span", null, fmtBytes(state.size.bytes) + " · " + fmtNumber(state.size.files) + " 个文件" + (state.size.truncated ? "（超过 1.5 秒/2 万文件，只算到这里）" : ""))
-														: state.sizeError
-															? h("span", { className: "dpc-muted" }, state.sizeError)
-															: h("span", { className: "dpc-muted" }, "正在量…"),
+													h("span", { className: "dpc-muted" }, item.realDir ? "技能目录" : "没有目录（宿主半边还没重载到这一版）"),
+													item.realDir ? h("code", { className: "dpc-path" }, item.realDir) : null,
+													item.realDir
+														? h(
+																"button",
+																{
+																	className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copiedPath ? " is-on" : ""),
+																	onClick: () => {
+																		const copied = copyText(item.realDir);
+																		setCopiedPath(copied);
+																		if (!copied) set({ notice: "复制失败：渲染进程不让写剪贴板，请手动选中目录复制" });
+																	},
+																},
+																copiedPath ? "已复制" : "复制",
+															)
+														: null,
 												),
-											)
-										: null,
+												h("div", { className: "dpc-muted" }, "安装形态：Skill 目录 —— DSH 直接读这里的 SKILL.md，改完立即生效；发布推的是它的 staging 副本（见上面「副本同步」）"),
+												sizeRow(),
+											),
 									/* 来源与证据 */
 									h(
 										"div",
@@ -1147,6 +1217,11 @@ window.__ModuleLoader__.load({
 			const items = (data && data.entries) || [];
 			const all = (data && data.tags && data.tags.all) || [];
 			const hostCore = data && data.hostCore;
+			/* 体积快照（后台全量量过一次；没有就是空表 —— 卡片不显示体积，排序把没量的排后面） */
+			const sizeMap = (data && data.sizes && data.sizes.byId) || {};
+			const sizesAt = (data && data.sizes && data.sizes.at) || 0;
+			/* 超过 1.5 秒 / 2 万文件预算的条目：数字是"至少这么大"，卡片上要标出来 */
+			const sizeTruncated = (data && data.sizes && data.sizes.truncated) || [];
 
 			const filtered = useMemo(() => {
 				const query = state.query.trim().toLowerCase();
@@ -1171,12 +1246,17 @@ window.__ModuleLoader__.load({
 					if (state.sort === "errors") return (b.errors || 0) - (a.errors || 0) || (b.calls || 0) - (a.calls || 0);
 					/* 报错率：6/6 排在 23/252 前面 —— 次数排序看不出后者其实很健康 */
 					if (state.sort === "rate") return errorRate(b) - errorRate(a) || (b.errors || 0) - (a.errors || 0);
+					if (state.sort === "size") {
+						/* 没量过（或没有可量目录）按 0 排在后面，再按名字定序 —— 否则一堆 0 的顺序每次都不一样 */
+						const diff = (sizeOfItem(b, sizeMap) || 0) - (sizeOfItem(a, sizeMap) || 0);
+						return diff !== 0 ? diff : String(a.name).localeCompare(String(b.name));
+					}
 					if (state.sort === "recent") return (b.lastUsed || 0) - (a.lastUsed || 0);
 					if (state.sort === "time") return (b.createdAt || 0) - (a.createdAt || 0);
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.usage, state.sort]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort, sizeMap]);
 
 			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
 			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
@@ -1190,6 +1270,19 @@ window.__ModuleLoader__.load({
 					subonly: pool.filter((item) => isSubagentOnly(item)).length,
 				};
 			}, [items, state.kind, state.source]);
+
+			/* 当前筛选结果的体积合计：回答「删这批能省多少」，不用逐个点开浮窗。
+			   noDir = 量不到的条数（官方包在 asar 里 / 没有独立目录）—— 它们不计入合计，但要说出来。 */
+			const filteredWeight = useMemo(() => {
+				let bytes = 0;
+				let noDir = 0;
+				for (const item of filtered) {
+					const size = sizeOfItem(item, sizeMap);
+					if (size === null) noDir += 1;
+					else bytes += size;
+				}
+				return { bytes, noDir };
+			}, [filtered, sizeMap]);
 
 			/* 缓存太旧就自动补一次增量刷新。
 			   ★ 三条闸门缺一不可：本挂载只刷一次（否则 20 秒轮询会变成循环刷新）、
@@ -1205,6 +1298,19 @@ window.__ModuleLoader__.load({
 					.then(() => setTimeout(() => refresh(), 1200))
 					.catch(() => {});
 			}, [builtAt]);
+
+			/* 体积快照：没有、或超过 SIZES_TTL_MS 就自动在后台量一遍。
+			   ★ 三条闸门与统计自愈同款：本挂载只触发一次、有任务在跑不抢、确实过期。
+			     少了第二条会和「重新扫描」互相把对方挡掉（startJob 是单任务闸）。 */
+			const autoSized = useRef(false);
+			useEffect(() => {
+				if (autoSized.current || !data) return;
+				if (data.job && data.job.running) return;
+				const age = sizesAt ? Date.now() - sizesAt : Infinity;
+				if (age < SIZES_TTL_MS) return;
+				autoSized.current = true;
+				post("/refresh", { what: "sizes" }).catch(() => {});
+			}, [sizesAt, Boolean(data)]);
 
 			/* 快捷键：`/` 聚焦搜索、`Esc` 清空 —— 127 条里找一条，手不用离开键盘 */
 			useEffect(() => {
@@ -1275,6 +1381,12 @@ window.__ModuleLoader__.load({
 
 			async function refreshCatalog() {
 				await post("/refresh", { what: "catalog" });
+				await refresh();
+			}
+
+			/* 量体积（全量，后台任务）：卡片上的体积、按体积排序、合计都靠这份快照 */
+			async function runSizes() {
+				await post("/refresh", { what: "sizes" });
 				await refresh();
 			}
 
@@ -1363,6 +1475,8 @@ window.__ModuleLoader__.load({
 						{ className: "dpc-header-actions" },
 						h("button", { className: "dpc-btn dpc-btn-sm", onClick: startPlan, disabled: state.uploadBusy }, state.uploadBusy ? "出计划…" : "上传备份到 GitHub"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: refreshStats, disabled: job.running }, "刷新统计"),
+						/* 体积是清理决策的主要依据之一：给一个显式入口，不必等自动刷新 */
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runSizes, disabled: job.running, title: "量一遍全部条目的磁盘体积（后台任务；卡片体积、按体积排序、筛选合计都靠它）" }, sizesAt ? "重量体积" : "量体积"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: refreshCatalog, disabled: job.running }, "重新扫描"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runIntros }, "生成中文简介"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runClassify }, "AI 分类标签"),
@@ -1442,6 +1556,17 @@ window.__ModuleLoader__.load({
 						),
 					),
 					h("span", { className: "dpc-muted" }, filtered.length + " 条"),
+					/* 当前筛选这一屏一共占多少盘 —— 点「未使用」就能直接看到"删这批能省多少" */
+					filtered.length > 0 && sizesAt
+						? h(
+								"span",
+								{
+									className: "dpc-sum",
+									title: "当前筛选结果的磁盘体积合计" + (filteredWeight.noDir > 0 ? "；" + filteredWeight.noDir + " 条没有可量目录（官方 asar 内 / Skill 没有独立目录），不计入" : "") + (sizeTruncated.length > 0 ? "；" + sizeTruncated.length + " 条超过预算只算了一部分（标 + 的那些）" : "") + "。数据来自后台全量快照（" + ago(sizesAt) + "）",
+								},
+								"合计 " + fmtBytes(filteredWeight.bytes) + (filteredWeight.noDir > 0 ? "（" + filteredWeight.noDir + " 条无可量目录）" : ""),
+							)
+						: null,
 					h(
 						"div",
 						{ className: "dpc-toolbar-actions" },
@@ -1508,7 +1633,7 @@ window.__ModuleLoader__.load({
 				h(
 					"div",
 					{ className: "dpc-grid" },
-					pageItems.map((item) => h(Card, { key: item.id, item, tags: all, hits: toolHits(item, state.query), picking: state.picking, picked: state.picked.includes(item.id), onPick: togglePick, drift: (data.drift || {})[item.id] || null })),
+					pageItems.map((item) => h(Card, { key: item.id, item, tags: all, hits: toolHits(item, state.query), picking: state.picking, picked: state.picked.includes(item.id), onPick: togglePick, drift: (data.drift || {})[item.id] || null, size: sizeOfItem(item, sizeMap), sizeTruncated: sizeTruncated.includes(item.id) })),
 					pageItems.length === 0 ? h("div", { className: "dpc-muted dpc-pad" }, "没有匹配的条目。") : null,
 				),
 				/* 列表分页条 */
@@ -1645,8 +1770,7 @@ window.__ModuleLoader__.load({
 .dpc-export{margin-left:auto}
 /* ── 多选（清理决策）──
    选择模式下点卡片 = 选中；选中项用克莱因蓝描边 + 勾徽章，一眼看出"这批是我圈的" */
-.dpc-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
-.dpc-card.is-picking{cursor:copy}
+.dpc-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}.dpc-card.is-picking{cursor:copy}
 .dpc-card.is-picked{border-color:#002fa7;
   box-shadow:0 0 0 1px rgba(0,47,167,.45),0 0 20px -6px var(--dpc-klein-glow)}
 .dpc-pick-badge{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
@@ -1663,6 +1787,9 @@ window.__ModuleLoader__.load({
 /* 报错 chip：只有 errors>0 才出现，标题里带错误率 */
 .dpc-err{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid rgba(185,28,28,.45);
   color:#b91c1c;background:rgba(220,38,38,.10);font-variant-numeric:tabular-nums}
+/* 体积 chip：清理决策要看得到；量不到（asar / 还没量）就干脆不出现，别写「0 B」 */
+.dpc-size{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-secondary,#6b7280);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
 .dpc-calls.is-zero{color:var(--dsw-alias-label-secondary,#8b93a1);font-weight:500}
 .dpc-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all;
   color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);padding:2px 6px;border-radius:6px;
@@ -1877,6 +2004,8 @@ window.__ModuleLoader__.load({
 			fmtNumber,
 			fmtMs,
 			fmtBytes,
+			sizeOfItem,
+			SIZES_TTL_MS,
 			loadSize,
 			ago,
 			tagLabel,
