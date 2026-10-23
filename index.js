@@ -307,6 +307,21 @@ export async function apply(ctx) {
 					return json(res, 200, await catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true }));
 				}
 
+				/* R14：「不会被加载 → 怎么处置」。
+				   不带 apply：起后台任务算清单（只读，量 26 个 dormant 目录的体积）；
+				   带 apply：把**上次算好的**清单写成 `reports/uninstall-*.md|.json`，必须再带 confirm:true。
+				   ★ 写盘闸放在服务端（照抄 R11 的 /skillsync）：按钮可以误点，接口不该给"少传一个字段就写盘"的机会。
+				   ★ 本接口**永远不删任何目录** —— 清单里的命令是给人复制粘贴的。 */
+				if (path === "/uninstall" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (body.apply !== true) {
+						const started = catalog.startJob("uninstall", async (progress) => await catalog.runUninstall({ onProgress: progress }));
+						if (started.ok === false) return json(res, 200, { ...started, hint: "已有后台任务在跑：等它结束后再点一次「处置清单」" });
+						return json(res, 200, started);
+					}
+					return json(res, 200, await catalog.writeUninstallReport({ confirm: body.confirm === true }));
+				}
+
 				if (path === "/tags" && method === "POST") {
 					const body = await readJsonBody(req);
 					const action = String(body.action || "list");

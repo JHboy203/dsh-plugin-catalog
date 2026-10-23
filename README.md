@@ -91,12 +91,37 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   这是比「未使用」更硬的死重量判据（装了根本不会跑）。
   ⚠️ 这是**声明层面**的判据：运行时按路径 `require()` 的动态加载看不见，所以文案是「不会被加载」而不是「绝对没跑」。
 - **判据能自己下结论（R13）**：`node dev/probe-loadstate.mjs` **独立重算**加载路径
-  （自己扫 profile 的 `node_modules` 与两份组合文件），再和目录快照对账，钉六条不变式 ——
-  计数守恒 / bundle 口径 / `via` 指得回入口 / dormant 与入口无交集 / `disabled` 不算入口 / 快照与重算一致，
-  **破一条退出码 1**；`--json` 可机读。它用的是同一份判据（不是第二套规则），所以抓的是"实现与数据脱节"。
+  （自己扫 profile 的 `node_modules` 与两份组合文件），再和目录快照对账，钉七条不变式 ——
+  计数守恒 / bundle 口径 / `via` 指得回入口 / dormant 与入口无交集 / `disabled` 不算入口 / 快照与重算一致 /
+  **dormant 对加载中的声明封闭（I7）**，**破一条退出码 1**；`--json` 可机读。
+  它用的是同一份判据（不是第二套规则），所以抓的是"实现与数据脱节"。
 - **报告自带加载口径（R13）**：`catalog_export` 的概览多一行「**加载路径**」（入口数 + 四态），
   并单开一节「**不会被加载（N 条）**」（名称/来源/版本/体积/最近调用 + 边界说明 + 可省体积）；
   当前筛选清单（`exportFiltered`）多一列「**加载**」。清单拿出去不用再自己算。
+- **不会被加载 → 怎么卸干净（R14）**：工具条上「不会被加载 N」的旁边有**「处置清单」**。
+  点它（或调 `catalog_uninstall action=plan`）会按**弱连通分量**分组给出可执行清单，
+  因为那 26 个目录**不是同一种东西**，处置方式完全相反：
+
+  | 分类 | 本机实例 | 处置 |
+  |---|---|---|
+  | 实体目录·**被钉住** | `dsh-mnemon`（`^0.5.32`）、`dsh-chat-import`、`dsh-plugin-video-player`（`github:`） | 只删目录没用：`profile/package.json` 里还钉着，**下次 `pnpm install` 会装回来** —— 必须连那行一起摘 |
+  | 实体目录 | `dsh-mnemon` 的 18 个子包、`fflate`、`markdown-to-jsx`… | 删了就没了（但同一组要一起删，见下） |
+  | **链接→工作区** | `dpi-probe-bundle`、`dsh-toolfold` | 删 junction **一字节都不省**，空间在工作区源码 —— 默认建议**留着** |
+  | **同项目第二份** | `ghbackup`（包名 `dsh-github-backup`，`bundles` 里加载的是另一份） | 删这份只是清理重复；**别把 `dsh-github-backup` 那个依赖键一起摘掉** —— 那会删掉正在用的那份 |
+
+  三条硬规矩：
+  1. **按分量分组**，不是一个包一条 —— `dsh-mnemon` 自己声明 18 个 dormant 子包，子包又反向声明它（有环）。
+     单删父留子 = 留一堆孤儿；单删子 = 父（将来若启用）缺件。
+  2. **只生成、永不执行删除**：面板与工具都不提供"删"按钮，清单里给的是可复制的
+     `Remove-Item` 命令 + 复核命令，删不删由人决定；写入 `reports/uninstall-*.md|.json` 还要二次确认。
+  3. **判据是声明层面**：运行时按路径 `require()` 看不见；hoisted 扁平 `node_modules` 下，
+     一个插件可以**不声明**却 `require('lodash')` 命中 —— 删纯库前先 `pnpm why <name>`。
+- **卸载清单的前提能被证伪（R14）**：「删 dormant 不会弄坏正在加载的东西」不是感觉，是一条不变式 ——
+  **I7：没有任何「会被加载」的包声明依赖一个 dormant 包**。`node dev/probe-loadstate.mjs` 每次都会验它，
+  而 `node dev/probe-uninstall.mjs` 再验清单本身四条（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 / I11 不误伤加载路径）。
+  这条抓到过真问题：按「同名副本取最后读到那份」算依赖图，`emoji-regex` 被算成 dormant，
+  而顶层 `string-width`（随 `@anweat/dsh-browser` 加载）正声明着它 —— 照那份清单删就会弄坏加载。
+  修法是**同名副本取依赖并集**（保守方向：宁可少判一个 dormant），并把 `CATALOG_VERSION` 抬到 8。
 - **快捷键**：`/` 聚焦搜索、`Esc` 清空搜索（浮窗里 `Esc` 关闭浮窗）
 - **缓存自愈**：统计缓存超过 10 分钟且没有任务在跑时，面板自己起一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒），不用记着点「刷新统计」；有任务在跑、或本挂载已经刷过，就不再触发 —— 否则会和 20 秒轮询叠成「一直在刷新」
 - **分页**：列表底部「共 N 条 · 第 X / Y 页」+ 上一页/下一页/首页/末页，**每页 12 / 24 / 48 / 96 / 全部**；搜索、筛选、排序任一变化自动回第 1 页
@@ -126,6 +151,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_export` | **导出 Markdown 快照**到 `<数据目录>/reports/`：清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现 |
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、AI 通道、asar 模式、**副本是否同步** |
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>` |
+| `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`。**只生成、永不执行删除**（命令给人复制） |
 
 ## 数据与隐私
 
@@ -326,18 +352,20 @@ R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发�
 分项跑：
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针六条不变式（362 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（170 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）**（401 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）**/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（175 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 194 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 210 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
-                              # 六条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
-                              # disabled 不算入口 / 快照与重算一致），破一条退出码 1；--json 可机读
+                              # 七条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
+                              # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
+node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
+                              # I11 不误伤加载路径），破一条退出码 1；--json 可机读
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率

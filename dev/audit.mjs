@@ -25,6 +25,7 @@ import { buildAggregate, descendantsOf, STATS_VERSION } from "../lib/stats.mjs";
 import { eachFrame, parseEvents, findFrameCuts } from "../lib/frames.mjs";
 import { parseFrontmatter } from "../lib/catalog.mjs";
 import { LOAD_STATES, parseComposition, resolveLoadPaths, isLoadedState, isDormantState, loadStateLabel } from "../lib/loadstate.mjs";
+import { PROVENANCE, buildUninstallPlan, renderUninstallPlan, summarizeUninstallPlan } from "../lib/uninstall.mjs";
 import { computeStats } from "../lib/stats.mjs";
 
 let passed = 0;
@@ -612,8 +613,8 @@ const toolsSource = readFileSync(new URL("../lib/tools.mjs", import.meta.url), "
 ok(
 	"依赖图读所有包（先记依赖，再看它像不像 DSH 插件）",
 	/const depIndex = new Map\(\)/.test(catalogSource) &&
-		/if \(meta\) depIndex\.set\(meta\.name, meta\.deps\)/.test(catalogSource) &&
-		catalogSource.indexOf("depIndex.set(meta.name") < catalogSource.indexOf("const looksLikeDshPlugin"),
+		/if \(meta\) mergeDep\(meta\.name, meta\.deps\)/.test(catalogSource) &&
+		catalogSource.indexOf("mergeDep(meta.name") < catalogSource.indexOf("const looksLikeDshPlugin"),
 );
 ok("依赖收集含 dependencies / optionalDependencies / peerDependencies 三类", /for \(const key of \["dependencies", "optionalDependencies", "peerDependencies"\]\)/.test(catalogSource));
 ok("嵌套 node_modules 展开一层（否则只被嵌套声明的包会被误判成没人要）", /const nested = join\(dir, "node_modules"\)/.test(catalogSource) && /name\.startsWith\("@\"\) \? \(await readdir\(join\(nested, name\)\)/.test(catalogSource));
@@ -622,7 +623,7 @@ ok(
 	"条目带 dependents / dependentCount / dependsOn / dependsOnCount",
 	["dependents: pack.dependents || []", "dependentCount: pack.dependentCount || 0", "dependsOn: pack.dependsOn || []", "dependsOnCount: pack.dependsOnCount || 0"].every((needle) => catalogSource.includes(needle)),
 );
-ok("条目形状变了 → CATALOG_VERSION = 7（R12 加了 loadState / loadVia）", /export const CATALOG_VERSION = 7;/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION = 8（R14 加了 packageName / aliasOf，并改了加载态的查表口径）", /export const CATALOG_VERSION = 8;/.test(catalogSource));
 ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选 / 加载路径四态）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0, loadRoots: 0, loadCounts: \{ bundle: 0, config: 0, transitive: 0, dormant: 0 \}, compositionFiles: 0 \}/.test(catalogSource));
 ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
 ok("导出清单加「被依赖 / 加载」两列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"'));
@@ -691,7 +692,10 @@ ok("计划只收「旧了」的（isStaleVerdict），不再手写两种 verdict
 
 ok("路由 POST /skillsync：不带 apply 只出计划，带 apply 必须再带 confirm", indexSource.includes('path === "/skillsync"') && indexSource.includes("catalog.syncStagedSkills({ ids })") && indexSource.includes("catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true })"));
 ok("/preflight 的 dry 清单含第 4 项（面板/调用方知道会跑什么）", indexSource.includes('checks: ["audit", "render-check.cjs", "hosttest", "staging"]'));
-ok("runPreflight 的 total 由 ship 事件给（不写死 3，否则加一项进度条就骗人）", serviceSource.includes('ship:check:total:') && !serviceSource.includes("total: 3"));
+/* ★ R14：这条断言改成只看 runPreflight 的正文 —— 别的后台任务（处置清单）有自己的
+   `total: 3`（三项固定阶段），拿整个文件做"不许出现 total: 3"会误伤。 */
+const preflightBody = serviceSource.slice(serviceSource.indexOf("async runPreflight({ onProgress } = {})"), serviceSource.indexOf("async refreshStats("));
+ok("runPreflight 的 total 由 ship 事件给（不写死 3，否则加一项进度条就骗人）", preflightBody.includes("ship:check:total:") && !preflightBody.includes("total: 3"));
 ok("ship 发 total 事件（面板画「第 2/4 项」）", shipSource.includes('process.stderr.write("ship:check:total:" + selected.length'));
 ok("第 4 项在本进程内跑（只 stat 几十个文件，不值得再起一个 node）", shipSource.includes("inline: true") && /async function stagingCheck\(/.test(shipSource) && shipSource.includes("scanSkillStaging({ roots: skillRoots(settings.workspace), stageDir })"));
 ok("第 4 项只报不拦，且不进 passed/failed 合计", shipSource.includes("informational: true") && shipSource.includes("const counted = results.filter((result) => result.informational !== true)") && shipSource.includes("results.every((result) => result.ok)"));
@@ -838,11 +842,98 @@ ok(
 ok("快照口径也进导出：概览有「加载路径」一行", serviceSource.includes('" 份组合文件）；直接 **"') && serviceSource.includes("不在任何入口上"));
 ok("导出单开一节「不会被加载」（含声明层面的边界说明）", serviceSource.includes('"## 不会被加载（"') && serviceSource.includes("运行时按路径 `require()` 的动态加载看不见"));
 ok("当前筛选的清单多一列「加载」（不会被加载 / 配置挂载 / 随 X 加载 / 是 / 未知）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"') && serviceSource.includes('if (item.loadState === "dormant") return "**不会被加载**"'));
-ok("版本号与构建戳同步抬到 0.13.0 / r13.0", /"version": "0\.13\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r13.0"'));
+ok("版本号与构建戳同步抬到 0.14.0 / r14.0", /"version": "0\.14\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r14.0"'));
 ok(
 	"双语 README 都写了独立探针（英文版也要能照着跑）",
 	readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs"),
 );
+
+/* ─────────── R14：处置清单（不会被加载 → 怎么卸干净） ─────────── */
+const uninstallSource = readFileSync(new URL("../lib/uninstall.mjs", import.meta.url), "utf8");
+const loadstateSource = readFileSync(new URL("../lib/loadstate.mjs", import.meta.url), "utf8");
+const uninstallProbeSource = readFileSync(new URL("../dev/probe-uninstall.mjs", import.meta.url), "utf8");
+const probeLoadSource = readFileSync(new URL("../dev/probe-loadstate.mjs", import.meta.url), "utf8");
+const readmeZh = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const readmeEn = readFileSync(new URL("../README.en.md", import.meta.url), "utf8");
+
+/* ① 判据只有一份：扫描、四态、分类全部复用 lib */
+ok("处置清单复用 `scanInstalledPackages`（不自己再扫一遍 node_modules）", uninstallSource.includes("scanInstalledPackages") && !/from "node:fs\/promises"/.test(uninstallSource) && !uninstallSource.includes("readdir("));
+ok("同一个包的多份副本取**依赖并集**（并集写在 lib/loadstate.mjs 里，一处定义）", loadstateSource.includes("mergeDeps") && loadstateSource.includes("并集") && catalogSource.includes("mergeDep("));
+ok("catalog 的加载态先按目录名、再按包名查（别名目录不再被误报成「不会被加载」）", catalogSource.includes("loadPaths.byName.get(pack.pkg) || loadPaths.byName.get(pack.packageName"));
+ok("目录快照版本抬到 v8（判据改了，旧快照必须作废）", catalogSource.includes("export const CATALOG_VERSION = 8;"));
+
+/* ② 只生成、不执行：源码里不许出现任何删除调用 */
+ok(
+	"处置清单里**没有任何删除调用**（只有给人复制的命令文本）",
+	!/(rmSync|rmdirSync|unlinkSync|unlink\(|rmdir\(|await rm\(|\.rm\()/.test(uninstallSource) && uninstallSource.includes("本清单**不会执行任何删除**"),
+);
+ok("六种处置分类冻结成一张表（界面与清单读同一份，不许各写一句）", Object.isFrozen(PROVENANCE) && Object.keys(PROVENANCE).length === 6);
+ok("链接的「可回收」恒为 0（删 junction 不省空间）", uninstallSource.includes("item.reclaimBytes = 0;") && uninstallProbeSource.includes("删链接不省空间"));
+ok("别名 / 同项目第二份不把包名列为可摘键（摘错会删掉正在加载的那份）", uninstallSource.includes('item.provenance === "duplicate" || item.provenance === "alias-only"') && uninstallSource.includes("keepKeys"));
+
+/* ③ 构造样本跑一遍分组与分类（不碰真机 profile） */
+const planNm = join(tmpRoot, "plan-nm");
+const writePkg = (dirName, name, deps = []) => {
+	const dir = join(planNm, dirName);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version: "1.0.0", ...(deps.length > 0 ? { dependencies: Object.fromEntries(deps.map((dep) => [dep, "^1.0.0"])) } : {}) }), "utf8");
+};
+writePkg("alpha", "alpha");
+writePkg("omega", "omega");
+writePkg("beta", "beta", ["gamma"]);
+writePkg("gamma", "gamma");
+writePkg("delta", "delta", ["gamma"]);
+writePkg("solo", "solo");
+writePkg("aliasdir", "omega");
+const fixturePlan = await buildUninstallPlan({
+	nodeModules: planNm,
+	profileDeps: { beta: "^1.0.0", omega: "link:D:/x" },
+	bundles: ["alpha", "omega"],
+	compositions: [],
+	workspace: "D:/ws",
+	/* solo 量不到体积：必须留 null + 原因，不许填 0 */
+	sizeOf: async (dir) => (String(dir).includes("solo") ? { bytes: null } : { bytes: 1000, files: 1, truncated: false }),
+});
+const fixtureGroups = fixturePlan.groups;
+eq("dormant 目录按弱连通分量分组（beta/gamma/delta 一组、solo 一组、别名目录一组）", fixtureGroups.length, 3);
+const connected = fixtureGroups.find((group) => group.members.some((member) => member.dirName === "beta"));
+eq("连边跨两跳：beta 声明 gamma、delta 也声明 gamma → 三个在同一组", connected.members.map((member) => member.dirName).sort(), ["beta", "delta", "gamma"]);
+eq("组名取出度最高的成员（beta 与 delta 都是 1，按名字定序取 beta）", connected.name, "beta");
+eq("被 profile 依赖钉住的实体目录 → pinned，并给出可摘的键（只给钉住的那个键）", [connected.kinds.includes("pinned"), connected.members.find((member) => member.dirName === "beta").profileKeys], [true, ["beta"]]);
+eq("钉住的组第一个步骤就是「先摘 profile 依赖」", connected.steps[0].kind, "edit-profile");
+ok("删目录步骤带可复制命令，且实体目录用 -Recurse", connected.steps.some((step) => step.kind === "delete" && step.commands.every((command) => command.command.includes("-Recurse -Force"))));
+const aliasGroup = fixtureGroups.find((group) => group.members.some((member) => member.dirName === "aliasdir"));
+eq("目录名与包名不同、且同项目另一份会被加载 → duplicate", aliasGroup.members[0].provenance, "duplicate");
+eq("别名目录不把包名（omega）列为可摘键，而是列进「别动这些键」", [aliasGroup.members[0].profileKeys, (aliasGroup.members[0].keepKeys || []).map((entry) => entry.key)], [[], ["omega"]]);
+const soloMember = fixtureGroups.flatMap((group) => group.members).find((member) => member.dirName === "solo");
+ok("量不到的体积是 null + 原因（不许 0 糊过去）", soloMember.bytes === null && soloMember.sizeWhy !== "");
+ok("汇总视图去掉每组命令文本（面板 20 秒轮询不该拖着一堆命令）", summarizeUninstallPlan(fixturePlan).groups.every((group) => group.steps === undefined) && summarizeUninstallPlan(fixturePlan).groups.length === 3);
+const fixtureMd = renderUninstallPlan(fixturePlan);
+ok("清单 Markdown 有结论、分类表、别动键与边界四块", fixtureMd.includes("## 一句话") && fixtureMd.includes("## 为什么分类") && fixtureMd.includes("别动这些键") && fixtureMd.includes("## 边界"));
+ok("清单里写明「不会执行任何删除」+ 复核命令", fixtureMd.includes("不执行任何删除") && fixtureMd.includes("node dev/probe-uninstall.mjs"));
+
+/* ④ 服务端：单独存结论（job 只有一格）、写盘要 confirm、state/health 各带一份 */
+ok("service 有 runUninstall，并把结论存进 lastUninstall（不靠 job 那一格）", serviceSource.includes("async runUninstall({ onProgress } = {})") && serviceSource.includes("this.lastUninstall = plan;"));
+ok("写盘要 confirm:true（闸在服务端）", serviceSource.includes("async writeUninstallReport({ confirm } = {})") && serviceSource.includes('if (confirm !== true) return { ok: false, error: "写盘必须带 confirm:true'));
+ok("state 与 health 都带 uninstall 摘要（面板读 state、catalog_health 读 health）", serviceSource.includes("uninstall: this.uninstallSummary()") && serviceSource.includes("uninstall: this.lastUninstall"));
+ok("体积走注入的 sizeOf（service 里 dirSize 调用点还是三处，懒算闸门没被打开）", serviceSource.includes("sizeOf: (dir) => dirSize(dir)") && (serviceSource.match(/await dirSize\(/g) || []).length === 3);
+ok("路由 POST /uninstall：plan 起后台任务、apply+confirm 才写盘", indexSource.includes('if (path === "/uninstall" && method === "POST")') && indexSource.includes("catalog.writeUninstallReport({ confirm: body.confirm === true })"));
+ok("工具 catalog_uninstall 存在且声明了 output（0.2.1 起漏了会整插件失活）", toolsSource.includes('name: "catalog_uninstall"') && toolsSource.includes("action: { type: \"string\", enum: [\"plan\", \"write\"]"));
+ok("工具没有在 description 里许诺「帮你删」（只生成清单）", toolsSource.includes("只生成、绝不执行删除") && !toolsSource.includes("catalog_uninstall 会删除"));
+
+/* ⑤ 探针：I7 在 loadstate 探针、I8–I11 在 uninstall 探针 */
+ok("probe-loadstate 用同一个扫描器，且带 I7（dormant 对加载中的声明封闭）", probeLoadSource.includes("scanInstalledPackages") && probeLoadSource.includes("I7 会被加载的包声明了 dormant 包"));
+ok("probe-uninstall 四条不变式齐全，破一条就非零退出", ["I8", "I9", "I10", "I11"].every((id) => uninstallProbeSource.includes(id)) && uninstallProbeSource.includes("process.exit(1)") && uninstallProbeSource.includes("failures.push"));
+ok("探针不硬编码本机路径（换机器也能跑）", !/D:[\\/]信息库/.test(uninstallProbeSource) && !/C:[\\/]Users/.test(uninstallProbeSource));
+
+/* ⑥ 客户端：工具条入口 + 卡 + 二次确认 + 别名提示 */
+ok("工具条有「处置清单」入口（不会被加载旁边），只生成不执行", clientSource.includes('"处置清单"') && clientSource.includes("只生成、永不执行删除"));
+ok("处置清单卡 + 写入二次确认（第一下只是把按钮变成确认）", clientSource.includes("function UninstallCard(props)") && clientSource.includes("确认写入（不会删任何目录）"));
+ok("详情页点明别名目录（同项目两份安装，不再让人以为它在跑 / 没跑）", clientSource.includes("别名目录：这个目录里装的是"));
+
+/* ⑦ 文档 */
+ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
+/* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

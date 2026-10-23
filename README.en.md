@@ -92,13 +92,39 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   ⚠️ This is a **declaration-level** criterion: a runtime `require()` by path is invisible to it, which is why the wording is "not loaded" rather than "definitely never runs".
 - **The criterion can prove itself (R13)**: `node dev/probe-loadstate.mjs` **recomputes** load paths independently
   (it walks the profile's `node_modules` and both composition files itself) and reconciles the result with the catalog snapshot,
-  pinning six invariants — count conservation / bundle accounting / `via` resolving to a real entry / dormant ∩ entries = ∅ /
-  `disabled` never an entry / snapshot == recomputation. **Any broken invariant exits 1**; `--json` is machine-readable.
+  pinning seven invariants — count conservation / bundle accounting / `via` resolving to a real entry / dormant ∩ entries = ∅ /
+  `disabled` never an entry / snapshot == recomputation / dormant closed under loaded declarations. **Any broken invariant exits 1**;
+  `--json` is machine-readable.
   It shares the single criterion (it is not a second rule set), so what it catches is "the implementation drifted from the data".
 - **Reports carry the criterion (R13)**: `catalog_export` adds a "load paths" line to its overview
   (entry count + the four states) and a dedicated **"not loaded (N)"** section (name/source/version/size/last call,
   the declaration-level caveat, and how much space they account for); the filtered export gains a **"loaded"** column,
   so a hand-off list no longer needs anyone to re-derive it.
+- **From "not loaded" to "removed cleanly" (R14)**: next to the "not loaded N" filter there is a **"removal plan"** button.
+  It (and `catalog_uninstall action=plan`) groups the candidates by **weakly connected component**, because those 26
+  directories are *not* one kind of thing and the correct action is opposite from case to case:
+
+  | Category | Example on this machine | What to do |
+  |---|---|---|
+  | entity, **pinned** | `dsh-mnemon` (`^0.5.32`), `dsh-chat-import`, `dsh-plugin-video-player` (`github:`) | deleting the directory is not enough: `profile/package.json` still pins it, so **the next `pnpm install` brings it back** — remove that line too |
+  | entity | the 18 `dsh-mnemon` sub-packages, `fflate`, `markdown-to-jsx`… | deleting really removes it (but delete the whole group, see below) |
+  | **link → workspace** | `dpi-probe-bundle`, `dsh-toolfold` | removing a junction **reclaims nothing**; the bytes live in the workspace source — the default advice is **keep it** |
+  | **second copy of one project** | `ghbackup` (package `dsh-github-backup`; the loaded one is the other copy) | removing it only cleans up a duplicate; **do not also drop the `dsh-github-backup` dependency key** — that would delete the copy in use |
+
+  Three hard rules:
+  1. **Group by component, never per package** — `dsh-mnemon` declares 18 dormant sub-packages and those declare it back (a cycle).
+     Deleting the parent alone leaves orphans; deleting children alone leaves the parent incomplete if you ever enable it.
+  2. **Generates only, never deletes**: neither the panel nor the tool offers a "delete" button. The plan contains
+     copy-paste `Remove-Item` commands plus verification commands; saving it to `reports/uninstall-*.md|.json` needs a second confirmation.
+  3. **The criterion is declaration-level**: a runtime `require()` by path is invisible; and under a hoisted flat
+     `node_modules` a plugin may `require('lodash')` **without declaring it** — run `pnpm why <name>` before removing a pure library.
+- **The premise of that plan is falsifiable (R14)**: "removing dormant packages cannot break what is loaded" is an invariant, not a feeling —
+  **I7: no loaded package declares a dependency on a dormant package**. `node dev/probe-loadstate.mjs` checks it every run, and
+  `node dev/probe-uninstall.mjs` checks the plan itself (I8 coverage and no overlap / I9 size accounting / I10 pinned-key safety /
+  I11 never hitting a live load path). It caught a real problem: with "last copy read wins" as the dependency rule, `emoji-regex`
+  was classified dormant while the top-level `string-width` (loaded via `@anweat/dsh-browser`) declares it — that plan would break loading.
+  The fix is to **union the dependencies of same-named copies** (the conservative direction: rather miss one dormant than mislabel a needed library),
+  plus bumping `CATALOG_VERSION` to 8.
 - **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
 - **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
@@ -129,6 +155,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 | `catalog_export` | **Export a Markdown snapshot** to `<数据目录>/reports/`: inventory, source distribution, call Top, repos and git status, to-be-tagged sources, attribution coverage, weekly findings |
 | `catalog_health` | Self-check: which version is running, path resolution, stats coverage, attribution coverage, AI channel, asar mode, **whether copies are in sync** |
 | `catalog_skill_sync` | A Skill has **two copies**: `plan` lists those whose staging copy is stale (publishing pushes staging, so a stale stage ships an old version); `apply` + `confirm:true` copies **live → staging only**, backing up each overwritten file as `SKILL.md.bak-<timestamp>` first |
+| `catalog_uninstall` | **Removal plan for "never loaded" entries**: `plan` groups them by weakly connected component and reports reclaimable bytes, the category (entity / pinned by profile deps / link / second copy of the same project) and the steps; `write` + `confirm:true` saves it as `reports/uninstall-*.md|.json`. **Generates only — never deletes anything** (the commands are for a human to copy) |
 
 ## Data and privacy
 
@@ -329,19 +356,22 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe's six invariants (362 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (170 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only)** (401 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (175 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check** / export write / copy-sync verdicts / skill_sync plan and confirm gate (194 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (210 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
-                              # derives the four states, then reconciles with cache/catalog.json; six invariants
+                              # derives the four states, then reconciles with cache/catalog.json; seven invariants
                               # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
-                              # disabled is never an entry / snapshot == recomputation); any violation exits 1; --json
+                              # disabled is never an entry / snapshot == recomputation / dormant closed under loaded declarations);
+                              # any violation exits 1; --json
+node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
+                              # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

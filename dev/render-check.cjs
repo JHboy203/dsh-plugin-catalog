@@ -740,6 +740,78 @@ T.store.data = data;
 T.store.syncPlan = null;
 T.store.syncBusy = false;
 
+/* ─── R14：处置清单卡（只生成、不执行） ───
+   这里验的是"面板有没有把处置方式说清楚 + 有没有偷偷提供一个删除按钮"：
+   分类 chip、可回收体积、"要先摘 profile 依赖"、两次点击才写入。 */
+const uninstallFixture = {
+	at: Date.now(),
+	elapsedMs: 420,
+	dormant: { dirCandidates: 26, packages: 26, groups: 2, reclaimBytes: Math.round(8.3 * 1024 * 1024), linkBytes: Math.round(358 * 1024), nestedOnly: ["lodash"], duplicateCopies: ["string-width"] },
+	groups: [
+		{ key: "group-1:dsh-mnemon", name: "dsh-mnemon", label: "dsh-mnemon 等 20 个", count: 20, reclaimBytes: Math.round(5.2 * 1024 * 1024), linkBytes: 0, pinnedCount: 1, duplicate: false, linkCount: 0, kinds: ["pinned", "entity"], members: [{ dirName: "dsh-mnemon", pkg: "dsh-mnemon", link: false }, { dirName: "dsh-mnemon-provider-mem0", pkg: "dsh-mnemon-provider-mem0", link: false }] },
+		{ key: "group-2:ghbackup", name: "ghbackup", label: "dsh-github-backup", count: 1, reclaimBytes: 0, linkBytes: Math.round(123.3 * 1024), pinnedCount: 0, duplicate: true, linkCount: 1, kinds: ["duplicate"], members: [{ dirName: "ghbackup", pkg: "dsh-github-backup", link: true }] },
+	],
+	savedTo: "",
+};
+let uninstallText = "";
+ok("处置清单卡：标题写明「只生成、不执行」，并给出候选目录数 / 组数 / 可回收体积", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, uninstall: uninstallFixture, job: { running: false, kind: "", progress: { done: 0, total: 0 } } };
+	T.store.uninstallConfirm = false;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	uninstallText = text;
+	return text.includes("处置清单（只生成、不执行）") && text.includes("候选目录 26 个 / 2 组") && text.includes("可回收 8.3 MB") && text.includes("358 KB 在链接目标里");
+})(), "命中处置清单=" + uninstallText.includes("处置清单") + " 卡=" + uninstallText.includes("处置清单（只生成、不执行）") + " 候选=" + uninstallText.includes("候选目录 26 个 / 2 组") + " 可回收=" + uninstallText.includes("可回收 8.3 MB") + " 链接=" + uninstallText.includes("358 KB 在链接目标里"));
+ok("处置清单卡：分组行带分类 chip（被钉住 / 同项目第二份）与「要先摘 profile 依赖」", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("dsh-mnemon 等 20 个") && text.includes("被钉住") && text.includes("要先摘 profile 依赖") && text.includes("同项目第二份") && text.includes("1 个链接（删了省 0 B）");
+})());
+let cardButtonTexts = [];
+ok("处置清单卡：卡里**没有任何删除按钮**（写入是唯一写动作，且要两次点击）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.uninstallConfirm = false;
+	/* ★ 只看**卡里的**按钮：面板别处的按钮 title 里本来就会说到"删掉不影响加载" */
+	const buttonsIn = (tree) => {
+		const card = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-uninstall"))[0];
+		if (!card) return [];
+		return findAll(card, (node) => String((node.props && node.props.className) || "").includes("dpc-btn")).map((node) => textsOf(node).join(" "));
+	};
+	const firstPass = buttonsIn(expand(render(T.Panel, {})));
+	cardButtonTexts = firstPass;
+	T.store.uninstallConfirm = true;
+	const secondPass = buttonsIn(expand(render(T.Panel, {})));
+	T.store.data = saved;
+	T.store.uninstallConfirm = false;
+	const noDelete = firstPass.every((text) => !/删除|卸载执行|立即清/.test(text));
+	return firstPass.some((text) => text.includes("写入 reports/")) && noDelete && secondPass.some((text) => text.includes("确认写入（不会删任何目录）"));
+})(), "卡内按钮：" + JSON.stringify(cardButtonTexts));
+ok("没有清单时不画卡（只有点过「处置清单」才占版面）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, uninstall: null };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return !text.includes("处置清单（只生成、不执行）");
+})());
+ok("工具条有「处置清单」按钮，title 写明只生成不执行、写入要再确认", (() => {
+	const tree = expand(render(T.Panel, {}));
+	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));
+	const target = buttons.find((node) => textsOf(node).join("").includes("处置清单"));
+	if (!target) return false;
+	return String(target.props.title).includes("只生成、永不执行删除") && String(target.props.title).includes("需要再点一次确认");
+})(), (() => {
+	const tree = expand(render(T.Panel, {}));
+	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));
+	const hit = buttons.find((node) => textsOf(node).join("").includes("处置清单"));
+	return "按钮数=" + buttons.length + " 找到=" + Boolean(hit) + " title=" + (hit ? String(hit.props.title).slice(0, 40) : "");
+})());
+
+T.store.data = data;
+
 /* R5：多选（选中一批 → 看总体积 → 导出这批） */
 T.store.pageSize = 0;
 T.store.picking = true;
@@ -1081,7 +1153,13 @@ const stripMasks = (text) => String(text).replace(/…\*+/g, "").replace(/\*{3,}
 const leaked = Object.entries(visibleSamples)
 	.filter(([, text]) => stripMasks(text).includes("**"))
 	.map(([name]) => name);
-ok("界面文本里没有漏出的 markdown `**`", leaked.length === 0, "泄漏在: " + leaked.join(", "));
+const leakedDetail = Object.entries(visibleSamples)
+	.filter(([, text]) => stripMasks(text).includes("**"))
+	.map(([name, text]) => {
+		const at = stripMasks(text).indexOf("**");
+		return name + "：「" + String(text).slice(Math.max(0, at - 24), at + 24) + "」";
+	});
+ok("界面文本里没有漏出的 markdown `**`", leakedDetail.length === 0, "泄漏在: " + leakedDetail.join(", "));
 
 /* ⑥ 侧栏入口 */
 resetHooks();

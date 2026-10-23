@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r13.0";
+		const BUILD = "r14.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -132,6 +132,10 @@ window.__ModuleLoader__.load({
 			     不能拿一份过期的计划去覆盖文件。 */
 			syncPlan: null,
 			syncBusy: false,
+			/* R14：「处置清单」的写入确认（两步：先出清单，再点一次才写 reports/）。
+			   ★ 与服务端一致的纪律：清单**永远不执行删除**，写盘必须显式确认。 */
+			uninstallBusy: false,
+			uninstallConfirm: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -1174,6 +1178,11 @@ window.__ModuleLoader__.load({
 												item.dependency
 													? h("div", { className: "dpc-muted" }, "写在 profile 的 package.json dependencies 里 —— 不会被依赖树整理顺手清掉")
 													: h("div", { className: "dpc-muted" }, "不在 profile 的 dependencies 里（传递依赖 / 自动装的）—— 整理依赖树时可能消失"),
+												/* R14：别名目录（本机 `ghbackup` 里装的是 `dsh-github-backup`）。
+												   同一个项目会以两个名字出现在列表里，不点明的话会让人以为"备份插件没在跑"。 */
+												item.aliasOf
+													? h("div", { className: "dpc-load-warn" }, "别名目录：这个目录里装的是 `" + item.aliasOf + "`（按包名找的是同名的那个目录）。同一个项目的两份安装 —— 删这份只是清理重复，不影响加载。")
+													: null,
 												/* R12：加载路径。这是「装了会不会跑」的判据，比 `enabled`（在不在 bundles）严格得多 */
 												isDormant(item)
 													? h("div", { className: "dpc-load-warn" }, "加载路径：❌ 不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主不会加载它；删掉不影响当前加载（但别删你打算以后挂进 cordis.patch.yml 的包）。")
@@ -1601,6 +1610,71 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R14：「不会被加载」的处置清单 ──
+		   这一块回答的是**动手怎么做**，不是"有没有问题"：候选按弱连通分量分组（删父留子会留孤儿），
+		   每组标出可回收体积与分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）。
+		   ★ 一个删除动作都不提供：清单里的命令要人自己复制去跑。 */
+		function UninstallCard(props) {
+			const plan = props.plan;
+			if (!plan) return null;
+			const dormant = plan.dormant || {};
+			const groups = Array.isArray(plan.groups) ? plan.groups : [];
+			const KIND_LABEL = { entity: "实体", pinned: "被钉住", "link-workspace": "链接→工作区", "link-other": "链接→外部", duplicate: "同项目第二份", "alias-only": "别名目录" };
+			return h(
+				"div",
+				{ className: "dpc-preflight dpc-uninstall" },
+				h(
+					"div",
+					{ className: "dpc-preflight-head" },
+					h("span", { className: "dpc-preflight-mark" }, "⌫"),
+					h("span", { className: "dpc-preflight-title" }, "处置清单（只生成、不执行）"),
+					h("span", { className: "dpc-muted" }, "｜候选目录 " + (dormant.dirCandidates || 0) + " 个 / " + (dormant.groups || 0) + " 组"),
+					h("span", { className: "dpc-sum" }, "可回收 " + fmtBytes(dormant.reclaimBytes || 0)),
+					dormant.linkBytes > 0 ? h("span", { className: "dpc-muted" }, "｜另有 " + fmtBytes(dormant.linkBytes) + " 在链接目标里（删链接不省）") : null,
+					plan.at ? h("span", { className: "dpc-muted" }, "｜" + fmtDateTime(plan.at)) : null,
+				),
+				h(
+					"div",
+					{ className: "dpc-uninstall-groups" },
+					groups.map((group) =>
+						h(
+							"div",
+							{ key: group.key, className: "dpc-uninstall-group" },
+							h(
+								"div",
+								{ className: "dpc-uninstall-group-head" },
+								h("span", { className: "dpc-uninstall-name" }, group.label),
+								h("span", { className: "dpc-muted" }, "可回收 " + fmtBytes(group.reclaimBytes || 0)),
+								(group.kinds || []).map((kind) => h("span", { key: kind, className: "dpc-uninstall-kind" }, KIND_LABEL[kind] || kind)),
+								group.pinnedCount > 0 ? h("span", { className: "dpc-bad" }, group.duplicate ? "先摘别名依赖键" : "要先摘 profile 依赖") : null,
+								group.linkCount > 0 ? h("span", { className: "dpc-muted" }, group.linkCount + " 个链接（删了省 0 B）") : null,
+							),
+							/* 只摊前 4 个名字：一组 20 个时全铺开会把面板推下去 */
+							h(
+								"div",
+								{ className: "dpc-uninstall-members dpc-mono" },
+								(group.members || []).slice(0, 4).map((member) => (member.link ? "→ " : "") + member.dirName).join("、") +
+									((group.members || []).length > 4 ? " 等 " + (group.members || []).length + " 个" : ""),
+							),
+						),
+					),
+				),
+				h(
+					"div",
+					{ className: "dpc-uninstall-steps" },
+					"判定口径：按「弱连通分量」分组（组内互相声明依赖，单删一个会留孤儿）；被 `profile/package.json` 钉住的，只删目录下次 `pnpm install` 会装回来；只处置 `node_modules` 顶层目录；运行时按路径 `require()` 的动态加载看不见。",
+				),
+				h(
+					"div",
+					{ className: "dpc-row" },
+					h("button", { className: "dpc-btn dpc-btn-sm" + (props.confirm ? " is-on" : ""), onClick: props.onWrite, disabled: props.busy }, props.busy ? "写入中…" : props.confirm ? "确认写入（不会删任何目录）" : "写入 reports/"),
+					props.confirm ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancelConfirm, disabled: props.busy }, "取消") : null,
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onRerun, disabled: props.busy }, "重新算"),
+					plan.savedTo ? h("span", { className: "dpc-muted dpc-mono" }, plan.savedTo) : null,
+				),
+			);
+		}
+
 		/* ── 面板 ── */
 
 		function Panel() {
@@ -1814,6 +1888,30 @@ window.__ModuleLoader__.load({
 				await refresh();
 			}
 
+			/* R14：处置清单 —— 只生成、不执行。清单算完落在 `data.uninstall`（服务端单独存的，
+			   不会被后面的后台任务顶掉），卡片就地渲染。 */
+			async function runUninstall() {
+				set({ uninstallBusy: true, uninstallConfirm: false });
+				const result = await post("/uninstall", {});
+				if (!result || result.ok === false) set({ notice: (result && (result.hint || result.error)) || "起不来处置清单任务（可能已有任务在跑）" });
+				set({ uninstallBusy: false });
+				await refresh();
+			}
+
+			/* 写盘：第二下才真的写（第一下只是把按钮变成"确认写入"） */
+			async function writeUninstallReport() {
+				if (!state.uninstallConfirm) {
+					set({ uninstallConfirm: true, notice: "再点一次「确认写入」才写文件：reports/uninstall-*.md|.json（不会删任何目录）" });
+					return;
+				}
+				set({ uninstallBusy: true });
+				const result = await post("/uninstall", { apply: true, confirm: true });
+				set({ uninstallBusy: false, uninstallConfirm: false });
+				if (result && result.ok) set({ notice: "已写入处置清单：" + result.mdPath });
+				else set({ notice: "写清单失败：" + String((result && result.error) || "未知错误") });
+				await refresh();
+			}
+
 			async function runClassify() {
 				await post("/classify", {});
 				await refresh();
@@ -1877,6 +1975,8 @@ window.__ModuleLoader__.load({
 			/* 上一次体检的结论：读**服务端单独存的** `preflight`，不读 `job` 那一格 ——
 			   job 只有一格，统计自愈/量体积一跑就把体检结论顶掉（真机上实测「卡片活不过 20 秒」）。 */
 			const preflightResult = (data && data.preflight) || null;
+			/* R14：处置清单也是服务端单独存的（同一理由），只在算过之后出现 */
+			const uninstallPlan = (data && data.uninstall) || null;
 
 			return h(
 				"div",
@@ -1937,6 +2037,17 @@ window.__ModuleLoader__.load({
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
 				preflightResult ? h(PreflightCard, { result: preflightResult, busy: Boolean(job.running), onRerun: runPreflight }) : null,
+				/* R14：处置清单（不会被加载 → 怎么卸干净）。点「处置清单」才算，算完就地摊开 */
+				uninstallPlan
+					? h(UninstallCard, {
+							plan: uninstallPlan,
+							busy: state.uninstallBusy,
+							confirm: state.uninstallConfirm,
+							onWrite: writeUninstallReport,
+							onCancelConfirm: () => set({ uninstallConfirm: false }),
+							onRerun: runUninstall,
+						})
+					: null,
 				state.exportPath
 					? h(							"div",
 							{ className: "dpc-note" },
@@ -2052,6 +2163,23 @@ window.__ModuleLoader__.load({
 										"这是声明层面的判据（运行时按路径 require 的动态加载看不见），所以文案是「不会被加载」而不是「绝对没跑」。",
 								},
 								(state.dormantOnly ? "✓ " : "") + "不会被加载 " + dormantCount,
+							)
+						: null,
+					/* R14：「不会被加载」只是判据，动手还得知道**怎么删、删了会不会回来** ——
+					   这个按钮出一份按分量分组、分类清楚、只生成不执行的处置清单。 */
+					dormantCount > 0 || uninstallPlan
+						? h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (uninstallPlan ? " is-on" : ""),
+									onClick: runUninstall,
+									disabled: state.uninstallBusy || Boolean(job.running),
+									title:
+										"生成「不会被加载」的处置清单：按弱连通分量分组（组内互相依赖，单删一个会留孤儿），" +
+										"每组给可回收体积与分类（实体 / 被 profile 依赖钉住 / 链接到工作区 / 同项目第二份），并写清步骤。" +
+										"只生成、永不执行删除；写入 reports/ 需要再点一次确认。约 1 秒",
+								},
+								state.uninstallBusy ? "算清单…" : "处置清单",
 							)
 						: null,
 					/* 当前筛选这一屏一共占多少盘 —— 点「未使用」就能直接看到"删这批能省多少" */
@@ -2418,6 +2546,17 @@ window.__ModuleLoader__.load({
   border-radius:8px;background:rgba(220,38,38,.05)}
 .dpc-preflight-fail{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.5}
 .dpc-preflight-where{flex:0 0 auto;font-size:10px;padding:0 5px;border-radius:5px;background:rgba(220,38,38,.14);color:#b91c1c;white-space:nowrap}
+/* R14：处置清单卡 —— 只生成不执行；每组一行，名字那一行等宽截断，别把面板推下去 */
+.dpc-uninstall .dpc-preflight-mark{color:var(--dpc-klein)}
+.dpc-uninstall-groups{display:flex;flex-direction:column;gap:5px;max-height:240px;overflow:auto}
+.dpc-uninstall-group{display:flex;flex-direction:column;gap:2px;padding:5px 7px;border-radius:8px;
+  background:color-mix(in srgb,var(--dpc-klein) 5%,transparent);border:1px solid var(--dpc-line-soft)}
+.dpc-uninstall-group-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px}
+.dpc-uninstall-name{font-weight:600;font-family:var(--dpc-mono,ui-monospace,monospace)}
+.dpc-uninstall-kind{font-size:10px;padding:0 5px;border-radius:5px;background:rgba(57,100,254,.12);color:#2f5fd0;white-space:nowrap}
+.dpc-uninstall-members{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary,#6b7280);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dpc-uninstall-steps{font-size:11px;line-height:1.65;color:var(--dsw-alias-label-secondary,#6b7280)}
 /* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
 .dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;
@@ -2581,6 +2720,8 @@ window.__ModuleLoader__.load({
 			applyStageSync,
 			PreflightCard,
 			SyncConfirm,
+			/* R14：处置清单卡（只生成不执行） */
+			UninstallCard,
 			toolHits,
 			hotkeyOf,
 			copyText,

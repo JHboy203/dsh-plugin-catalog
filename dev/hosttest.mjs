@@ -13,10 +13,12 @@
  *   DSH_CATALOG_DIR=<临时目录> node dev/hosttest.mjs
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+
+import { profileNodeModules } from "../lib/hostinfo.js";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -177,9 +179,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 9 个工具", registeredTools.length, 9);
+eq("注册了 10 个工具", registeredTools.length, 10);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -843,6 +845,65 @@ const clientState = await callRoute("/client-state", "POST", { build: "r1.0", vi
 ok("客户端上报接口可用", clientState.json?.ok === true);
 const withReport = await callRoute("/state");
 ok("面板能读到客户端上报", withReport.json?.clientReport?.build === "r1.0");
+
+/* ── R14：处置清单（不会被加载 → 怎么卸干净）──
+   三条必须都验：工具能出清单、路由的写盘闸在服务端、**跑完一个目录都没少**（只生成不执行）。 */
+const nmPath = profileNodeModules();
+const countNmDirs = () => {
+	try {
+		let count = 0;
+		for (const entry of readdirSync(nmPath)) {
+			if (entry.startsWith(".")) continue;
+			if (entry.startsWith("@")) {
+				try {
+					count += readdirSync(join(nmPath, entry)).length;
+				} catch {
+					/* 读不到不算数 */
+				}
+			} else count += 1;
+		}
+		return count;
+	} catch {
+		return -1;
+	}
+};
+const nmBefore = countNmDirs();
+const uninstallPlan = await callTool("catalog_uninstall", { action: "plan" });
+ok(
+	"catalog_uninstall plan：给出分组与体积，且不停在 job 里（工具直接回结果）",
+	uninstallPlan?.ok !== false && typeof uninstallPlan?.dormant === "object" && Array.isArray(uninstallPlan?.groups) && Number.isFinite(uninstallPlan?.dormant?.reclaimBytes),
+	JSON.stringify(uninstallPlan && { candidates: uninstallPlan.dormant?.dirCandidates, groups: uninstallPlan.groups?.length }),
+);
+ok("每组都带步骤，且「删目录」那一步的命令是给人看的（-LiteralPath）", (uninstallPlan?.groups || []).every((group) => Array.isArray(group.steps) && group.steps.length > 0));
+ok("工具文案点明「只生成、不执行删除」", /只生成/.test(String(uninstallPlan?.text || "")) && /不执行/.test(String(uninstallPlan?.text || "")));
+ok("跑完清单，node_modules 顶层目录数一个没少（只生成不执行）", countNmDirs() === nmBefore, nmBefore + " → " + countNmDirs());
+const uninstallNoConfirm = await callTool("catalog_uninstall", { action: "write" });
+ok("write 不带 confirm 被拒（写盘闸在服务端）", uninstallNoConfirm?.ok === false && /confirm/.test(String(uninstallNoConfirm?.error || "")), JSON.stringify(uninstallNoConfirm?.error));
+
+const uninstallRouteNoConfirm = await callRoute("/uninstall", "POST", { apply: true });
+ok("面板路由写盘也要 confirm", uninstallRouteNoConfirm.json?.ok === false && /confirm/.test(String(uninstallRouteNoConfirm.json?.error || "")), JSON.stringify(uninstallRouteNoConfirm.json?.error));
+const uninstallRouteGet = await callRoute("/uninstall", "GET");
+ok("/uninstall 只接受 POST（GET 404，别让人用地址栏触发）", uninstallRouteGet.status === 404 || uninstallRouteGet.json === null, JSON.stringify({ status: uninstallRouteGet.status }));
+
+/* 面板按钮走的那条路：POST {} → 起后台任务 → 结论落在 /state.uninstall（不是 job 那一格） */
+const uninstallRoutePlan = await callRoute("/uninstall", "POST", {});
+ok("面板路由能起处置清单任务（或在单任务闸上如实拒绝）", uninstallRoutePlan.json?.ok === true || /已有任务|在跑/.test(String(uninstallRoutePlan.json?.error || "")), JSON.stringify(uninstallRoutePlan.json && { ok: uninstallRoutePlan.json.ok, error: uninstallRoutePlan.json.error }));
+let uninstallSummary = null;
+const uninstallDeadline = Date.now() + 20000;
+while (Date.now() < uninstallDeadline) {
+	const snapshot = await callRoute("/state");
+	if (snapshot.json?.uninstall && (snapshot.json.job?.running !== true || snapshot.json.job?.kind !== "uninstall")) {
+		uninstallSummary = snapshot.json.uninstall;
+		break;
+	}
+	await new Promise((resolve) => setTimeout(resolve, 400));
+}
+ok(
+	"/state.uninstall 带得住结论（dormant 分组 + 可回收体积 + savedTo 字段）",
+	uninstallSummary !== null && typeof uninstallSummary.dormant === "object" && Array.isArray(uninstallSummary.groups) && "savedTo" in uninstallSummary,
+	JSON.stringify(uninstallSummary && { groups: uninstallSummary.groups?.length, bytes: uninstallSummary.dormant?.reclaimBytes }),
+);
+ok("跑完两次清单，node_modules 还是没少（两次都没删东西）", countNmDirs() === nmBefore, nmBefore + " → " + countNmDirs());
 
 /* ── 越权请求被拒 ── */
 {

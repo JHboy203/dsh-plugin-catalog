@@ -20,68 +20,19 @@
  *   I4 dormant 与入口集合无交集
  *   I5 组合文件里 `disabled: true` 的条目**没有**成为入口
  *   I6 目录快照里每个条目的 `loadState` 与本次重算一致（快照过期会在这里先暴露）
+ *   I7（R14）dormant 对「会被加载的包的声明」封闭：没有任何会被加载的包声明依赖 dormant 包。
+ *      这是卸载清单（`catalog_uninstall` / 面板「处置清单」）的**唯一安全前提**。
+ *      它抓到过真问题：按"同名副本取最后读到那份"的口径，`emoji-regex` 被算成 dormant，
+ *      而顶层 `string-width`（随 @anweat/dsh-browser 加载）正声明着它。
  */
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { dataDir, profileBundles, profileComposition, profileDir, profileNodeModules } from "../lib/hostinfo.js";
-import { LOAD_STATES, parseComposition, resolveLoadPaths } from "../lib/loadstate.mjs";
+import { LOAD_STATES, parseComposition, resolveLoadPaths, scanInstalledPackages } from "../lib/loadstate.mjs";
 
 const asJson = process.argv.includes("--json");
-
-/** 收集 profile 里每个包声明的三类依赖（与 catalog 的口径一致：顶层 + 一层嵌套）。 */
-async function scanInstalled(nodeModules) {
-	const installed = new Map();
-	const readMeta = async (dir) => {
-		try {
-			const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-			if (!pkg || typeof pkg.name !== "string" || pkg.name === "") return null;
-			const deps = [];
-			for (const key of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-				if (pkg[key] && typeof pkg[key] === "object") deps.push(...Object.keys(pkg[key]));
-			}
-			return { name: pkg.name, deps: [...new Set(deps)] };
-		} catch {
-			return null;
-		}
-	};
-	const visit = async (name, dir) => {
-		const info = await stat(dir).catch(() => null);
-		if (!info || !info.isDirectory()) return;
-		const meta = await readMeta(dir);
-		if (meta) installed.set(meta.name || name, meta.deps);
-		return dir;
-	};
-
-	const entries = await readdir(nodeModules).catch(() => []);
-	const dirs = [];
-	for (const entry of entries) {
-		if (entry.startsWith(".")) continue;
-		if (entry.startsWith("@")) {
-			for (const sub of await readdir(join(nodeModules, entry)).catch(() => [])) dirs.push([entry + "/" + sub, join(nodeModules, entry, sub)]);
-		} else {
-			dirs.push([entry, join(nodeModules, entry)]);
-		}
-	}
-	for (const [name, dir] of dirs) await visit(name, dir);
-	/* 嵌套一层：只补依赖图，不作为入口（入口只来自 bundles 与组合文件）。 */
-	for (const [, dir] of dirs) {
-		const nested = join(dir, "node_modules");
-		const names = await readdir(nested).catch(() => []);
-		const nestedDirs = [];
-		for (const name of names) {
-			if (name.startsWith(".")) continue;
-			if (name.startsWith("@")) {
-				for (const sub of await readdir(join(nested, name)).catch(() => [])) nestedDirs.push([name + "/" + sub, join(nested, name, sub)]);
-			} else {
-				nestedDirs.push([name, join(nested, name)]);
-			}
-		}
-		for (const [name, target] of nestedDirs) await visit(name, target);
-	}
-	return installed;
-}
 
 async function readSizeSnapshot() {
 	try {
@@ -127,7 +78,12 @@ if (!nodeModules) {
 const bundles = await profileBundles();
 const composition = await profileComposition();
 const compositions = composition.files.flatMap((file) => parseComposition(file.text));
-const installed = await scanInstalled(nodeModules);
+/* ★ R14：依赖图改由 `lib/loadstate.mjs` 的 `scanInstalledPackages` 扫（同名副本取并集）。
+   探针仍然**独立重算四态**（bundles / 组合文件自己读，resolveLoadPaths 自己调），
+   只是不再自己抄一份目录扫描 —— 抄两份的代价是两边差一个包（本机 `emoji-regex` 就是这么露的馅）。 */
+const scanned = await scanInstalledPackages(nodeModules);
+const installed = scanned.installed;
+const duplicateCopies = scanned.duplicates;
 const result = resolveLoadPaths({ bundles, compositions, installed });
 
 /* ── 不变式 ── */
@@ -157,17 +113,38 @@ for (const [name, value] of result.byName) {
 const disabledRoots = compositions.filter((entry) => entry.disabled && entry.name && rootNames.has(entry.name));
 if (disabledRoots.length > 0) failures.push(`I5 disabled 条目成了入口：${disabledRoots.map((entry) => entry.id || entry.name).join("、")}`);
 
-/* I6：目录快照对账（过期快照会在这里先露出来） */
+/* I6：目录快照对账（过期快照会在这里先露出来）
+   ★ R14：条目名是**目录名**，而加载态是按**包名**算的（别名目录 `ghbackup` → `dsh-github-backup`）。
+     不按 `packageName` 对账的话，这一条要么静默跳过、要么永远对不上。 */
 const snapshot = await readCatalogSnapshot();
 const mismatched = [];
 if (snapshot) {
 	for (const plugin of snapshot.plugins) {
 		if (plugin.inAsar) continue;
-		const fresh = result.byName.get(plugin.name);
+		const fresh = result.byName.get(plugin.packageName || plugin.name);
 		if (!fresh) continue;
 		if (plugin.loadState !== fresh.state) mismatched.push({ name: plugin.name, snapshot: plugin.loadState || "", fresh: fresh.state });
 	}
 	if (mismatched.length > 0) failures.push(`I6 快照与重算不一致 ${mismatched.length} 条（先点「重新扫描」或等启动兜底任务）`);
+}
+
+/* I7（R14）：dormant 集合必须对"会被加载的包的声明"封闭 ——
+   没有任何会被加载的包里声明依赖某个 dormant 包。这是**卸载清单的唯一安全前提**：
+   只要这条成立，"删 dormant 不会弄坏正在加载的东西"就在声明层面站得住。
+   ★ 它抓到过真问题：按"同名副本取最后读到那份"的口径，`emoji-regex` 被算成 dormant，
+     而顶层 `string-width`（随 @anweat/dsh-browser 加载）正声明着它 —— I7 一跑就红。
+     修法是依赖图取并集（保守方向），不是把这条降级成警告。 */
+const offenders = [];
+for (const [name, value] of result.byName) {
+	if (value.state === "dormant") continue;
+	for (const dep of installed.get(name) || []) {
+		const target = result.byName.get(dep);
+		if (target && target.state === "dormant") offenders.push({ from: name, dep });
+	}
+}
+if (offenders.length > 0) {
+	const preview = offenders.slice(0, 5).map((item) => item.from + " → " + item.dep).join("、");
+	failures.push(`I7 会被加载的包声明了 dormant 包 ${offenders.length} 处（${preview}）—— 卸载清单的前提不成立`);
 }
 
 /* ── 报告 ── */
@@ -191,6 +168,8 @@ const payload = {
 	disabledRoots: disabledRoots.length,
 	misleadingEnabledFalse: misleading,
 	dormant: { count: dormantNames.length, bytes: dormantBytes, names: dormantNames },
+	/* 同名多份副本（依赖图取并集的原因）：本机有十几个，`string-width` 就是靠它露的馅 */
+	duplicateCopies,
 	failures,
 };
 
@@ -209,6 +188,7 @@ console.log(
 	"四态           : bundle " + result.counts.bundle + " · config " + result.counts.config + " · transitive " + result.counts.transitive + " · dormant " + result.counts.dormant,
 );
 console.log("旧口径会误导   : " + misleading + " 个包 enabled=false 但会被加载（这批绝不能说「未启用」）");
+console.log("同名多份副本   : " + duplicateCopies.length + (duplicateCopies.length > 0 ? "（" + duplicateCopies.slice(0, 6).join("、") + (duplicateCopies.length > 6 ? " 等" : "") + "）—— 依赖取并集" : ""));
 console.log("");
 console.log("不会被加载（dormant）" + (dormantNames.length > 0 ? "：" + dormantNames.length + " 个 / 有体积记录的合计 " + fmtBytes(dormantBytes) : "：0 个"));
 for (const name of dormantNames) {
@@ -227,4 +207,4 @@ if (failures.length > 0) {
 	for (const failure of failures) console.log("  · " + failure);
 	process.exit(1);
 }
-console.log("✓ 六条不变式全部成立（I1 计数守恒 / I2 bundle 口径 / I3 via 指得回入口 / I4 dormant 与入口无交集 / I5 disabled 不算入口 / I6 快照与重算一致）");
+console.log("✓ 七条不变式全部成立（I1 计数守恒 / I2 bundle 口径 / I3 via 指得回入口 / I4 dormant 与入口无交集 / I5 disabled 不算入口 / I6 快照与重算一致 / I7 dormant 对加载中的声明封闭）");
