@@ -329,7 +329,7 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe's six invariants (361 checks, runs in the sandbox)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe's six invariants (362 checks, runs in the sandbox)
 node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (170 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
