@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r10.0";
+		const BUILD = "r11.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -124,6 +124,11 @@ window.__ModuleLoader__.load({
 			pickedBusy: false,
 			/* R9：只看「无人依赖」的候选（清理决策；候选不是结论，界面会带说明） */
 			orphanOnly: false,
+			/* R11：「同步 staging」的二次确认（**服务端已经出过计划**才允许点确认写盘）。
+			   ★ 这个和 picked 一样**不进 localStorage**：重载后必须重新出计划，
+			     不能拿一份过期的计划去覆盖文件。 */
+			syncPlan: null,
+			syncBusy: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -253,7 +258,15 @@ window.__ModuleLoader__.load({
 			if (job.finishedAt === preflightNoticeAt) return;
 			preflightNoticeAt = job.finishedAt;
 			const result = job.result || {};
-			const parts = (result.checks || []).map((check) => check.id + " " + (check.passed ?? "?") + (check.failed > 0 ? "（失败 " + check.failed + "）" : ""));
+			/* 第 4 项（副本同步）没有 passed/failed，只有一个"X 对里 Y 个旧"：
+			   写成 `staging ?` 会让人以为这条没跑，所以单独给它的口径。 */
+			const parts = (result.checks || []).map((check) => {
+				if (check.informational) {
+					const stale = Array.isArray(check.stale) ? check.stale.length : 0;
+					return check.id + " " + (check.ok === false ? "失败" : (Number(check.pairs) || 0) + " 对/" + stale + " 旧");
+				}
+				return check.id + " " + (check.passed ?? "?") + (check.failed > 0 ? "（失败 " + check.failed + "）" : "");
+			});
 			set({
 				notice: result.ok
 					? "自检全绿：" + parts.join(" / ") + "，共 " + Math.round((result.durationMs || 0) / 1000) + " 秒｜报告 " + (result.reportPath || "")
@@ -270,6 +283,50 @@ window.__ModuleLoader__.load({
 			} catch (error) {
 				set({ loading: false, error: String((error && error.message) || error) });
 			}
+		}
+
+		/* ── R11：「同步 staging」三步（出计划 → 二次确认 → 写盘）──
+		   ★ 走服务端 `/skillsync`，与 `catalog_skill_sync` 工具**同一个 service 方法**：
+		     方向永远单向 `live → staging`，覆盖前备份 `.bak-<时间戳>`。
+		   ★ 按钮本身拿不到写盘权限：apply 必须带 `confirm:true`，少了服务端直接拒 ——
+		     这样"误点一下"最多出一份计划，不会改文件。
+		   ★ 计划**不进 localStorage**：重载后必须重新出计划，不能拿过期计划去覆盖文件。 */
+		async function planStageSync(ids) {
+			set({ syncBusy: true, syncPlan: null });
+			try {
+				const result = await post("/skillsync", { ids: Array.isArray(ids) ? ids : [] });
+				if (!result || result.ok !== true) {
+					set({ syncBusy: false, notice: "取同步计划失败：" + String((result && result.error) || "未知错误") });
+					return;
+				}
+				if (!Number(result.count)) {
+					set({ syncBusy: false, syncPlan: null, notice: "没有需要同步的 Skill（staging 与加载的那份一致）" });
+					return;
+				}
+				set({ syncBusy: false, syncPlan: result, notice: null });
+			} catch (error) {
+				set({ syncBusy: false, notice: "取同步计划失败：" + String((error && error.message) || error) });
+			}
+		}
+
+		async function applyStageSync() {
+			const plan = store.syncPlan;
+			if (!plan) return;
+			const ids = (plan.items || []).map((item) => item.id);
+			set({ syncBusy: true });
+			try {
+				const result = await post("/skillsync", { ids, apply: true, confirm: true });
+				set({ syncBusy: false, syncPlan: null });
+				if (result && result.ok) {
+					set({ notice: "已把 " + ((result.synced || []).length) + " 个 Skill 的 SKILL.md 同步到 staging（备份 " + ((result.backups || []).length) + " 份 .bak-" + (result.stamp || "") + "，回滚就是改回来）" });
+				} else {
+					const failedNames = result && Array.isArray(result.failed) ? result.failed.map((item) => item.name).join("、") : "";
+					set({ notice: "同步失败：" + String((result && result.error) || "未知错误") + (failedNames ? "（" + failedNames + "）" : "") });
+				}
+			} catch (error) {
+				set({ syncBusy: false, syncPlan: null, notice: "同步失败：" + String((error && error.message) || error) });
+			}
+			await refresh();
 		}
 
 		async function loadDetail(id, page, pageSize) {
@@ -392,6 +449,20 @@ window.__ModuleLoader__.load({
 			if (drift.verdict === "newer-workspace") parts.push("工作区那份更新 —— 改它才会生效（先重新安装或改成 junction）");
 			if (drift.verdict === "newer-loaded") parts.push("加载的那份更新 —— 工作区源码可能是旧的，别改错地方");
 			return parts.join("\n");
+		}
+
+		/* ── R11：staging 是否「旧了」的判据（纯函数，可直接断言）──
+		   只有「内容不同」与「加载的那份更新」才该同步。
+		   ★ `newer-workspace`（staging 更新）**绝不能自动同步** —— 那会把线上正在用的那份覆盖回旧版，
+		     正是本轮"单向"铁律的反面。所以判据写成白名单而不是"不是 same 就算旧"。 */
+		function isStageStale(drift) {
+			if (!drift || drift.staged !== true) return false;
+			return drift.verdict === "differs" || drift.verdict === "newer-loaded";
+		}
+
+		function staleSkillIds(driftMap) {
+			if (!driftMap || typeof driftMap !== "object") return [];
+			return Object.keys(driftMap).filter((id) => isStageStale(driftMap[id]));
 		}
 
 		/** 体积：只给人看，不参与判断（「12.3 MB · 318 个文件」） */		function fmtBytes(bytes) {
@@ -1175,7 +1246,29 @@ window.__ModuleLoader__.load({
 													: label
 														? prefix + "：" + label + " —— " + driftDetail(drift).replace(/\n/g, "；")
 														: prefix + "：两份一致";
-										return h("div", { className: "dpc-block" }, h("div", { className: "dpc-block-title" }, "副本同步"), h("div", { className: "dpc-muted" }, body));
+										/* R11：Skill 的两种"旧了"可以就地同步（只往前跑，不往回退） */
+										const canSync = isStageStale(drift);
+										/* 浮窗里的确认条**只显示只针对这一条**的计划：
+										   从面板批量出的计划（可能 10 个）显示在任何单个浮窗里都会误导。 */
+										const ownPlan =
+											state.syncPlan && Array.isArray(state.syncPlan.items) && state.syncPlan.items.length === 1 && state.syncPlan.items[0] && state.syncPlan.items[0].id === item.id
+												? state.syncPlan
+												: null;
+										return h(
+											"div",
+											{ className: "dpc-block" },
+											h("div", { className: "dpc-block-title" }, "副本同步"),
+											h("div", { className: "dpc-muted" }, body),
+											canSync
+												? h(
+														"div",
+														{ className: "dpc-row" },
+														h("button", { className: "dpc-btn dpc-btn-sm", onClick: () => planStageSync([item.id]), disabled: state.syncBusy }, "同步这一份 → staging"),
+														h("span", { className: "dpc-muted" }, "单向 live → staging；覆盖前把 staging 那份备份成 .bak-<时间戳>"),
+													)
+												: null,
+											ownPlan ? h(SyncConfirm, { compact: true, plan: ownPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) }) : null,
+										);
 									})(),
 									/* 仓库与操作 */
 									h(
@@ -1314,6 +1407,131 @@ window.__ModuleLoader__.load({
 						),
 						h("div", { className: "dpc-muted dpc-pad" }, "不 force push；密钥命中的仓不动；公开是另一次独立操作。"),
 					),
+				),
+			);
+		}
+
+		/* ── R11：体检结论卡（面板上能点开的失败项）──
+		   以前体检跑完只有一行提示条 + 一个报告路径：失败时得自己打开 .cache/ship-*.md 才知道哪条红了。
+		   这里把 `job.result.checks[].failures` 直接摊在面板上 —— 报告仍在，但不用先去找它。 */
+		function PreflightCard(props) {
+			const result = props.result;
+			const [showAll, setShowAll] = useState(false);
+			if (!result) return null;
+			const checks = Array.isArray(result.checks) ? result.checks : [];
+			const failedChecks = checks.filter((check) => check.ok === false);
+			const failures = [];
+			for (const check of failedChecks) {
+				for (const text of check.failures || []) failures.push({ where: check.label || check.id, text: String(text) });
+			}
+			/* 默认只摊 6 条：一次红 40 条时全铺开会把整个面板推下去，反而找不到结论 */
+			const visible = showAll ? failures : failures.slice(0, 6);
+			const git = result.git || null;
+			const version = result.version || null;
+			return h(
+				"div",
+				{ className: "dpc-preflight" + (result.ok ? " is-ok" : " is-bad") },
+				h(
+					"div",
+					{ className: "dpc-preflight-head" },
+					h("span", { className: "dpc-preflight-mark" }, result.ok ? "✓" : "✗"),
+					h("span", { className: "dpc-preflight-title" }, "上次自检：" + (result.ok ? "全绿" : failedChecks.length + " 项失败")),
+					h("span", { className: "dpc-muted" }, "｜" + Math.round((result.durationMs || 0) / 1000) + " 秒" + (result.at ? " · " + fmtDateTime(result.at) : "")),
+					version ? h("span", { className: version.ok ? "dpc-muted" : "dpc-bad" }, "｜版本 " + version.version + " ↔ " + version.build + (version.ok ? "" : "（不一致）")) : null,
+					git && git.ok && !git.skipped
+						? h(
+								"span",
+								{ className: "dpc-muted" },
+								"｜git " +
+									(git.headShort || "") +
+									(git.dirty > 0 ? " · " + git.dirty + " 个未提交" : " · 干净") +
+									(git.pushed === false ? " · 未推送" : git.pushed === true ? " · 已推送" : ""),
+							)
+						: null,
+				),
+				h(
+					"div",
+					{ className: "dpc-preflight-checks" },
+					checks.map((check) =>
+						h(
+							"span",
+							{
+								key: check.id,
+								className: "dpc-preflight-check" + (check.ok === false ? " is-bad" : check.informational ? " is-info" : " is-ok"),
+								title: (check.failures || []).join("\n") || (check.informational ? "Skill 的 staging（发布源）与 DSH 实际加载的那份是否一致" : ""),
+							},
+							(check.ok === false ? "✗ " : check.informational ? "ℹ " : "✓ ") +
+								(check.label || check.id) +
+								" " +
+								(check.informational
+									? (Number(check.pairs) || 0) + " 对" + (Array.isArray(check.stale) && check.stale.length ? " / " + check.stale.length + " 旧" : " / 一致")
+									: (check.passed ?? "?") + " 通过" + (check.failed ? " · " + check.failed + " 失败" : "") + (check.skipped ? " · " + check.skipped + " 跳过" : "")) +
+								" · " +
+								Math.round((check.durationMs || 0) / 1000) +
+								"s",
+						),
+					),
+				),
+				failures.length > 0
+					? h(
+							"div",
+							{ className: "dpc-preflight-fails" },
+							visible.map((failure, index) =>
+								h("div", { key: index, className: "dpc-preflight-fail" }, h("span", { className: "dpc-preflight-where" }, failure.where), h("span", { className: "dpc-mono" }, failure.text)),
+							),
+							failures.length > visible.length
+								? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => setShowAll(true) }, "还有 " + (failures.length - visible.length) + " 条，全部展开")
+								: null,
+						)
+					: null,
+				h(
+					"div",
+					{ className: "dpc-row" },
+					result.reportPath
+						? h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+									onClick: () => set({ notice: copyText(result.reportPath) ? "已复制报告路径：" + result.reportPath : "复制失败：渲染进程不让写剪贴板" }),
+								},
+								"复制报告路径",
+							)
+						: null,
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onRerun, disabled: props.busy }, props.busy ? "正在跑…" : "重跑"),
+					result.reportPath ? h("span", { className: "dpc-muted dpc-mono" }, result.reportPath) : null,
+				),
+			);
+		}
+
+		/* ── R11：「同步 staging」的二次确认条 ──
+		   写盘前必须让人看见「会覆盖哪些文件、往哪个方向、备份落在哪」。
+		   面板上（全局批次）与 Skill 浮窗里（单个）共用这一个组件。 */
+		function SyncConfirm(props) {
+			const plan = props.plan;
+			if (!plan) return null;
+			const items = Array.isArray(plan.items) ? plan.items : [];
+			const names = items.map((item) => item.name || item.id);
+			const visible = names.slice(0, 8);
+			return h(
+				"div",
+				{ className: "dpc-sync-confirm" + (props.compact ? " is-compact" : ""), role: "group", "aria-label": "同步 staging 确认" },
+				h(
+					"div",
+					{ className: "dpc-sync-title" },
+					"将把 " + items.length + " 个 Skill 的 SKILL.md 复制到 staging（" + (plan.direction || "live → staging") + "）",
+				),
+				h("div", { className: "dpc-muted" }, "覆盖前把 staging 那份备份成 SKILL.md.bak-<时间戳>，回滚就是改回来；不会动 DSH 正在加载的那份。"),
+				h(
+					"div",
+					{ className: "dpc-sync-names" },
+					visible.map((name) => h("code", { key: name, className: "dpc-sync-name" }, name)),
+					names.length > visible.length ? h("span", { className: "dpc-muted" }, "还有 " + (names.length - visible.length) + " 个") : null,
+				),
+				h(
+					"div",
+					{ className: "dpc-row" },
+					h("button", { className: "dpc-btn dpc-btn-sm", onClick: props.onApply, disabled: props.busy }, props.busy ? "同步中…" : "确认同步（" + items.length + " 个）"),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancel, disabled: props.busy }, "取消"),
 				),
 			);
 		}
@@ -1582,6 +1800,11 @@ window.__ModuleLoader__.load({
 			/* 副本漂移：哪些插件的工作区源码与加载的副本不同步 */
 			const driftMap = (data && data.drift) || {};
 			const driftBad = Object.keys(driftMap).filter((id) => driftLabel(driftMap[id]) !== "");
+			/* R11：这里只算「该同步的 Skill」——staging 更新（newer-workspace）不算，方向反了会把线上覆盖回旧版 */
+			const staleSkills = staleSkillIds(driftMap);
+			/* 上一次体检的结论：读**服务端单独存的** `preflight`，不读 `job` 那一格 ——
+			   job 只有一格，统计自愈/量体积一跑就把体检结论顶掉（真机上实测「卡片活不过 20 秒」）。 */
+			const preflightResult = (data && data.preflight) || null;
 
 			return h(
 				"div",
@@ -1612,14 +1835,15 @@ window.__ModuleLoader__.load({
 						/* 体积是清理决策的主要依据之一：给一个显式入口，不必等自动刷新 */
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runSizes, disabled: job.running, title: "量一遍全部条目的磁盘体积（后台任务；卡片体积、按体积排序、筛选合计都靠它）" }, sizesAt ? "重量体积" : "量体积"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: refreshCatalog, disabled: job.running }, "重新扫描"),
-						/* R10：一条命令的发版体检（三层自检 + 版本一致性 + git），换会话前点一次就够 */
+						/* R10：一条命令的发版体检（三层自检 + 版本一致性 + git），换会话前点一次就够
+						   R11：加了第 4 项「副本同步」（Skill 的 staging 是否旧了，只报不拦） */
 						h(
 							"button",
 							{
 								className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
 								onClick: runPreflight,
 								disabled: job.running,
-								title: "发版体检：跑三层自检（audit / render-check / hosttest）+ 版本号与构建戳一致性 + git 状态；结论写进 .cache/ship-*.md。约 40 秒",
+								title: "发版体检：audit / render-check / hosttest 三层自检 + 副本同步（Skill 的 staging 旧了没有）+ 版本号与构建戳一致性 + git 状态；结论写进 .cache/ship-*.md，失败项直接列在面板上。约 45 秒",
 							},
 							"自检",
 						),
@@ -1634,11 +1858,13 @@ window.__ModuleLoader__.load({
 					? h(
 							"div",
 							{ className: "dpc-jobbanner" },
-							"后台任务：" + job.kind + " · " + (job.progress.done || 0) + "/" + (job.progress.total || 0) + (job.progress.paused ? "（已暂停）" : "") + "　界面可以继续用，算完自动刷新",
+							"后台任务：" + job.kind + " · " + (job.progress.done || 0) + "/" + (job.progress.total || "?") + (job.progress.paused ? "（已暂停）" : "") + "　界面可以继续用，算完自动刷新",
 						)
 					: null,
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
+				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
+				preflightResult ? h(PreflightCard, { result: preflightResult, busy: Boolean(job.running), onRerun: runPreflight }) : null,
 				state.exportPath
 					? h(							"div",
 							{ className: "dpc-note" },
@@ -1648,21 +1874,47 @@ window.__ModuleLoader__.load({
 							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ notice: copyText(state.exportPath) ? null : "复制失败：渲染进程不让写剪贴板" }) }, "复制路径"),
 						)
 					: null,
-				/* 副本漂移公告：改源码不生效的第一现场 */
+				/* 副本漂移公告：改源码不生效的第一现场
+				   R11：Skill 的「staging 旧了」在这里就能处置 —— 不用再去开工具/翻文档 */
 				driftBad.length > 0
 					? h(
 							"div",
 							{ className: "dpc-note dpc-note-warn" },
-							"有 " +
-								driftBad.length +
-								" 个条目的两份副本不同步：" +
-								driftBad
-									.slice(0, 5)
-									.map((id) => (items.find((entry) => entry.id === id) || {}).name || id)
-									.join("、") +
-								(driftBad.length > 5 ? " 等" : "") +
-								" —— 插件看卡片上的「副本不同步」，Skill 看「staging 不同步」（发布的是 staging 那份）",
+							h(
+								"div",
+								null,
+								"有 " +
+									driftBad.length +
+									" 个条目的两份副本不同步：" +
+									driftBad
+										.slice(0, 5)
+										.map((id) => (items.find((entry) => entry.id === id) || {}).name || id)
+										.join("、") +
+									(driftBad.length > 5 ? " 等" : "") +
+									" —— 插件看卡片上的「副本不同步」，Skill 看「staging 不同步」（发布的是 staging 那份）",
+							),
+							staleSkills.length > 0
+								? h(
+										"div",
+										{ className: "dpc-sync-bar" },
+										h("span", { className: "dpc-muted" }, staleSkills.length + " 个 Skill 的 staging 是旧的（推上去的就是旧版）："),
+										h(
+											"button",
+											{
+												className: "dpc-btn dpc-btn-sm",
+												onClick: () => planStageSync(staleSkills),
+												disabled: state.syncBusy || Boolean(job.running),
+												title: "出计划 → 二次确认 → 把 DSH 正在加载的那份 SKILL.md 单向复制到 staging（覆盖前备份 .bak-<时间戳>）",
+											},
+											state.syncBusy ? "出计划…" : "同步 staging（" + staleSkills.length + "）",
+										),
+									)
+								: null,
 						)
+					: null,
+				/* R11：同步确认条 —— 只在面板上（浮窗里有自己的一份，避免同一个确认出现两次） */
+				state.syncPlan && !state.open
+					? h(SyncConfirm, { plan: state.syncPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) })
 					: null,
 				data.weekly && data.weekly.gap && data.reports && data.reports.gap && data.reports.gap.repos > 0
 					? h(
@@ -2052,6 +2304,34 @@ window.__ModuleLoader__.load({
 .dpc-note-warn{border:1px solid var(--dsw-alias-state-warn-primary,#d89614);color:#8a5a06}
 .dpc-jobbanner{font-size:12px;padding:7px 11px;border-radius:9px;border:1px solid var(--dsw-alias-brand-primary,#3964fe);
   background:rgba(57,100,254,.08);color:#2f5fd0}
+/* R11：体检结论卡 —— 失败项直接摊在面板上（以前只有一行提示条 + 一个报告路径） */
+.dpc-preflight{display:flex;flex-direction:column;gap:7px;font-size:12px;padding:9px 11px;border-radius:10px;
+  border:1px solid var(--dpc-line);background:var(--dpc-fill)}
+.dpc-preflight.is-ok{border-color:rgba(22,163,74,.35)}
+.dpc-preflight.is-bad{border-color:rgba(220,38,38,.4)}
+.dpc-preflight-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dpc-preflight-mark{font-weight:700;font-size:13px}
+.dpc-preflight.is-ok .dpc-preflight-mark{color:#15803d}
+.dpc-preflight.is-bad .dpc-preflight-mark{color:#b91c1c}
+.dpc-preflight-title{font-weight:600}
+.dpc-preflight-checks{display:flex;gap:6px;flex-wrap:wrap}
+.dpc-preflight-check{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--dpc-line-soft);
+  color:var(--dsw-alias-label-secondary,#4b5563);font-variant-numeric:tabular-nums}
+.dpc-preflight-check.is-ok{border-color:rgba(22,163,74,.3);color:#15803d}
+.dpc-preflight-check.is-bad{border-color:rgba(220,38,38,.45);color:#b91c1c;font-weight:600}
+.dpc-preflight-check.is-info{border-style:dashed}
+.dpc-preflight-fails{display:flex;flex-direction:column;gap:3px;max-height:230px;overflow:auto;padding:6px 8px;
+  border-radius:8px;background:rgba(220,38,38,.05)}
+.dpc-preflight-fail{display:flex;align-items:baseline;gap:7px;font-size:11.5px;line-height:1.5}
+.dpc-preflight-where{flex:0 0 auto;font-size:10px;padding:0 5px;border-radius:5px;background:rgba(220,38,38,.14);color:#b91c1c;white-space:nowrap}
+/* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
+.dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;
+  border:1px solid var(--dpc-klein);background:color-mix(in srgb,var(--dpc-klein) 6%,transparent)}
+.dpc-sync-confirm.is-compact{margin-top:6px;font-size:11.5px;padding:8px 10px}
+.dpc-sync-title{font-weight:600;color:var(--dpc-klein)}
+.dpc-sync-names{display:flex;gap:5px;flex-wrap:wrap}
+.dpc-sync-name{font-size:11px;padding:1px 6px;border-radius:5px;background:var(--dpc-fill-hover);color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-sessions-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;
   color:var(--dsw-alias-label-secondary,#4b5563);margin-bottom:4px}
 .dpc-sessions{display:flex;flex-direction:column;gap:2px;max-height:300px;overflow:auto}
@@ -2194,6 +2474,12 @@ window.__ModuleLoader__.load({
 			togglePicking,
 			driftLabel,
 			driftDetail,
+			isStageStale,
+			staleSkillIds,
+			planStageSync,
+			applyStageSync,
+			PreflightCard,
+			SyncConfirm,
 			toolHits,
 			hotkeyOf,
 			copyText,

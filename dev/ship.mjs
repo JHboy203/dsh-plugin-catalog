@@ -4,6 +4,9 @@
  * 为什么要有它：这套东西的验收一直是「跑三条命令、人眼对数字、再看 git 干净不干净」。
  * 换会话接手时这一步最容易漏（漏了就等于没验）。把它固定成脚本后：
  *   - 三条自检自动跑、自动解析 passed/failed/skipped；
+ *   - **第 4 项「副本同步」**：这台机器上有几个 Skill 的 staging（发布源）是旧的 —— R6 那次
+ *     是"12 个 Skill 发出去的都是旧版"，靠人翻对话才发现。它**只报不拦**（与 git 脏同一条口径：
+ *     改 Skill 的中途 staging 落后是常态，把它算失败会让这个脚本在最该用的时候变成噪音）；
  *   - 版本号与构建戳（package.json version ↔ client.js BUILD）不一致会直接报错 ——
  *     这是"改了代码忘了抬版本"的固定防线；
  *   - git 是否干净、HEAD 是否等于 origin/main 一并给；
@@ -17,7 +20,7 @@
  *
  * ★ asar 断言的环境依赖：`app.asar` 只有 Electron 进程（或 `ELECTRON_RUN_AS_NODE=1` 的宿主 exe）
  *   才有 `process.resourcesPath`。普通 node 里 hosttest 会把那一条标成 SKIP（不算失败）。
- *   所以「面板点自检」拿到的是完整版（150 项），命令行 `node dev/ship.mjs` 是 149 + 1 SKIP —— 两者都如实写。
+ *   所以「面板点自检」拿到的是完整版，命令行 `node dev/ship.mjs` 少一条 —— 两者都如实写。
  */
 
 import { execFile } from "node:child_process";
@@ -25,6 +28,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { dataDir as catalogDataDir, skillRoots, workspaceRoot } from "../lib/hostinfo.js";
+import { loadSettings, skillsStageDirOf } from "../lib/settings.mjs";
+import { scanSkillStaging } from "../lib/staging.mjs";
 
 const run = promisify(execFile);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,6 +51,9 @@ const CHECKS = [
 	{ id: "audit", label: "自洽契约", script: "dev/audit.mjs" },
 	{ id: "render", label: "界面渲染", script: "dev/render-check.cjs" },
 	{ id: "hosttest", label: "宿主行为", script: "dev/hosttest.mjs" },
+	/* 第 4 项在**本进程内**跑（不 spawn 子进程）：它只 stat 几十个 SKILL.md，比起一个 node 还快。
+	   ★ informational：它报的是**这台机器的状态**（staging 旧了），不是代码缺陷 —— 只报不拦。 */
+	{ id: "staging", label: "副本同步", inline: true, informational: true },
 ];
 
 /** 子进程要用哪个解释器：宿主（Electron）下必须带 ELECTRON_RUN_AS_NODE 才能读到 app.asar。 */
@@ -98,8 +108,61 @@ async function gitFacts() {
 	}
 }
 
+/**
+ * 第 4 项：Skill 的两份副本是否同步（`<ws>/.dsh/skills` vs staging）。
+ *
+ * ★ 为什么"只报不拦"：中途改 Skill 时 staging 落后是常态（可能正在写、可能还没发布）。
+ *   把它算成失败会让这个脚本在最该用的时刻变成噪音 —— 与 git 脏/未推送完全同一条口径。
+ *   它**仍然有价值**：R6 那次"12 个 Skill 发出去的是旧版"就是靠人翻对话才发现的，
+ *   现在交接前跑一条命令就能看见。真正的失败只有一种：扫描本身抛错。
+ */
+async function stagingCheck() {
+	const startedAt = Date.now();
+	try {
+		const settings = await loadSettings(catalogDataDir());
+		const workspace = workspaceRoot(settings.workspace) || "";
+		const stageDir = skillsStageDirOf(settings, workspace);
+		const scan = await scanSkillStaging({ roots: skillRoots(settings.workspace), stageDir });
+		return {
+			id: "staging",
+			label: "副本同步",
+			ok: true,
+			informational: true,
+			passed: null,
+			failed: 0,
+			skipped: 0,
+			pairs: scan.pairs,
+			stale: scan.stale.map((item) => item.name),
+			staleDetail: scan.stale,
+			notPublished: scan.missing,
+			newerStaged: scan.newerStaged,
+			stageDir,
+			durationMs: Date.now() - startedAt,
+			failures: [],
+		};
+	} catch (error) {
+		return {
+			id: "staging",
+			label: "副本同步",
+			ok: false,
+			informational: true,
+			passed: null,
+			failed: 0,
+			skipped: 0,
+			pairs: 0,
+			stale: [],
+			durationMs: Date.now() - startedAt,
+			failures: ["副本同步检查自身失败：" + String(error?.message ?? error)],
+		};
+	}
+}
+
 async function runCheck(check) {
 	const startedAt = Date.now();
+	if (check.inline === true) {
+		const result = await stagingCheck();
+		return { ...result, durationMs: Date.now() - startedAt };
+	}
 	try {
 		const { stdout, stderr } = await run(process.execPath, [join(REPO, check.script)], { cwd: REPO, env: childEnv(), timeout: 600000, maxBuffer: 16 * 1024 * 1024 });
 		const text = String(stdout || "") + String(stderr || "");
@@ -119,6 +182,8 @@ const version = versionVerdict(pkg.version, buildMatch ? buildMatch[1] : "");
 
 const selected = CHECKS.filter((check) => !onlyArg || onlyArg.includes(check.id));
 const results = [];
+/* total 先发：面板/`runPreflight` 靠它画"第 2/4 项"，写死在两处迟早漂 */
+if (asJson) process.stderr.write("ship:check:total:" + selected.length + "\n");
 for (const check of selected) {
 	/* 进度走 stderr：stdout 在 --json 模式下必须只有最后那一段 JSON（面板要 JSON.parse） */
 	if (asJson) process.stderr.write("ship:check:start:" + check.id + "\n");
@@ -126,6 +191,13 @@ for (const check of selected) {
 	results.push(result);
 	if (asJson) process.stderr.write("ship:check:done:" + check.id + ":" + (result.ok ? "ok" : "fail") + "\n");
 	if (!asJson) {
+		if (result.informational) {
+			/* 只报不拦的那一项：用 ℹ 而不是 ✓，并把"几个是旧的"直接写出来 */
+			const stale = Array.isArray(result.stale) ? result.stale : [];
+			console.log("  " + (result.ok ? "ℹ" : "✗") + " " + result.label + "（" + check.id + "）  " + (result.ok ? result.pairs + " 对里 " + stale.length + " 个是旧的" + (stale.length ? "｜" + stale.slice(0, 6).join("、") + (stale.length > 6 ? " 等" : "") : "") : "检查自身失败") + " · " + Math.round(result.durationMs / 1000) + "s");
+			if (!result.ok && result.failures?.length) for (const failure of result.failures.slice(0, 6)) console.log("      ✗ " + failure);
+			continue;
+		}
 		console.log("  " + (result.ok ? "✓" : "✗") + " " + result.label + "（" + check.id + "）  passed " + (result.passed ?? "?") + " · failed " + (result.failed ?? "?") + (result.skipped ? " · skipped " + result.skipped : "") + " · " + Math.round(result.durationMs / 1000) + "s");
 		if (!result.ok && result.failures?.length) for (const failure of result.failures.slice(0, 6)) console.log("      ✗ " + failure);
 	}
@@ -134,12 +206,17 @@ for (const check of selected) {
 const git = noGit ? { ok: true, skipped: true } : await gitFacts();
 const dotGit = existsSync(join(REPO, ".git"));
 
-const totals = results.reduce(
+/* 合计只数"有 passed/failed 的检查"：副本同步报的是台机器的状态（X 对里 Y 个旧），
+   把 pair 数加进"585 通过"会让这个数字失去意义 —— 它必须能直接对历史值比。 */
+const counted = results.filter((result) => result.informational !== true);
+const totals = counted.reduce(
 	(sum, result) => ({ passed: sum.passed + (result.passed || 0), failed: sum.failed + (result.failed || 0), skipped: sum.skipped + (result.skipped || 0) }),
 	{ passed: 0, failed: 0, skipped: 0 },
 );
-/* 结论只看：版本一致 + 三条自检全绿。git 脏/未推送**只报不拦** ——
-   交接前通常还有没提交的改动，把它算失败会让这个脚本在真正该用的时刻变成噪音。 */
+const staging = results.find((result) => result.id === "staging") || null;
+/* 结论只看：版本一致 + 各项自检全绿。git 脏/未推送、Skill 的 staging 旧了**只报不拦** ——
+   交接前通常还有没提交的改动、也可能正在改某个 Skill，把它们算失败会让这个脚本
+   在真正该用的时刻变成噪音。 */
 const ok = version.ok && results.every((result) => result.ok);
 
 /* 报告：默认写到 <plugin>/.cache/ship-<stamp>.md（.cache 不入库，但路径要给到面板/人） */
@@ -156,11 +233,26 @@ try {
 		"",
 		"| 检查 | 通过 | 失败 | 跳过 | 耗时 |",
 		"|---|---:|---:|---:|---:|",
-		...results.map((result) => "| " + result.label + "（" + result.id + "） | " + (result.passed ?? "?") + " | " + (result.failed ?? "?") + " | " + (result.skipped ?? 0) + " | " + Math.round(result.durationMs / 1000) + "s |"),
+		...results.map((result) => "| " + result.label + "（" + result.id + "） | " + (result.passed ?? "—") + " | " + (result.failed ?? "—") + " | " + (result.skipped ?? 0) + " | " + Math.round(result.durationMs / 1000) + "s |"),
 		"",
 		"合计：**" + totals.passed + " 通过** / " + totals.failed + " 失败 / " + totals.skipped + " 跳过",
 		"",
 	];
+	/* 副本同步单独一段：它不是"通过/失败"，而是"这台机器上有几个 Skill 推出去会是旧版" */
+	if (staging) {
+		if (staging.ok) {
+			lines.push("## 副本同步（Skill 的 staging）", "");
+			lines.push("- 已发布对：**" + staging.pairs + "** ｜ 旧的：**" + (staging.stale || []).length + "** ｜ 一致：" + (staging.pairs - (staging.stale || []).length - (staging.newerStaged || 0)) + " ｜ 还没发布：" + (staging.notPublished || 0));
+			if (staging.stageDir) lines.push("- staging 目录：`" + staging.stageDir + "`");
+			for (const item of staging.staleDetail || []) lines.push("  - **" + item.name + "**：" + item.verdict + " —— `" + item.loadedDir + "` → `" + item.stagedDir + "`");
+			if ((staging.stale || []).length > 0) lines.push("- 处理：面板点「同步 staging」（或工具 `catalog_skill_sync action=apply confirm=true`）—— 单向 live → staging，覆盖前备份 `.bak-<时间戳>`");
+			lines.push("");
+		} else {
+			lines.push("## 副本同步（检查自身失败）", "");
+			for (const failure of staging.failures || []) lines.push("- " + failure);
+			lines.push("");
+		}
+	}
 	for (const result of results) {
 		if (result.ok) continue;
 		lines.push("## " + result.label + "（" + result.id + "）失败项", "");
@@ -191,6 +283,10 @@ if (asJson) {
 	if (!git.skipped && git.ok) console.log("  git " + git.headShort + (git.dirty > 0 ? " · " + git.dirty + " 个未提交" : " · 干净") + (git.pushed === null ? " · 无 upstream" : git.pushed ? " · 已推送" : " · 未推送"));
 	if (!git.skipped && !git.ok) console.log("  git 不可用：" + git.error);
 	console.log("  合计 " + totals.passed + " 通过 / " + totals.failed + " 失败 / " + totals.skipped + " 跳过");
+	if (staging) {
+		const staleNames = Array.isArray(staging.stale) ? staging.stale : [];
+		console.log("  副本同步 " + (staging.ok ? staging.pairs + " 对里 " + staleNames.length + " 个 Skill 的 staging 是旧的" + (staleNames.length ? "（" + staleNames.slice(0, 4).join("、") + (staleNames.length > 4 ? " 等" : "") + "）" : "") + " · 只报不拦" : "检查自身失败"));
+	}
 	console.log("  报告 " + reportPath);
 }
 

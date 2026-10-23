@@ -277,8 +277,8 @@ ok("/health 报告了归属统计", healthRoute.json?.attribution !== null && he
    dry 必须**不起子进程**，所以它能证明路由、参数与返回形状都对，又不会把自检拖成两分钟。 */
 const preflightDry = await callRoute("/preflight", "POST", { dry: true });
 ok(
-	"/preflight dry=true 只回「会跑什么」，不起子进程",
-	preflightDry.status === 200 && preflightDry.json?.ok === true && preflightDry.json?.dry === true && Array.isArray(preflightDry.json?.checks) && preflightDry.json.checks.length === 3,
+	"/preflight dry=true 只回「会跑什么」（四项：三层自检 + 副本同步），不起子进程",
+	preflightDry.status === 200 && preflightDry.json?.ok === true && preflightDry.json?.dry === true && Array.isArray(preflightDry.json?.checks) && preflightDry.json.checks.length === 4 && preflightDry.json.checks.includes("staging"),
 	JSON.stringify(preflightDry.json).slice(0, 240),
 );
 ok("service 暴露 runPreflight（宿主侧跑 dev/ship.mjs 并解析结论）", typeof (await import("../lib/service.mjs")).CatalogService?.prototype?.runPreflight === "function");
@@ -600,6 +600,103 @@ ok("catalog_skill_sync plan 不写盘且给出方向", syncPlan?.ok === true && 
 ok("计划项都带两个绝对目录（live 与 staging 不同）", (syncPlan?.items || []).every((item) => typeof item.loadedDir === "string" && typeof item.stagedDir === "string" && item.loadedDir !== item.stagedDir));
 const syncNoConfirm = await callTool("catalog_skill_sync", { action: "apply" });
 ok("apply 不带 confirm 被拒（绝不静默覆盖 staging）", syncNoConfirm?.ok === false && /confirm/.test(String(syncNoConfirm?.error || "")), JSON.stringify(syncNoConfirm?.error));
+
+/* ─────────── R11：「同步 staging」从工具走到面板，以及体检第 4 项 ───────────
+   三个层次各验一段，缺一层就会出现"按钮能点、路由没接"或"路由能调、判据是另一套"：
+     ① `/skillsync` 路由：计划只读、写盘必须 confirm；
+     ② `lib/staging.mjs` 的判据与复制：用临时目录，不碰真 staging；
+     ③ `dev/ship.mjs --only staging`：交接前那条命令真能报出「几对里几个旧」。 */
+const routePlan = await callRoute("/skillsync", "POST", {});
+ok(
+	"/skillsync 计划接口：只读、给出方向与计数（面板按钮的第一步）",
+	routePlan.status === 200 && routePlan.json?.ok === true && typeof routePlan.json?.count === "number" && routePlan.json?.applied !== true && routePlan.json?.direction === "live → staging",
+	JSON.stringify(routePlan.json && { ok: routePlan.json.ok, count: routePlan.json.count, applied: routePlan.json.applied, direction: routePlan.json.direction }),
+);
+ok("计划项只带「旧了」的（staging 更新的一项都不会进计划）", (routePlan.json?.items || []).every((item) => item.verdict === "differs" || item.verdict === "newer-loaded"), JSON.stringify((routePlan.json?.items || []).map((item) => [item.name, item.verdict])));
+const routeNoConfirm = await callRoute("/skillsync", "POST", { apply: true });
+ok("面板路由的写盘闸在服务端：apply 不带 confirm 直接被拒", routeNoConfirm.json?.ok === false && /confirm/.test(String(routeNoConfirm.json?.error || "")), JSON.stringify(routeNoConfirm.json?.error));
+const routeGet = await callRoute("/skillsync", "GET");
+ok("/skillsync 只接受 POST（GET 404，别让人用地址栏触发写盘）", routeGet.status === 404 || routeGet.json === null, JSON.stringify({ status: routeGet.status, json: routeGet.json }));
+/* 带不存在 id 的 apply：走完写盘分支但一份也不复制（安全地验「真写」这条路通不通） */
+const routeApplyEmpty = await callRoute("/skillsync", "POST", { ids: ["skill:__hosttest_none__"], apply: true, confirm: true });
+ok("带 confirm 的 apply 真的走到写盘分支（不存在的 id → 复制 0 份，不碰真文件）", routeApplyEmpty.json?.ok === true && routeApplyEmpty.json?.applied === true && routeApplyEmpty.json?.count === 0, JSON.stringify(routeApplyEmpty.json && { ok: routeApplyEmpty.json.ok, applied: routeApplyEmpty.json.applied, count: routeApplyEmpty.json.count }));
+
+const { scanSkillStaging, skillVerdict, copySkillToStaging, skillStamp, isStaleVerdict, SKILL_FILE } = await import("../lib/staging.mjs");
+ok("staging 判据模块导出（面板、工具、体检共用同一套）", SKILL_FILE === "SKILL.md" && typeof scanSkillStaging === "function" && typeof copySkillToStaging === "function" && typeof skillStamp === "function");
+/* 纯函数边界：这四种情况在真机上都会出现，写错一种就会「明明一致却提示同步」或反之 */
+eq("skillVerdict：两边都没有 → absent（不进任何列表）", skillVerdict(null, null).verdict, "absent");
+eq(
+	"skillVerdict：只有 live 有 → missing-staged（发布出去是空壳，算旧）",
+	skillVerdict({ size: 10, mtimeMs: 1000 }, null).verdict,
+	"missing-staged",
+);
+ok("missing-staged 算旧", isStaleVerdict("missing-staged") && isStaleVerdict("differs") && isStaleVerdict("newer-loaded") && !isStaleVerdict("newer-workspace") && !isStaleVerdict("same"));
+eq("skillVerdict：size 不同 → differs（不读内容）", skillVerdict({ size: 10, mtimeMs: 1000 }, { size: 11, mtimeMs: 1000 }).verdict, "differs");
+eq("skillVerdict：同样大小、30 秒内 → same（容差 60 秒）", skillVerdict({ size: 10, mtimeMs: 1000 }, { size: 10, mtimeMs: 31000 }).verdict, "same");
+eq("skillVerdict：staging 明显更新 → newer-workspace（**不许自动同步**）", skillVerdict({ size: 10, mtimeMs: 1000 }, { size: 10, mtimeMs: 200000 }).verdict, "newer-workspace");
+eq("skillVerdict：live 明显更新 → newer-loaded（该同步）", skillVerdict({ size: 10, mtimeMs: 200000 }, { size: 10, mtimeMs: 1000 }).verdict, "newer-loaded");
+
+/* 用临时目录验扫描与复制：绝不碰真的 .gh-upload 与 .dsh/skills */
+const liveRoot = join(dataDir, "staging-live");
+const stageRoot = join(dataDir, "staging-stage");
+mkdirSync(join(liveRoot, "alpha"), { recursive: true });
+mkdirSync(join(stageRoot, "alpha"), { recursive: true });
+mkdirSync(join(liveRoot, "beta"), { recursive: true });
+mkdirSync(join(stageRoot, "beta"), { recursive: true });
+mkdirSync(join(liveRoot, "gamma"), { recursive: true }); /* gamma 没发布过 */
+writeFileSync(join(liveRoot, "alpha", "SKILL.md"), "# alpha\n新内容\n");
+writeFileSync(join(stageRoot, "alpha", "SKILL.md"), "# alpha\n旧\n");
+writeFileSync(join(liveRoot, "beta", "SKILL.md"), "# beta\n");
+writeFileSync(join(stageRoot, "beta", "SKILL.md"), "# beta\n");
+writeFileSync(join(liveRoot, "gamma", "SKILL.md"), "# gamma\n");
+const scan = await scanSkillStaging({ roots: [liveRoot], stageDir: stageRoot });
+ok("scanSkillStaging：只数两边都有的（没发布的不算「旧」）", scan.pairs === 2 && scan.missing === 1, JSON.stringify({ pairs: scan.pairs, missing: scan.missing, stale: scan.stale.map((item) => item.name) }));
+ok("scanSkillStaging：内容长度不同的那份进 stale", scan.stale.length === 1 && scan.stale[0].name === "alpha" && scan.stale[0].verdict === "differs", JSON.stringify(scan.stale));
+ok("scanSkillStaging：一致的那份进 same", scan.same === 1);
+const stamp = skillStamp();
+const copied = await copySkillToStaging({ loadedDir: join(liveRoot, "alpha"), stagedDir: join(stageRoot, "alpha"), stamp });
+ok("copySkillToStaging：单向写过去并给出备份路径", copied.ok === true && copied.backup.includes(".bak-" + stamp) && existsSync(copied.backup), JSON.stringify(copied));
+ok(
+	"copySkillToStaging：staging 那份成了 live 的内容（旧内容进备份，可回滚）",
+	readFileSync(join(stageRoot, "alpha", "SKILL.md"), "utf8") === readFileSync(join(liveRoot, "alpha", "SKILL.md"), "utf8") && readFileSync(copied.backup, "utf8").includes("旧"),
+);
+const afterCopy = await scanSkillStaging({ roots: [liveRoot], stageDir: stageRoot });
+ok("同步完再扫：stale 归零（面板刷新后公告条会消失）", afterCopy.stale.length === 0 && afterCopy.same === 2, JSON.stringify({ stale: afterCopy.stale.length, same: afterCopy.same }));
+
+/* 体检第 4 项：真跑一次 ship（只跑 staging 这一项，秒级，不写工作区）
+   ★ 沙箱里 spawn 带管道会 EPERM（Windows 沙箱不给建命名管道），这不是代码缺陷 —— 记 SKIP，
+     并在宿主里（`host_selfcheck` / 面板「自检」）会跑到真的那条路。 */
+const { execFile } = await import("node:child_process");
+const { promisify } = await import("node:util");
+const runNode = promisify(execFile);
+const shipScript = join(dirname(fileURLToPath(import.meta.url)), "..", "dev", "ship.mjs");
+const shipReport = join(dataDir, "ship-staging.md");
+let shipResult = null;
+let shipErr = "";
+let spawnBlocked = false;
+try {
+	const { stdout, stderr } = await runNode(process.execPath, [shipScript, "--json", "--only", "staging", "--report", shipReport], { cwd: join(dirname(fileURLToPath(import.meta.url)), ".."), env: { ...process.env, ELECTRON_RUN_AS_NODE: process.versions.electron ? "1" : process.env.ELECTRON_RUN_AS_NODE }, timeout: 60000, maxBuffer: 8 * 1024 * 1024 });
+	const line = String(stdout).split(/\r?\n/).map((row) => row.trim()).filter(Boolean).reverse().find((row) => row.startsWith("{"));
+	shipResult = { payload: line ? JSON.parse(line) : null, stderr: String(stderr) };
+} catch (error) {
+	shipErr = String(error?.message ?? error).split(/\r?\n/)[0];
+	spawnBlocked = /EPERM|EPIPE|pipe|not permitted/i.test(shipErr + " " + String(error?.code || ""));
+}
+if (spawnBlocked) {
+	skip("ship.mjs --only staging 能跑出结构化结论", "沙箱禁止带管道 spawn 子进程（" + shipErr + "）；在宿主里跑同一项可验");
+	skip("第 4 项自报 informational（只报不拦）", "同上：需要能 spawn");
+	skip("第 4 项给出「几对里几个旧」与 stale 名单", "同上：需要能 spawn");
+	skip("staging 项不进合计", "同上：需要能 spawn");
+	skip("进度事件带 total", "同上：需要能 spawn");
+} else {
+	ok("ship.mjs 能单独跑「副本同步」这一项（交接前那条命令的第 4 项）", shipResult?.payload !== null && shipErr === "", shipErr);
+	const stagingCheck = (shipResult?.payload?.checks || []).find((check) => check.id === "staging") || null;
+	ok("第 4 项自报 informational（只报不拦：不把 staging 旧了算成代码缺陷）", stagingCheck?.informational === true && stagingCheck?.ok === true, JSON.stringify(stagingCheck && { ok: stagingCheck.ok, informational: stagingCheck.informational }));
+	ok("第 4 项给出「几对里几个旧」与 stale 名单", typeof stagingCheck?.pairs === "number" && Array.isArray(stagingCheck?.stale), JSON.stringify(stagingCheck && { pairs: stagingCheck.pairs, stale: stagingCheck.stale }));
+	ok("staging 项不进合计（585 这个数必须能和历史值直接比）", shipResult?.payload?.totals?.passed === 0 && shipResult?.payload?.totals?.failed === 0, JSON.stringify(shipResult?.payload?.totals));
+	ok("进度事件带 total（面板靠它画「第 2/4 项」，不写死）", /ship:check:total:1/.test(String(shipResult?.stderr || "")), String(shipResult?.stderr || "").slice(0, 120));
+}
+
 
 /* ── 标签：新增（必须带解释）→ 打标 → AI 分类读自定义标签 ── */
 const noGloss = await callRoute("/tags", "POST", { action: "add", label: "视频剪辑", dimension: "purpose" });

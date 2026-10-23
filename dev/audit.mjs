@@ -557,7 +557,7 @@ ok("junction 安装单独记为 linked（只有一份，不算漂移）", /verdi
 ok("漂移结果有 60 秒缓存，且重建目录会作废", serviceSource.includes("async driftOf()") && serviceSource.includes("this.driftCache = null;"));
 ok("state 里带 drift 映射", /drift: await this\.driftOf\(\)/.test(serviceSource) && /\.dpc-drift\{/.test(cssSource));
 ok("卡片上的漂移标签走纯函数（可断言）", /function driftLabel\(drift\)/.test(clientSource) && /function driftDetail\(drift\)/.test(clientSource));
-ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /fingerprintDir\(liveDir, \["SKILL\.md"\]\)/.test(serviceSource) && /staged: true/.test(serviceSource));
+ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /skillVerdict\(await skillStat\(liveDir\), await skillStat\(staged\)\)/.test(serviceSource) && /staged: true/.test(serviceSource));
 ok("Skill 的真实目录来自 catalog 的 dir 字段（root 只是 skills 根，拼错会静默比错路径）", /const liveDir = skill\.dir \|\| skill\.root;/.test(serviceSource) && /dir: join\(root, entry\.name\)/.test(readFileSync(new URL("../lib/catalog.mjs", import.meta.url), "utf8")));
 ok("staged 的标签与插件分开（staging 不同步 / staging 较旧）", /staged \? "staging 不同步" : "副本不同步"/.test(clientSource));
 
@@ -645,7 +645,7 @@ ok("「被依赖」的体积在合计里单独点出（不算可回收空间）"
 const shipSource = readFileSync(new URL("../dev/ship.mjs", import.meta.url), "utf8");
 const indexSource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 const hosttestSource = readFileSync(new URL("../dev/hosttest.mjs", import.meta.url), "utf8");
-ok("发版体检脚本存在，且默认跑三项（audit / render / hosttest）", shipSource.includes('{ id: "audit"') && shipSource.includes('{ id: "render"') && shipSource.includes('{ id: "hosttest"'));
+ok("发版体检脚本存在，且默认跑四项（audit / render / hosttest / staging）", shipSource.includes('{ id: "audit"') && shipSource.includes('{ id: "render"') && shipSource.includes('{ id: "hosttest"') && shipSource.includes('{ id: "staging"'));
 ok("体检脚本可被面板当接口用：--json 只输出一段 JSON，进度走 stderr", shipSource.includes("if (asJson) {") && shipSource.includes('process.stderr.write("ship:check:start:') && shipSource.includes("delete env.DSH_CATALOG_KEEP"));
 ok("版本号 ↔ 构建戳对不上要算失败（并给出期望前缀）", /export function versionVerdict/.test(shipSource) && shipSource.includes("对不上（应形如 "));
 ok("自检输出解析成 passed / failed / skipped（三条脚本格式一致）", /export function parseCheckOutput/.test(shipSource) && shipSource.includes('pick("skipped")'));
@@ -661,6 +661,68 @@ ok(
 );
 ok("环境跑不了的断言记 SKIP（不算失败，但要打出来）", /function skip\(name, why\)/.test(hosttestSource) && hosttestSource.includes("skippedItems.length > 0"));
 ok("README 双语都写了这一条命令", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("node dev/ship.mjs") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("node dev/ship.mjs"));
+
+/* ─────────── R11（2026-10-23 第十一轮）：从「发现问题」到「处置」 ───────────
+   前几轮把「什么旧了 / 谁被谁依赖 / 删了能省多少」都查出来了，但**只能看**：
+   面板上写着「3 个 Skill 的 staging 是旧的」，接下来还得让 Agent 开工具或人翻文档。
+   这一轮把处置收进面板，并把这条判据固化成体检的第 4 项。锁五件事：
+     ① 判据只有一份（lib/staging.mjs）—— 面板、工具、体检三方共用，不许各写一套；
+     ② 同步只许单向 live → staging，覆盖前必须备份（方向反了就是把线上覆盖回旧版）；
+     ③ 写盘闸在**服务端**（confirm:true），不在按钮上 —— 误点最多出一份计划；
+     ④ 体检第 4 项只报不拦（与 git 脏同一条口径），且不进 passed 合计；
+     ⑤ 面板能直接摊开体检失败项，不用先去 .cache 找报告。 */
+const stagingSource = readFileSync(new URL("../lib/staging.mjs", import.meta.url), "utf8");
+ok(
+	"判据与复制收在一个模块里（面板、工具、体检共用，不许各写一套）",
+	stagingSource.includes('export const SKILL_FILE = "SKILL.md"') &&
+		stagingSource.includes("export const SKILL_MTIME_TOLERANCE_MS = 60 * 1000") &&
+		["export function skillVerdict", "export async function scanSkillStaging", "export async function copySkillToStaging", "export function skillStamp", "export function isStaleVerdict"].every((needle) => stagingSource.includes(needle)),
+);
+ok("「旧了」是白名单判据（staging 更新不算，绝不能自动同步）", stagingSource.includes('export const STALE_VERDICTS = Object.freeze(["differs", "newer-loaded", "missing-staged"])'));
+ok("复制只做单向 live → staging，并把 staging 那份备份成 .bak-<stamp>", stagingSource.includes("const source = join(loadedDir, SKILL_FILE)") && stagingSource.includes('const candidate = target + ".bak-" + stamp'));
+ok("service 不再自己比 SKILL.md（改走 staging.mjs）", serviceSource.includes('from "./staging.mjs"') && !serviceSource.includes('fingerprintDir(staged, ["SKILL.md"])') && !serviceSource.includes('fingerprintDir(liveDir, ["SKILL.md"])'));
+ok(
+	"service 把 missing-* 归成 differs（客户端 driftLabel 的契约只有三种值，多一种会让卡片静默不标）",
+	serviceSource.includes('comparison.verdict.startsWith("newer-")') && serviceSource.includes(': "differs";'),
+);
+ok("service 的同步走 copySkillToStaging（与新模块同一份备份/方向逻辑）", serviceSource.includes("await copySkillToStaging({ loadedDir: item.loadedDir, stagedDir: item.stagedDir, stamp })"));
+ok("计划只收「旧了」的（isStaleVerdict），不再手写两种 verdict", serviceSource.includes("if (isStaleVerdict(entry.verdict))"));
+
+ok("路由 POST /skillsync：不带 apply 只出计划，带 apply 必须再带 confirm", indexSource.includes('path === "/skillsync"') && indexSource.includes("catalog.syncStagedSkills({ ids })") && indexSource.includes("catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true })"));
+ok("/preflight 的 dry 清单含第 4 项（面板/调用方知道会跑什么）", indexSource.includes('checks: ["audit", "render-check.cjs", "hosttest", "staging"]'));
+ok("runPreflight 的 total 由 ship 事件给（不写死 3，否则加一项进度条就骗人）", serviceSource.includes('ship:check:total:') && !serviceSource.includes("total: 3"));
+ok("ship 发 total 事件（面板画「第 2/4 项」）", shipSource.includes('process.stderr.write("ship:check:total:" + selected.length'));
+ok("第 4 项在本进程内跑（只 stat 几十个文件，不值得再起一个 node）", shipSource.includes("inline: true") && /async function stagingCheck\(/.test(shipSource) && shipSource.includes("scanSkillStaging({ roots: skillRoots(settings.workspace), stageDir })"));
+ok("第 4 项只报不拦，且不进 passed/failed 合计", shipSource.includes("informational: true") && shipSource.includes("const counted = results.filter((result) => result.informational !== true)") && shipSource.includes("results.every((result) => result.ok)"));
+ok("第 4 项自己坏掉要算失败（扫描抛错 ≠ staging 旧了）", shipSource.includes("副本同步检查自身失败"));
+ok("人读输出把「只报不拦」写出来（别让人以为红了也不用管）", shipSource.includes("· 只报不拦"));
+ok("报告单独一段写「几对里几个旧 + 目录 + 处理办法」", shipSource.includes('"## 副本同步（Skill 的 staging）"') && shipSource.includes("catalog_skill_sync action=apply confirm=true"));
+
+ok(
+	"客户端判据是白名单函数（isStageStale / staleSkillIds 可直接断言）",
+	/function isStageStale\(drift\) \{/.test(clientSource) &&
+		clientSource.includes('drift.verdict === "differs" || drift.verdict === "newer-loaded"') &&
+		/function staleSkillIds\(driftMap\) \{/.test(clientSource),
+);
+ok("同步是「出计划 → 二次确认 → 写盘」三步，不是一点就写", clientSource.includes("async function planStageSync(ids)") && clientSource.includes("async function applyStageSync()") && clientSource.includes('post("/skillsync", { ids, apply: true, confirm: true })'));
+ok(
+	"计划不进 localStorage（重载后必须重新出计划，不能拿过期计划覆盖文件）",
+	(() => {
+		const match = /const VIEW_KEYS = \[([^\]]*)\];/.exec(clientSource);
+		return Boolean(match) && !match[1].includes("syncPlan") && !match[1].includes("syncBusy");
+	})(),
+);
+ok("公告条上就有入口（不用先想到开工具）", clientSource.includes('"同步 staging（"') && clientSource.includes("planStageSync(staleSkills)"));
+ok("浮窗里也能同步这一份（只对 staging 旧了的两类）", clientSource.includes('"同步这一份 → staging"') && clientSource.includes("isStageStale(drift)"));
+ok("浮窗只显示「只针对这一条」的确认计划（批量计划显示在单个浮窗里会误导）", clientSource.includes("state.syncPlan.items.length === 1") && clientSource.includes("state.syncPlan.items[0].id === item.id"));
+ok("确认条写明：覆盖几个 / 方向 / 备份 / 不动加载的那份", clientSource.includes('" 个 Skill 的 SKILL.md 复制到 staging（"') && clientSource.includes("不会动 DSH 正在加载的那份"));
+ok("体检结论卡把失败项摊在面板上（不再只有一行提示条）", clientSource.includes("function PreflightCard(props)") && clientSource.includes("preflightResult ? h(PreflightCard") && clientSource.includes("check.failures || []"));
+ok("体检卡读服务端单独存的 `preflight`（不读 job 那一格：job 会被统计自愈顶掉）", clientSource.includes("(data && data.preflight) || null") && serviceSource.includes("preflight: this.lastPreflight") && serviceSource.includes("this.lastPreflight = finalPayload"));
+ok("体检卡区分「informational」项（副本同步没有 passed/failed）", clientSource.includes("check.informational") && clientSource.includes("对\" + (Array.isArray(check.stale) && check.stale.length ? \" / \" + check.stale.length + \" 旧\""));
+ok("提示条也按 informational 的口径说话（不再出现「staging ?」）", clientSource.includes('return check.id + " " + (check.ok === false ? "失败"'));
+ok("新类名都有样式定义", [".dpc-preflight{", ".dpc-preflight-check.is-bad{", ".dpc-preflight-fail{", ".dpc-sync-bar{", ".dpc-sync-confirm{", ".dpc-sync-name{"].every((needle) => cssSource.includes(needle)));
+ok("README 双语都写了面板上的「同步 staging」", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("同步 staging") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("Sync staging"));
+ok("版本号与构建戳同步抬到 0.11.0 / r11.0", /"version": "0\.11\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r11.0"'));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

@@ -291,10 +291,20 @@ export async function apply(ctx) {
 					const body = await readJsonBody(req);
 					/* dry=true：只回"会跑什么"，不起子进程（自检脚本本身不该在自检里跑一遍） */
 					if (body.dry === true) {
-						return json(res, 200, { ok: true, dry: true, script: "dev/ship.mjs", checks: ["audit", "render-check.cjs", "hosttest"], route: "/preflight", job: "preflight" });
+						return json(res, 200, { ok: true, dry: true, script: "dev/ship.mjs", checks: ["audit", "render-check.cjs", "hosttest", "staging"], route: "/preflight", job: "preflight" });
 					}
 					const started = catalog.startJob("preflight", async (progress) => await catalog.runPreflight({ onProgress: progress }));
 					return json(res, 200, started);
+				}
+
+				/* R11：面板上的「同步 staging」—— 与 catalog_skill_sync 工具**同一个 service 方法**。
+				   不带 apply 只出计划（只读）；带 apply 必须再带 confirm:true，否则服务端直接拒。
+				   ★ 写盘闸放在服务端而不是只放在按钮上：按钮可以被误点，接口不该给"少传一个字段就写盘"的机会。 */
+				if (path === "/skillsync" && method === "POST") {
+					const body = await readJsonBody(req);
+					const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+					if (body.apply !== true) return json(res, 200, await catalog.syncStagedSkills({ ids }));
+					return json(res, 200, await catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true }));
 				}
 
 				if (path === "/tags" && method === "POST") {

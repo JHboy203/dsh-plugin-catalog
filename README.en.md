@@ -78,6 +78,12 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   A junction-installed plugin simply says "one copy only — edit the source and it takes effect". When copies disagree the badge reads "副本不同步 / 副本较旧 / 工作区较旧",
   and a Skill's staged copy reads "staging 不同步" — **publishing pushes the staged copy, so a stale stage means you ship an old version**.
   The scan is cached for 60 s and invalidated by a catalog rebuild; it compares lengths and timestamps only, never file contents, so 71 packages cost well under 100 ms
+- **Fixing it in place (R11)**: when a Skill's staging copy is stale you never leave the panel — the banner carries **"Sync staging (N)"**.
+  Clicking it only fetches a **plan** (which `SKILL.md` files would be overwritten, in which direction, where the backups land); a second click on "Confirm sync" writes:
+  one-way `live → staging`, overwriting only after backing the staged file up as `SKILL.md.bak-<timestamp>` (rollback = copy it back),
+  and **never touching the copy DSH is loading**. The popup also offers "Sync this one → staging".
+  The write gate lives **server-side** (requires `confirm:true`), so a stray click can at most produce a plan.
+  When staging is *newer* (`staging 较新`) there is no button at all — that direction would overwrite the live copy with an older one
 - **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
 - **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
@@ -281,11 +287,26 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + version consistency + git, ~40 s):
+**Before shipping or handing off, run just this one** (three checks + copy sync + version consistency + git, ~45 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
 ```
+
+Four checks:
+
+| Check | What it covers | When it is red |
+|---|---|---|
+| `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
+| `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
+| `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
+| `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
+
+Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal
+(you may be writing it, or may not have published it yet). Counting it as failure would turn the command into noise exactly
+when it is most useful, matching the "dirty git is reported, not blocking" rule. It is still worth a look:
+the R6 incident ("12 Skills were publishing old versions") was found only by reading back a conversation; now one command
+before handoff shows it, the panel shows it too, and **the panel can fix it in place** ("Sync staging" on the banner).
 
 It catches three kinds of "shipped but not actually there": a red check, `package.json` version not matching
 `client.js`'s `BUILD`, and (reported, not blocking) uncommitted changes or a local HEAD that differs from `origin/main`.
@@ -293,15 +314,15 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts (293 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search (incl. tool names) / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips and block / self-check button / selection batches / copy sync / export / empty states (139 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict (323 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / self-check button / preflight card / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (156 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot (incl. asar and Skill rules) / batch sizes / dependency graph fields and who-depends-on-what cross-checks / shipping-preflight route (dry) / export write / copy-sync verdicts / skill_sync plan and confirm gate (153 checks under the host; 152 + 1 SKIP in plain node)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check** / export write / copy-sync verdicts / skill_sync plan and confirm gate (177 checks under the host; 5 extra SKIPs in plain node — the sandbox forbids spawning with pipes)
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas
@@ -314,8 +335,7 @@ node dev/ship.mjs            # the shipping preflight above; --json is what the 
 ```
 
 ★ When `dev/ship.mjs` runs under **plain node**, the hosttest asar assertion is marked `SKIP` (no `process.resourcesPath`),
-so it reports 149 passed / 1 skipped; clicking "Self-check" in the panel (host process spawning the child) gives the full 150.
-Both are printed as they are — never silently swallowed.
+so the number is one lower than clicking "Self-check" in the panel; both are printed as they are — never silently swallowed.
 
 Why `dev/preview.mjs` exists: headless self-checks can only verify structure/copy, not **layout** (whether the popup is centered,
 whether the card grid is squeezed into a single column, whether badges overflow in narrow cards). It serializes the component tree into HTML and injects the same CSS;

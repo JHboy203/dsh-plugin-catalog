@@ -543,7 +543,7 @@ ok(
 	JSON.stringify(preflightButtons.map((node) => ({ title: node.props && node.props.title, disabled: node.props && node.props.disabled }))),
 );
 ok(
-	"有任务在跑时「自检」禁用（单任务闸，不会两个后台任务互踩）",
+	"有任务在跑时「自检」禁用（单任务闸，不会两个后台任务互抢）",
 	(() => {
 		const saved = T.store.data;
 		T.store.data = { ...data, job: { running: true, kind: "catalog", progress: { done: 1, total: 3 } } };
@@ -552,6 +552,187 @@ ok(
 		return disabled;
 	})(),
 );
+
+/* ─────────── R11：从「发现问题」到「处置」───────────
+   这一轮不加新视图，只让面板处置它自己报出来的两类问题：
+   ① Skill 的 staging 旧了 → 就地同步（单向 live → staging）；
+   ② 自检红了 → 失败项直接摊在面板上，不用先去 .cache 找报告。 */
+
+ok(
+	"isStageStale：只有「内容不同 / 加载的那份更新」算旧（staging 更新绝不能自动同步）",
+	T.isStageStale({ staged: true, verdict: "differs" }) &&
+		T.isStageStale({ staged: true, verdict: "newer-loaded" }) &&
+		!T.isStageStale({ staged: true, verdict: "newer-workspace" }) &&
+		!T.isStageStale({ staged: true, verdict: "same" }) &&
+		!T.isStageStale({ staged: false, verdict: "differs" }) &&
+		!T.isStageStale({ verdict: "differs" }) &&
+		!T.isStageStale(null),
+);
+ok(
+	"staleSkillIds 只挑 Skill、且按 drift 判定",
+	JSON.stringify(
+		T.staleSkillIds({
+			"skill:a": { staged: true, verdict: "differs" },
+			"skill:b": { staged: true, verdict: "newer-workspace" },
+			"skill:c": { staged: true, verdict: "newer-loaded" },
+			"plugin:d": { verdict: "differs" },
+			"skill:e": { staged: true, verdict: "same" },
+		}),
+	) === JSON.stringify(["skill:a", "skill:c"]) && JSON.stringify(T.staleSkillIds(null)) === "[]",
+);
+
+/* 公告条：Skill 的 staging 旧了 → 就地给一个「同步 staging」入口 */
+const staleData = {
+	...data,
+	drift: {
+		"skill:vex-ops": { staged: true, verdict: "differs", differs: ["SKILL.md"], workspaceDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops", loadedDir: "D:\\w\\.dsh\\skills\\vex-ops" },
+		"skill:dsh-plugin-catalog": { staged: true, verdict: "newer-loaded", differs: [], workspaceDir: "D:\\w\\.gh-upload\\my-dsh-skills\\dsh-plugin-catalog", loadedDir: "D:\\w\\.dsh\\skills\\dsh-plugin-catalog" },
+	},
+};
+T.store.data = staleData;
+T.store.open = null;
+T.store.syncPlan = null;
+T.store.syncBusy = false;
+const staleText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+const syncButtons = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && textsOf(node).join("").includes("同步 staging"));
+ok("staging 旧了时公告条上出现「同步 staging（2）」", staleText.includes("2 个 Skill 的 staging 是旧的") && staleText.includes("同步 staging（2）") && syncButtons.length === 1, staleText.slice(0, 300));
+ok("同步按钮说明方向与备份（title 里写清单向 + .bak）", syncButtons.length === 1 && String(syncButtons[0].props.title).includes("单向") && String(syncButtons[0].props.title).includes(".bak-"));
+ok(
+	"没有可同步的 Skill 时不出现同步按钮（staging 更新不算）",
+	(() => {
+		const saved = T.store.data;
+		T.store.data = { ...data, drift: { "skill:vex-ops": { staged: true, verdict: "newer-workspace", workspaceDir: "D:\\w\\s", loadedDir: "D:\\w\\l" } } };
+		const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+		T.store.data = saved;
+		return !text.includes("同步 staging（");
+	})(),
+);
+
+/* 二次确认条：写盘前必须看见会覆盖哪些文件 */
+const syncPlanFixture = {
+	ok: true,
+	count: 2,
+	direction: "live → staging",
+	items: [
+		{ id: "skill:vex-ops", name: "vex-ops", verdict: "differs", loadedDir: "D:\\w\\.dsh\\skills\\vex-ops", stagedDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops", differs: ["SKILL.md"] },
+		{ id: "skill:dsh-plugin-catalog", name: "dsh-plugin-catalog", verdict: "newer-loaded", loadedDir: "D:\\w\\.dsh\\skills\\dsh-plugin-catalog", stagedDir: "D:\\w\\.gh-upload\\my-dsh-skills\\dsh-plugin-catalog", differs: [] },
+	],
+	skipped: [],
+};
+T.store.syncPlan = syncPlanFixture;
+const confirmTree = expand(render(T.Panel, {}));
+const confirmText = textsOf(confirmTree).join(" | ");
+ok("出过计划后面板出现确认条，并写明覆盖几个文件", confirmText.includes("将把 2 个 Skill 的 SKILL.md 复制到 staging") && confirmText.includes("live → staging"));
+ok("确认条列出将覆盖的 Skill 名（可核对，不是「你确认一下」）", confirmText.includes("vex-ops") && confirmText.includes("dsh-plugin-catalog"));
+ok("确认条写明备份落在哪、不动加载的那份", confirmText.includes("SKILL.md.bak-<时间戳>") && confirmText.includes("不会动 DSH 正在加载的那份"));
+const confirmButtons = findAll(confirmTree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && textsOf(node).join("").includes("确认同步"));
+ok("确认条两个动作：确认同步（带条数）/ 取消", confirmButtons.length === 1 && textsOf(confirmButtons[0]).join("").includes("确认同步（2 个）") && confirmText.includes("取消"));
+
+/* 浮窗里的单条同步：只有 staging 旧了才给按钮，linked / 一致不给 */
+T.store.data = staleData;
+T.store.open = { id: "skill:vex-ops", page: 1, pageSize: 20 };
+T.store.syncPlan = null;
+T.store.detail = { ok: true, item: (staleData.entries || []).find((entry) => entry.id === "skill:vex-ops"), tools: [], sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] }, descendants: 0, statsMeta: {}, statsLimited: true, readme: null };
+const skillModalText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok("Skill 浮窗给出「同步这一份 → staging」", skillModalText.includes("同步这一份 → staging") && skillModalText.includes("单向 live → staging"));
+ok(
+	"副本一致 / junction 时不给同步按钮（别让人以为有东西要同步）",
+	(() => {
+		const saved = T.store.data;
+		const savedOpen = T.store.open;
+		T.store.data = { ...data, drift: { "skill:vex-ops": { staged: true, verdict: "same", workspaceDir: "D:\\w\\s", loadedDir: "D:\\w\\l" } } };
+		T.store.open = { id: "skill:vex-ops", page: 1, pageSize: 20 };
+		T.store.detail = { ...T.store.detail, item: (T.store.data.entries || []).find((entry) => entry.id === "skill:vex-ops") };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.data = saved;
+		T.store.open = savedOpen;
+		return !text.includes("同步这一份");
+	})(),
+);
+ok(
+	"同步进行中时确认条按钮禁用（不会连点两次写两遍）",
+	(() => {
+		const saved = { syncPlan: T.store.syncPlan, open: T.store.open, syncBusy: T.store.syncBusy };
+		T.store.syncPlan = syncPlanFixture;
+		T.store.open = null;
+		T.store.syncBusy = true;
+		const tree = expand(render(T.Panel, {}));
+		const labels = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && (textsOf(node).join("").includes("同步中") || textsOf(node).join("").includes("确认同步"))).map((node) => ({ text: textsOf(node).join(""), disabled: Boolean(node.props.disabled) }));
+		T.store.syncPlan = saved.syncPlan;
+		T.store.open = saved.open;
+		T.store.syncBusy = saved.syncBusy;
+		return labels.length === 1 && labels[0].disabled === true && labels[0].text.includes("同步中");
+	})(),
+);
+T.store.open = null;
+T.store.detail = null;
+
+/* 体检结论卡：失败项要能在面板上直接读到 */
+const preflightOk = {
+	ok: true,
+	durationMs: 45000,
+	at: Date.now(),
+	reportPath: "D:\\信息库\\AI工作区\\DSH-Plugin\\dsh-plugin-catalog\\.cache\\ship-1.md",
+	version: { ok: true, version: "0.11.0", build: "r11.0" },
+	git: { ok: true, headShort: "abc1234", dirty: 0, pushed: true },
+	totals: { passed: 585, failed: 0, skipped: 0 },
+	checks: [
+		{ id: "audit", label: "自洽契约", ok: true, passed: 300, failed: 0, skipped: 0, durationMs: 20000 },
+		{ id: "render", label: "界面渲染", ok: true, passed: 140, failed: 0, skipped: 0, durationMs: 8000 },
+		{ id: "hosttest", label: "宿主行为", ok: true, passed: 145, failed: 0, skipped: 1, durationMs: 16000 },
+		{ id: "staging", label: "副本同步", ok: true, informational: true, pairs: 17, stale: ["a", "b", "c"], durationMs: 20 },
+	],
+};
+const preflightBad = {
+	...preflightOk,
+	ok: false,
+	checks: [
+		{ id: "audit", label: "自洽契约", ok: false, passed: 298, failed: 2, skipped: 0, durationMs: 20000, failures: ["有 2 个审计契约", "syncPlan 没进 __test"] },
+		{ id: "render", label: "界面渲染", ok: true, passed: 140, failed: 0, skipped: 0, durationMs: 8000 },
+		{ id: "hosttest", label: "宿主行为", ok: true, passed: 145, failed: 0, skipped: 1, durationMs: 16000 },
+		{ id: "staging", label: "副本同步", ok: true, informational: true, pairs: 17, stale: ["a"], durationMs: 20 },
+	],
+};
+ok("体检卡：全绿时四个检查项都列出、副本同步说「17 对 / 3 旧」", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, preflight: preflightOk, job: { running: false, kind: "stats", progress: { done: 1, total: 1 } } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("上次自检：全绿") && text.includes("自洽契约") && text.includes("界面渲染") && text.includes("宿主行为") && text.includes("17 对 / 3 旧") && text.includes("版本 0.11.0 ↔ r11.0");
+})());
+ok("体检卡：失败时把失败项直接摊开（带检查名与原文）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, preflight: preflightBad, job: { running: false, kind: "stats", progress: { done: 1, total: 1 } } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("1 项失败") && text.includes("有 2 个审计契约") && text.includes("syncPlan 没进 __test") && text.includes("298 通过 · 2 失败");
+})());
+ok("体检卡有「复制报告路径」「重跑」两个动作", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, preflight: preflightBad, job: { running: false, kind: "stats", progress: { done: 1, total: 1 } } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("复制报告路径") && text.includes("重跑");
+})());
+ok("体检卡：结论来自服务端单独存的 preflight，不被后来的后台任务顶掉（真机 bug 回归）", (() => {
+	const saved = T.store.data;
+	/* job 这一格此刻是 stats（统计自愈），体检结论仍要在 */
+	T.store.data = { ...data, preflight: preflightOk, job: { running: false, kind: "stats", finishedAt: Date.now(), result: { ok: true }, progress: { done: 1, total: 1 } } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("上次自检：全绿");
+})());
+ok("没有体检记录时不画结论卡（普通后台任务不冒充）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, preflight: null, job: { running: false, kind: "stats", finishedAt: Date.now(), result: { ok: true }, progress: { done: 1, total: 1 } } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return !text.includes("上次自检：");
+})());
+
+T.store.data = data;
+T.store.syncPlan = null;
+T.store.syncBusy = false;
 
 /* R5：多选（选中一批 → 看总体积 → 导出这批） */
 T.store.pageSize = 0;
