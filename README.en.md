@@ -90,6 +90,15 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   Cards carry only two chips (`不会被加载` grey, `配置入口` blue); the popup names the actual chain ("loaded via `dsh-ops`"),
   and the toolbar filters "not loaded N" — a harder dead-weight signal than "unused", because such a package never runs at all.
   ⚠️ This is a **declaration-level** criterion: a runtime `require()` by path is invisible to it, which is why the wording is "not loaded" rather than "definitely never runs".
+- **The criterion can prove itself (R13)**: `node dev/probe-loadstate.mjs` **recomputes** load paths independently
+  (it walks the profile's `node_modules` and both composition files itself) and reconciles the result with the catalog snapshot,
+  pinning six invariants — count conservation / bundle accounting / `via` resolving to a real entry / dormant ∩ entries = ∅ /
+  `disabled` never an entry / snapshot == recomputation. **Any broken invariant exits 1**; `--json` is machine-readable.
+  It shares the single criterion (it is not a second rule set), so what it catches is "the implementation drifted from the data".
+- **Reports carry the criterion (R13)**: `catalog_export` adds a "load paths" line to its overview
+  (entry count + the four states) and a dedicated **"not loaded (N)"** section (name/source/version/size/last call,
+  the declaration-level caveat, and how much space they account for); the filtered export gains a **"loaded"** column,
+  so a hand-off list no longer needs anyone to re-derive it.
 - **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
 - **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
@@ -320,15 +329,19 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict (323 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / self-check button / preflight card / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (156 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe's six invariants (361 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (170 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check** / export write / copy-sync verdicts / skill_sync plan and confirm gate (177 checks under the host; 5 extra SKIPs in plain node — the sandbox forbids spawning with pipes)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check** / export write / copy-sync verdicts / skill_sync plan and confirm gate (194 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
+                              # derives the four states, then reconciles with cache/catalog.json; six invariants
+                              # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
+                              # disabled is never an entry / snapshot == recomputation); any violation exits 1; --json
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

@@ -90,6 +90,13 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   浮窗写出「随 `dsh-ops` 加载」这类具体链路，工具条有「不会被加载 N」筛选 ——
   这是比「未使用」更硬的死重量判据（装了根本不会跑）。
   ⚠️ 这是**声明层面**的判据：运行时按路径 `require()` 的动态加载看不见，所以文案是「不会被加载」而不是「绝对没跑」。
+- **判据能自己下结论（R13）**：`node dev/probe-loadstate.mjs` **独立重算**加载路径
+  （自己扫 profile 的 `node_modules` 与两份组合文件），再和目录快照对账，钉六条不变式 ——
+  计数守恒 / bundle 口径 / `via` 指得回入口 / dormant 与入口无交集 / `disabled` 不算入口 / 快照与重算一致，
+  **破一条退出码 1**；`--json` 可机读。它用的是同一份判据（不是第二套规则），所以抓的是"实现与数据脱节"。
+- **报告自带加载口径（R13）**：`catalog_export` 的概览多一行「**加载路径**」（入口数 + 四态），
+  并单开一节「**不会被加载（N 条）**」（名称/来源/版本/体积/最近调用 + 边界说明 + 可省体积）；
+  当前筛选清单（`exportFiltered`）多一列「**加载**」。清单拿出去不用再自己算。
 - **快捷键**：`/` 聚焦搜索、`Esc` 清空搜索（浮窗里 `Esc` 关闭浮窗）
 - **缓存自愈**：统计缓存超过 10 分钟且没有任务在跑时，面板自己起一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒），不用记着点「刷新统计」；有任务在跑、或本挂载已经刷过，就不再触发 —— 否则会和 20 秒轮询叠成「一直在刷新」
 - **分页**：列表底部「共 N 条 · 第 X / Y 页」+ 上一页/下一页/首页/末页，**每页 12 / 24 / 48 / 96 / 全部**；搜索、筛选、排序任一变化自动回第 1 页
@@ -319,15 +326,18 @@ R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发�
 分项跑：
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源（323 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/自检按钮/体检结论卡/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（156 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针六条不变式（361 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（170 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 177 项；普通 node 多 5 条 SKIP —— 沙箱禁止带管道 spawn）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 194 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
+                              # 六条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
+                              # disabled 不算入口 / 快照与重算一致），破一条退出码 1；--json 可机读
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率

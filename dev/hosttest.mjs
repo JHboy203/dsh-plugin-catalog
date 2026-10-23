@@ -605,6 +605,38 @@ ok(
 );
 ok("catalog_list 不再用「未启用」这个错口径", !listToolWithDep.text.includes("未启用"));
 
+/* ── R13：加载态进报告（拿出去的清单也要能支撑"删不删"） ──
+   两处口径：全量快照的概览 + 单节「不会被加载」；当前筛选清单多一列「加载」。
+   数字必须和 /state 的 dependency.loadCounts 对得上，不能是另算一遍。 */
+const fullExport = await callTool("catalog_export", { top: 5 });
+const fullExportText = fullExport.path ? readFileSync(fullExport.path, "utf8") : "";
+ok(
+	"全量快照的概览带「加载路径」一行（入口数 + 四态）",
+	fullExportText.includes("加载路径：入口 **") && fullExportText.includes("不在任何入口上") && fullExportText.includes("份组合文件"),
+	fullExportText.split("\n").filter((line) => line.startsWith("- 加载路径")).join(" | ").slice(0, 240),
+);
+const dormantEntries = allPlugins.filter((entry) => entry.loadState === "dormant");
+if (dormantEntries.length > 0) {
+	ok(
+		"全量快照单开「不会被加载」一节，条数与条目口径一致",
+		fullExportText.includes("## 不会被加载（" + dormantEntries.length + " 条）"),
+		"dormant 条目 " + dormantEntries.length + " 条 / 报告里有 " + (fullExportText.match(/## 不会被加载（(\d+) 条）/) || ["未找到"])[0],
+	);
+	ok(
+		"该节写明边界（声明层面判据，不是「绝对没跑」），并给出可省体积",
+		fullExportText.includes("运行时按路径 `require()` 的动态加载看不见") && /有体积记录，合计 \*\*[\d.]+ (B|KB|MB|GB)\*\*/.test(fullExportText),
+	);
+} else {
+	skip("本机没有 dormant 条目，跳过「不会被加载」一节的两条断言", "这台机器的所有插件都有加载入口；契约由 audit 的静态断言 + 有 dormant 的机器覆盖");
+}
+const filteredWithLoad = await callRoute("/export", "POST", { ids: dormantEntries.slice(0, 3).map((entry) => entry.id), filters: {} });
+const filteredLoadText = filteredWithLoad.json?.path ? readFileSync(filteredWithLoad.json.path, "utf8") : "";
+ok(
+	"选中 dormant 条目导出时，那一列如实写「不会被加载」（不是「否」）",
+	dormantEntries.length === 0 || filteredLoadText.includes("| 加载 |") && filteredLoadText.includes("**不会被加载**"),
+	filteredLoadText.split("\n").filter((line) => line.includes("不会被加载")).slice(0, 2).join(" | ").slice(0, 200),
+);
+
 /* ── R6：副本漂移（工作区源码 vs profile 里加载的副本） ──
    用两个已知内容的临时目录验判据，再用真 /state 验"junction 记为 linked"，
    以及"不同步会被标出来"。这三条合起来才对得上卡片上那枚「副本不同步」。 */

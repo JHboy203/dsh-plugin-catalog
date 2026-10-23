@@ -625,7 +625,7 @@ ok(
 ok("条目形状变了 → CATALOG_VERSION = 7（R12 加了 loadState / loadVia）", /export const CATALOG_VERSION = 7;/.test(catalogSource));
 ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选 / 加载路径四态）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0, loadRoots: 0, loadCounts: \{ bundle: 0, config: 0, transitive: 0, dormant: 0 \}, compositionFiles: 0 \}/.test(catalogSource));
 ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
-ok("导出清单加「被依赖」列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 位置 |"'));
+ok("导出清单加「被依赖 / 加载」两列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"'));
 ok("体积 Top 表也带被依赖（大二进制不是可删插件）", serviceSource.includes('"| 名称 | 类型 | 来源 | 体积 | 文件数 | 被依赖 | 调用 | 最近 |"'));
 ok("catalog_health 报依赖图（工具面也能问「能删什么」）", toolsSource.includes("依赖图：") && toolsSource.includes("health.dependency.scanned"));
 ok("catalog_list 的条目点出被依赖 / 无人依赖", toolsSource.includes("被 ${item.dependentCount} 个包依赖") && toolsSource.includes("无人依赖（候选）"));
@@ -723,7 +723,7 @@ ok("体检卡区分「informational」项（副本同步没有 passed/failed）"
 ok("提示条也按 informational 的口径说话（不再出现「staging ?」）", clientSource.includes('return check.id + " " + (check.ok === false ? "失败"'));
 ok("新类名都有样式定义", [".dpc-preflight{", ".dpc-preflight-check.is-bad{", ".dpc-preflight-fail{", ".dpc-sync-bar{", ".dpc-sync-confirm{", ".dpc-sync-name{"].every((needle) => cssSource.includes(needle)));
 ok("README 双语都写了面板上的「同步 staging」", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("同步 staging") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("Sync staging"));
-ok("版本号与构建戳同步抬到 0.12.0 / r12.0", /"version": "0\.12\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r12.0"'));
+
 
 /* ─────────── R12（2026-10-23 第十二轮）：装了到底会不会跑 ───────────
    本轮的起点是一个**会误导人删坏东西**的显示 bug：面板只有 `enabled`（在不在 bundles），
@@ -809,6 +809,40 @@ ok("工具条有「不会被加载 N」筛选，且进 localStorage（视图记�
 ok("筛选计数只受 kind/source 影响（不随关键词跳）", /const dormantCount = useMemo\(\(\) => \{[\s\S]{0,260}state\.kind === "all"[\s\S]{0,160}state\.source === "any"/.test(clientSource));
 ok("新类名都有样式定义", [".dpc-load{", ".dpc-load.is-config{", ".dpc-load-warn{"].every((needle) => cssSource.includes(needle)));
 ok("README 双语都写了「不会被加载」这个口径", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("不会被加载") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("not loaded"));
+
+/* ─────────── R13（2026-10-24 第十三轮）：收口 —— 把这一轮的过程与结果固化 ───────────
+   R12 的判据同时被 catalog / health / 面板三处共用：好处是口径一致，
+   坏处是**共用就没法互相证伪**（一起错就一起绿）。这一轮补两件"离开对话也还在"的东西：
+     ① `dev/probe-loadstate.mjs`：自己扫 profile、用同一份判据**独立重算**，再和目录快照对账，
+        六条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
+        disabled 不算入口 / 快照与重算一致），破一条就退出码 1；
+     ② 报告口径：`catalog_export` 的概览带「加载路径」，并单开一节「不会被加载」，
+        当前筛选的清单多一列「加载」—— 拿出去的清单也要能支撑"删不删"。 */
+const probeSource = readFileSync(new URL("../dev/probe-loadstate.mjs", import.meta.url), "utf8");
+ok(
+	"独立探针存在，且用的是 lib 的判据（不是又抄一遍实现）",
+	probeSource.includes('from "../lib/loadstate.mjs"') && probeSource.includes("resolveLoadPaths") && probeSource.includes("parseComposition"),
+);
+ok(
+	"探针不硬编码本机路径（换机器/换 profile 也能跑）",
+	!/D:[\\/]信息库/.test(probeSource) && !/C:[\\/]Users/.test(probeSource),
+);
+ok(
+	"探针把六条不变式都列出来，破一条就非零退出（不是只打印数字）",
+	["I1", "I2", "I3", "I4", "I5", "I6"].every((id) => probeSource.includes(id)) && probeSource.includes("process.exit(1)") && probeSource.includes("failures.push"),
+);
+ok(
+	"探针的 dormant 清单带体积（能回答「删这批能省多少」）",
+	probeSource.includes("dormantBytes") && probeSource.includes('"sizes.json"') && probeSource.includes("fmtBytes"),
+);
+ok("快照口径也进导出：概览有「加载路径」一行", serviceSource.includes('" 份组合文件）；直接 **"') && serviceSource.includes("不在任何入口上"));
+ok("导出单开一节「不会被加载」（含声明层面的边界说明）", serviceSource.includes('"## 不会被加载（"') && serviceSource.includes("运行时按路径 `require()` 的动态加载看不见"));
+ok("当前筛选的清单多一列「加载」（不会被加载 / 配置挂载 / 随 X 加载 / 是 / 未知）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"') && serviceSource.includes('if (item.loadState === "dormant") return "**不会被加载**"'));
+ok("版本号与构建戳同步抬到 0.13.0 / r13.0", /"version": "0\.13\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r13.0"'));
+ok(
+	"双语 README 都写了独立探针（英文版也要能照着跑）",
+	readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs"),
+);
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
