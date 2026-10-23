@@ -805,6 +805,18 @@ ok("service 把 loadState / loadVia 透传给面板（缺字段时客户端按�
 ok("catalog_health 报加载路径四态（不再只报 bundles 口径）", toolsSource.includes("加载路径：") && toolsSource.includes("health.dependency.loadCounts.dormant") && toolsSource.includes("不在任何入口上"));
 ok("catalog_list 不再用 enabled 说「未启用」（改为 dormant / config 两句话）", !toolsSource.includes('(item.enabled === false ? "｜未启用"') && toolsSource.includes("不会被加载（不在 bundles、没有配置条目、也不在任何依赖链上）"));
 
+/* ── R14.1：工具面也能按加载态筛（此前只有面板能筛，工具只能翻页找） ── */
+{
+	const listTool = tools.find((tool) => tool.name === "catalog_list");
+	const listParams = (listTool && listTool.parameters && listTool.parameters.properties) || {};
+	const listDesc = String((listTool && listTool.description) || "");
+	ok("catalog_list 有 loadState 过滤（enum：any / dormant / loaded）", Array.isArray(listParams.loadState && listParams.loadState.enum) && ["any", "dormant", "loaded"].every((value) => listParams.loadState.enum.includes(value)));
+	ok("catalog_list 的描述让「哪些装了不会跑」可映射（点明 dormant 与 catalog_uninstall）", listDesc.includes("不会跑") && listDesc.includes("dormant") && listDesc.includes("catalog_uninstall"));
+	/* 判据单源：工具面走 lib/loadstate.mjs，不许在这里另写一套四态比较式 */
+	ok("工具面的加载态判据与 loadstate.mjs 同源（import isLoadedState，不另写比较式）", toolsSource.includes('import { isLoadedState } from "./loadstate.mjs"') && toolsSource.includes("!isLoadedState(item.loadState)") && !/item\.loadState === "(bundle|transitive)"/.test(toolsSource));
+	ok("dormant 过滤只认字面量 dormant（与面板 isDormant 同一条件）", toolsSource.includes('loadState === "dormant" && item.loadState !== "dormant"'));
+}
+
 ok("客户端 isDormant 只认 loadState === 'dormant'（enabled === false 不算）", /function isDormant\(item\) \{/.test(clientSource) && clientSource.includes('return Boolean(item && item.loadState === "dormant");'));
 ok("卡片置灰只跟 dormant 走（旧口径 `enabled === false ? \" is-off\"` 必须消失）", !clientSource.includes('(item.enabled === false ? " is-off"') && clientSource.includes('(isDormant(item) ? " is-off"'));
 ok("卡片 chip 只给两档（不会被加载 / 配置入口），间接加载 152 条不占版面", clientSource.includes('if (item.loadState === "dormant") return "不会被加载";') && clientSource.includes('if (item.loadState === "config") return "配置入口";'));

@@ -607,6 +607,25 @@ ok(
 );
 ok("catalog_list 不再用「未启用」这个错口径", !listToolWithDep.text.includes("未启用"));
 
+/* ── R14.1：工具面也能按加载态筛（此前只有面板能筛，工具只能翻页找） ──
+   三条断言：dormant 只回 dormant、loaded 里没有 Skill、两者 + Skill = 全部（分区不重不漏）。 */
+{
+	const dormantList = await callTool("catalog_list", { loadState: "dormant", limit: 200 });
+	const dormantItems = dormantList.items || [];
+	ok("catalog_list loadState=dormant：只回「不会被加载」的条目", dormantItems.length > 0 && dormantItems.every((item) => item.loadState === "dormant"), `命中 ${dormantItems.length} 条`);
+	const loadedList = await callTool("catalog_list", { loadState: "loaded", limit: 200 });
+	const loadedItems = loadedList.items || [];
+	ok("catalog_list loadState=loaded：一条 dormant 都没有，且没有 Skill（Skill 没有加载态）", loadedItems.length > 0 && loadedItems.every((item) => item.loadState !== "dormant" && item.kind !== "skill"), `命中 ${loadedItems.length} 条`);
+	const allList = await callTool("catalog_list", { limit: 200 });
+	const allItems = allList.items || [];
+	ok(
+		"两种过滤是分区：dormant + loaded + 非插件条目 = 全部（不重不漏）",
+		dormantItems.length + loadedItems.length + allItems.filter((item) => item.kind === "skill").length === allItems.length,
+		`${dormantItems.length} + ${loadedItems.length} + Skill ${allItems.filter((item) => item.kind === "skill").length} = ${dormantItems.length + loadedItems.length + allItems.filter((item) => item.kind === "skill").length} / 全部 ${allItems.length}`,
+	);
+	ok("文本点明这个过滤的用途（怎么删看 catalog_uninstall）", dormantList.text.includes("catalog_uninstall") && dormantList.text.includes("不会被加载"), dormantList.text.split("\n")[1] || "");
+}
+
 /* ── R13：加载态进报告（拿出去的清单也要能支撑"删不删"） ──
    两处口径：全量快照的概览 + 单节「不会被加载」；当前筛选清单多一列「加载」。
    数字必须和 /state 的 dependency.loadCounts 对得上，不能是另算一遍。 */
