@@ -556,6 +556,55 @@ const depExport = await callRoute("/export", "POST", { ids: depPlugins.slice(0, 
 const depExportText = depExport.json?.path ? readFileSync(depExport.json.path, "utf8") : "";
 ok("导出清单带「被依赖」列（拿出去也要能判断）", depExportText.includes("| 被依赖 |") && depExportText.includes("直接依赖"), depExportText.split("\n")[8] || "");
 
+/* ── R12：装了到底会不会跑（bundles 不是唯一入口） ──
+   走真数据：这台机器的 `@dsh-ops/*-win32-x64` **不在** `dsh.profile.bundles` 里，
+   却会因为 dsh-ops 声明依赖它们而被加载 —— 旧口径把它们标成「启用：否」并置灰，
+   照着删就会弄坏 dsh-ops。这一组断言就钉住"能不能正确回答这个问题"。 */
+const LOAD_STATES = ["bundle", "config", "transitive", "dormant"];
+const allPlugins = entries.filter((entry) => entry.kind === "plugin");
+ok(
+	"每个插件条目都带 loadState（四态白名单）",
+	allPlugins.length > 0 && allPlugins.every((entry) => LOAD_STATES.includes(entry.loadState)),
+	JSON.stringify([...new Set(allPlugins.map((entry) => entry.loadState))]),
+);
+ok("官方 asar 包的加载态记为 bundle（它们的入口就是 bundles）", allPlugins.filter((entry) => entry.inAsar).every((entry) => entry.loadState === "bundle"));
+ok(
+	"transitive 条目必须能点出「随谁加载」（via 非空且指向一个真实存在的包）",
+	allPlugins.filter((entry) => entry.loadState === "transitive").every((entry) => typeof entry.loadVia === "string" && entry.loadVia !== "" && entries.some((other) => other.name === entry.loadVia)),
+	JSON.stringify(allPlugins.filter((entry) => entry.loadState === "transitive").slice(0, 3).map((entry) => ({ name: entry.name, via: entry.loadVia }))),
+);
+ok(
+	"平台运行时二进制被判成 transitive 而不是 dormant（本机 @dsh-ops/* → dsh-ops）",
+	(() => {
+		const binary = allPlugins.find((entry) => entry.name === "@dsh-ops/bash-win32-x64");
+		return !binary || (binary.loadState === "transitive" && binary.loadVia === "dsh-ops");
+	})(),
+	JSON.stringify(allPlugins.filter((entry) => entry.name.startsWith("@dsh-ops/")).map((entry) => ({ name: entry.name, loadState: entry.loadState, via: entry.loadVia, enabled: entry.enabled }))),
+);
+ok(
+	"loadState 与 enabled 是两件事（存在 enabled=false 但会被加载的条目，这正是旧口口径的坑）",
+	allPlugins.some((entry) => entry.enabled === false && entry.loadState !== "dormant"),
+	JSON.stringify(allPlugins.filter((entry) => entry.enabled === false).map((entry) => ({ name: entry.name, loadState: entry.loadState }))),
+);
+const loadMeta = (await callRoute("/state")).json?.dependency || {};
+ok(
+	"state.dependency 带加载路径自述（入口数 / 四态计数 / 读了几份组合文件）",
+	typeof loadMeta.loadRoots === "number" && loadMeta.loadRoots > 0 && Boolean(loadMeta.loadCounts) && typeof loadMeta.compositionFiles === "number",
+	JSON.stringify({ roots: loadMeta.loadRoots, counts: loadMeta.loadCounts, files: loadMeta.compositionFiles }),
+);
+ok(
+	"四态计数之和 = 扫到的包数（不许有包落不进任何一态）",
+	LOAD_STATES.reduce((sum, state) => sum + Number(loadMeta.loadCounts?.[state] || 0), 0) === Number(loadMeta.scanned || -1),
+	JSON.stringify({ counts: loadMeta.loadCounts, scanned: loadMeta.scanned }),
+);
+const healthToolWithLoad = await callTool("catalog_health", {});
+ok(
+	"catalog_health 文本里有加载路径一行（含「不在任何入口上」）",
+	/加载路径：\d+ 个入口/.test(healthToolWithLoad.text) && healthToolWithLoad.text.includes("不在任何入口上"),
+	healthToolWithLoad.text.split("\n").filter((line) => line.startsWith("加载路径")).join(" | "),
+);
+ok("catalog_list 不再用「未启用」这个错口径", !listToolWithDep.text.includes("未启用"));
+
 /* ── R6：副本漂移（工作区源码 vs profile 里加载的副本） ──
    用两个已知内容的临时目录验判据，再用真 /state 验"junction 记为 linked"，
    以及"不同步会被标出来"。这三条合起来才对得上卡片上那枚「副本不同步」。 */

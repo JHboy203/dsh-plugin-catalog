@@ -189,6 +189,9 @@ function makeItem(overrides) {
 		sourceWhy: ["link/junction 安装，源目录就是工作区里的本地目录"],
 		askUser: false,
 		enabled: true,
+		/* R12：默认按"bundles 里直接启用"；各夹具按需覆盖成 config / transitive / dormant */
+		loadState: "bundle",
+		loadVia: "",
 		repoUrl: "https://github.com/JHboy203/dsh-screenshot",
 		createdAt: 1760000000000,
 		calls: 12345,
@@ -227,13 +230,16 @@ const data = {
 	entries: [
 		/* R9：依赖字段 —— 直接写在 profile、但没有任何包依赖它（不是候选，因为它是显式装的） */
 		makeItem({ dependency: true, dependents: [], dependentCount: 0, dependsOn: ["@deepseek-ai/cordis"], dependsOnCount: 1, orphanHint: false }),
-		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"], dependency: true, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: false }),
+		makeItem({ id: "plugin:@anionex/dsh-vision-toolkit", name: "@anionex/dsh-vision-toolkit", source: "third", calls: 200, errors: 2, subagentCalls: 0, descriptionZh: "视觉工具包：看图、定位、长截图 OCR。", descriptionEn: "Vision toolkit.", toolNames: ["vision_glance", "vision_ground", "vision_ocr"], dependency: true, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: false, /* R12：不在 bundles 但在跑 —— 旧口径会把它置灰并写「启用：否」 */
+			enabled: false, loadState: "transitive", loadVia: "dsh-vision-router" }),
 		makeItem({ id: "skill:vex-ops", kind: "skill", name: "vex-ops", calls: 19, errors: 0, subagentCalls: 0, sessions: 0, descriptionZh: "维护 Vex：QQ 机器人链路。", descriptionEn: "", lastUsed: Date.now() - 86400000, tags: { purpose: ["game"], context: ["astrbot"], origin: ["src-self"] }, realDir: "D:\\信息库\\AI工作区\\.dsh\\skills\\vex-ops", isLink: false, inAsar: false }),
 		/* R9：被 2 个包依赖 —— 删它会让它们坏（卡片上要看得见） */
-		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"], dependency: false, dependents: ["dsh-diag", "dsh-testbed"], dependentCount: 2, dependsOn: ["@dsh-ops/pwsh-win32-x64"], dependsOnCount: 1, orphanHint: false }),
+		makeItem({ id: "plugin:dsh-ofm-ops", name: "dsh-ofm-ops", source: "pending", askUser: true, calls: 3, errors: 1, descriptionZh: "", descriptionEn: "Some plugin.", sourceWhy: ["从 npm 安装", "工作区 DSH-Plugin/ 下有同名目录，可能是本地改过的副本，需你确认"], dependency: false, dependents: ["dsh-diag", "dsh-testbed"], dependentCount: 2, dependsOn: ["@dsh-ops/pwsh-win32-x64"], dependsOnCount: 1, orphanHint: false, /* R12：配置条目挂载（不在 bundles，但会被加载） */
+			enabled: false, loadState: "config", loadVia: "ofm-ops" }),
 		/* R2：一条从未被调用过的条目 —— 洞察条的「未使用」与「从未调用」全靠它验
 		   R9：同时是「无人依赖」的候选（没人声明依赖它、也不在 profile 的 dependencies 里） */
-		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"], dependency: false, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: true }),
+		makeItem({ id: "plugin:dsh-never-used", name: "dsh-never-used", calls: 0, errors: 0, lastUsed: 0, subagentCalls: 0, sessions: 0, descriptionZh: "从没被调用过的插件。", descriptionEn: "Never used.", toolNames: ["unused_tool"], dependency: false, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: true, /* R12：没有任何入口引用 —— 装了也不会被加载 */
+			loadState: "dormant", loadVia: "" }),
 		/* R3：一条只被子代理调过的条目 —— 删它不会当场报错，只会让某条委派链悄悄变差 */
 		makeItem({ id: "plugin:dsh-delegate-only", name: "dsh-delegate-only", calls: 5, errors: 0, subagentCalls: 5, sessions: 0, descriptionZh: "只被子代理用过的插件。", descriptionEn: "Delegate only.", dependency: false, dependents: [], dependentCount: 0, dependsOn: [], dependsOnCount: 0, orphanHint: false }),
 	],
@@ -515,7 +521,7 @@ ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate
 
 /* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
 ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
-ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
 
 /* R4：导出当前筛选 / 0 值档位置灰 */
 T.store.kind = "all";
@@ -1093,6 +1099,135 @@ ok("侧栏图标点击会调 layout.selectPanel('catalog')", (() => {
 	clickable.props.onClick();
 	return selected === "catalog";
 })());
+
+/* ⑦ R12：装了到底会不会跑 —— 四态在界面上的表现 */
+T.store.error = null;
+T.store.data = data;
+T.store.loading = false;
+T.store.open = null;
+T.store.detail = null;
+T.store.size = null;
+T.store.sizeError = "";
+T.store.pageSize = 0;
+T.store.page = 1;
+T.store.query = "";
+T.store.source = "any";
+T.store.kind = "all";
+T.store.usage = "any";
+T.store.orphanOnly = false;
+T.store.dormantOnly = false;
+
+ok("isDormant 只认 loadState === 'dormant'（`enabled === false` 不算）", T.isDormant({ loadState: "dormant" }) === true && T.isDormant({ enabled: false }) === false && T.isDormant({ enabled: false, loadState: "transitive" }) === false);
+ok("isConfigLoaded 只认 config（transitive 与 dormant 都不算）", T.isConfigLoaded({ loadState: "config" }) === true && T.isConfigLoaded({ loadState: "transitive" }) === false && T.isConfigLoaded({ loadState: "dormant" }) === false);
+ok(
+	"loadLabel 只给两档（不会被加载 / 配置入口），bundle 与 transitive 不占版面",
+	T.loadLabel({ loadState: "dormant" }) === "不会被加载" &&
+		T.loadLabel({ loadState: "config" }) === "配置入口" &&
+		T.loadLabel({ loadState: "bundle" }) === "" &&
+		T.loadLabel({ loadState: "transitive" }) === "" &&
+		T.loadLabel({ enabled: false }) === "",
+);
+ok(
+	"loadCell 四态各一句话（否 / 配置(id) / 随 X / 是），未知时如实说未知",
+	T.loadCell({ loadState: "dormant" }) === "否" &&
+		T.loadCell({ loadState: "config", loadVia: "ofm-ops" }) === "配置(ofm-ops)" &&
+		T.loadCell({ loadState: "transitive", loadVia: "dsh-vision-router" }) === "随 dsh-vision-router" &&
+		T.loadCell({ loadState: "bundle" }) === "是" &&
+		T.loadCell({}) === "未知" &&
+		T.loadCell({ kind: "skill" }) === "",
+);
+ok("dormantCountOf 只数 dormant", T.dormantCountOf(data.entries) === 1 && T.dormantCountOf([]) === 0);
+
+const loadChips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-load"));
+/* ★ textsOf 会连 props 里的字符串（title 说明书）一起收，所以 chip 文案只看 children */
+const chipTexts = loadChips.map((node) => textsOf(node.props.children).join(""));
+ok("「不会被加载」条目有灰 chip，「配置入口」条目有蓝 chip，transitive/bundle 没有 chip", chipTexts.includes("不会被加载") && chipTexts.includes("配置入口") && chipTexts.length === 2, "实际: " + JSON.stringify(chipTexts));
+ok(
+	"chip 的悬停说明写清「不在 bundles / 不在配置 / 不在依赖链」",
+	(() => {
+		const dormantChip = loadChips.find((node) => textsOf(node.props.children).join("") === "不会被加载");
+		const title = String((dormantChip && dormantChip.props.title) || "");
+		return title.includes("dsh.profile.bundles") && title.includes("cordis 配置条目") && title.includes("依赖链") && title.includes("宿主不会加载它");
+	})(),
+);
+ok(
+	"置灰只跟 dormant 走：`enabled: false` 但 transitive 的卡片不置灰（旧口径会把它变暗）",
+	(() => {
+		const cards = findAll(expand(render(T.Panel, {})), (node) => {
+			const className = String((node.props && node.props.className) || "");
+			return className.split(/\s+/).includes("dpc-card");
+		});
+		const byName = (name) => cards.find((node) => textsOf(node.props.children).join(" ").includes(name));
+		const dormantCard = byName("dsh-never-used");
+		const transitiveCard = byName("@anionex/dsh-vision-toolkit");
+		return Boolean(dormantCard && transitiveCard) && dormantCard.props.className.split(/\s+/).includes("is-off") && !transitiveCard.props.className.split(/\s+/).includes("is-off");
+	})(),
+);
+
+ok(
+	"工具条上就有「不会被加载 N」（不用先去记住哪个包没入口）",
+	textsOf(expand(render(T.Panel, {}))).join(" | ").includes("不会被加载 1"),
+);
+ok(
+	"点它只留 dormant 条目（1 条），别的全被筛掉",
+	(() => {
+		const saved = T.store.dormantOnly;
+		T.store.dormantOnly = true;
+		const names = visibleNames();
+		T.store.dormantOnly = saved;
+		/* visibleNames 返回的是每张卡的整段文本，不是裸名字 */
+		return names.length === 1 && names[0].includes("dsh-never-used");
+	})(),
+);
+
+ok(
+	"浮窗「加载路径」把 dormant 说成 ❌ 并解释为什么可以删、以及什么时候别删",
+	(() => {
+		const saved = { open: T.store.open, detail: T.store.detail };
+		T.store.open = { id: "plugin:dsh-never-used", page: 1, pageSize: 20 };
+		T.store.detail = { ok: true, item: { ...data.entries[4] }, tools: [], sessions: { items: [], page: 1, pages: 1, total: 0, pageSize: 20, pageSizes: [10, 20] }, statsLimited: false };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.open = saved.open;
+		T.store.detail = saved.detail;
+		return text.includes("加载路径：❌") && text.includes("删掉不影响当前加载") && text.includes("cordis.patch.yml");
+	})(),
+);
+ok(
+	"浮窗对 transitive 写出具体链路（随 dsh-vision-router 加载）与「删了会连带弄坏」",
+	(() => {
+		const saved = { open: T.store.open, detail: T.store.detail };
+		T.store.open = { id: "plugin:@anionex/dsh-vision-toolkit", page: 1, pageSize: 20 };
+		T.store.detail = { ok: true, item: { ...data.entries[1] }, tools: [], sessions: { items: [], page: 1, pages: 1, total: 0, pageSize: 20, pageSizes: [10, 20] }, statsLimited: false };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.open = saved.open;
+		T.store.detail = saved.detail;
+		return text.includes("随 dsh-vision-router 加载") && text.includes("删了会连带弄坏") && text.includes("配置(ofm-ops)") === false;
+	})(),
+);
+ok(
+	"浮窗对 config 写出配置条目 id（不在 bundles 也会加载）",
+	(() => {
+		const saved = { open: T.store.open, detail: T.store.detail };
+		T.store.open = { id: "plugin:dsh-ofm-ops", page: 1, pageSize: 20 };
+		T.store.detail = { ok: true, item: { ...data.entries[3] }, tools: [], sessions: { items: [], page: 1, pages: 1, total: 0, pageSize: 20, pageSizes: [10, 20] }, statsLimited: false };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.open = saved.open;
+		T.store.detail = saved.detail;
+		return text.includes("配置条目 `ofm-ops` 挂着（不在 bundles）—— 会加载。") && text.includes("配置(ofm-ops)");
+	})(),
+);
+ok(
+	"宿主没给 loadState 时如实说来源未知，不拿 enabled 猜",
+	(() => {
+		const saved = { open: T.store.open, detail: T.store.detail };
+		T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 20 };
+		T.store.detail = { ok: true, item: { ...data.entries[0], loadState: "", enabled: false }, tools: [], sessions: { items: [], page: 1, pages: 1, total: 0, pageSize: 20, pageSizes: [10, 20] }, statsLimited: false };
+		const text = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+		T.store.open = saved.open;
+		T.store.detail = saved.detail;
+		return text.includes("宿主还没给出加载态") && text.includes("启用") && text.includes("未知");
+	})(),
+);
 
 /* ── 汇总 ── */
 console.log("");

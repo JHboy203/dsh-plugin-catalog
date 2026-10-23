@@ -24,6 +24,7 @@ import { attributeTools } from "../lib/attrib.mjs";
 import { buildAggregate, descendantsOf, STATS_VERSION } from "../lib/stats.mjs";
 import { eachFrame, parseEvents, findFrameCuts } from "../lib/frames.mjs";
 import { parseFrontmatter } from "../lib/catalog.mjs";
+import { LOAD_STATES, parseComposition, resolveLoadPaths, isLoadedState, isDormantState, loadStateLabel } from "../lib/loadstate.mjs";
 import { computeStats } from "../lib/stats.mjs";
 
 let passed = 0;
@@ -510,7 +511,7 @@ ok("视图持久化的读、写都有 try（存储被禁用时不拖垮渲染）
 	return readBlock.includes("try {") && readBlock.includes("catch (error)") && writeBlock.includes("try {") && writeBlock.includes("catch (error)");
 })());
 ok("读视图前先判断 typeof localStorage（无头 / 禁用存储都不能假设存在）", /typeof localStorage !== "undefined" \? localStorage\.getItem/.test(clientSource) && clientSource.includes('if (typeof localStorage === "undefined") return false'));
-ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"\]/.test(clientSource));
+ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"\]/.test(clientSource));
 ok("滚动位置恢复只发生一次（用 ref 挡后续轮询重渲染）", /const restoredScroll = useRef\(false\)/.test(clientSource) && /if \(restoredScroll\.current \|\| !data\) return;/.test(clientSource));
 ok("换筛选 / 换页后回到顶部（否则第 2 页第一条落在屏幕外）", clientSource.includes('"page" in patch') && clientSource.includes("panel.scrollTop = 0"));
 ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
@@ -541,7 +542,7 @@ ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dp
 ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
 ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
 ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, Math.max(1, queue.length))"));
-ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
+ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
 ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
 ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
 ok("选中态与批次条都有样式（is-picked / dpc-pickedbar / dpc-pick-badge）", [".dpc-card.is-picked{", ".dpc-pickedbar{", ".dpc-pick-badge{"].every((needle) => cssSource.includes(needle)));
@@ -621,8 +622,8 @@ ok(
 	"条目带 dependents / dependentCount / dependsOn / dependsOnCount",
 	["dependents: pack.dependents || []", "dependentCount: pack.dependentCount || 0", "dependsOn: pack.dependsOn || []", "dependsOnCount: pack.dependsOnCount || 0"].every((needle) => catalogSource.includes(needle)),
 );
-ok("条目形状变了 → CATALOG_VERSION = 6", /export const CATALOG_VERSION = 6;/.test(catalogSource));
-ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0 \}/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION = 7（R12 加了 loadState / loadVia）", /export const CATALOG_VERSION = 7;/.test(catalogSource));
+ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选 / 加载路径四态）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0, loadRoots: 0, loadCounts: \{ bundle: 0, config: 0, transitive: 0, dormant: 0 \}, compositionFiles: 0 \}/.test(catalogSource));
 ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
 ok("导出清单加「被依赖」列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 位置 |"'));
 ok("体积 Top 表也带被依赖（大二进制不是可删插件）", serviceSource.includes('"| 名称 | 类型 | 来源 | 体积 | 文件数 | 被依赖 | 调用 | 最近 |"'));
@@ -722,7 +723,92 @@ ok("体检卡区分「informational」项（副本同步没有 passed/failed）"
 ok("提示条也按 informational 的口径说话（不再出现「staging ?」）", clientSource.includes('return check.id + " " + (check.ok === false ? "失败"'));
 ok("新类名都有样式定义", [".dpc-preflight{", ".dpc-preflight-check.is-bad{", ".dpc-preflight-fail{", ".dpc-sync-bar{", ".dpc-sync-confirm{", ".dpc-sync-name{"].every((needle) => cssSource.includes(needle)));
 ok("README 双语都写了面板上的「同步 staging」", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("同步 staging") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("Sync staging"));
-ok("版本号与构建戳同步抬到 0.11.0 / r11.0", /"version": "0\.11\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r11.0"'));
+ok("版本号与构建戳同步抬到 0.12.0 / r12.0", /"version": "0\.12\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r12.0"'));
+
+/* ─────────── R12（2026-10-23 第十二轮）：装了到底会不会跑 ───────────
+   本轮的起点是一个**会误导人删坏东西**的显示 bug：面板只有 `enabled`（在不在 bundles），
+   却把它写成「启用：是 / 否」并把 `false` 的卡片置灰。可 `bundles` 不是唯一入口 ——
+   配置条目按 name 能直接挂包，依赖链也能带。本机实测 `enabled === false` 的 26 个包里
+   **24 个其实在跑**（`@dsh-ops/bash-win32-x64` 354 MB + 19 个 `dsh-mnemon-*`）。
+   这一轮锁六件事：
+     ① 判据只有一份（lib/loadstate.mjs）：bundles ∪ 配置条目 = 入口，沿依赖 BFS 得四态；
+     ② 入口要排除 `disabled: true` 的配置条目；配置里的**嵌套** id/name 不算条目；
+     ③ 「不会被加载」只在 dormant 时说；宿主没给 loadState 时一律"未知"，绝不拿 enabled 猜；
+     ④ 置灰只跟 dormant 走（旧口径把在跑的包置灰）；
+     ⑤ 面板能用「不会被加载 N」筛出这批，工具/health/导出同一口径；
+     ⑥ 新字段必须在旧快照上"退化"而不是报错（loadState 缺失时客户端按未知渲染）。 */
+ok("四态是冻结白名单（顺序即展示优先级）", JSON.stringify(LOAD_STATES) === JSON.stringify(["bundle", "config", "transitive", "dormant"]) && Object.isFrozen(LOAD_STATES));
+
+const compFixture = [
+	"# 注释行不该影响解析",
+	"- id: alpha",
+	"  name: dsh-alpha",
+	"  config:",
+	"    - id: nested-entry",
+	"      name: NESTED-MUST-NOT-COUNT",
+	"    models:",
+	"      - id: k3",
+	"        name: Kimi K3",
+	"- id: beta",
+	"  name: '@scope/pkg'",
+	"  disabled: true",
+	"- id: gamma",
+	'  name: "dsh-gamma"',
+].join("\n");
+const compEntries = parseComposition(compFixture);
+eq("组合文件只收顶层条目（嵌套 config 里的 id/name 不算）", compEntries.map((entry) => entry.name), ["dsh-alpha", "@scope/pkg", "dsh-gamma"]);
+ok("条目带 id / disabled（`disabled: true` 要被认出来，否则已摘掉的条目会被当入口）", compEntries[0].id === "alpha" && compEntries[1].disabled === true && compEntries[0].disabled === false);
+ok("引号被剥掉（'@scope/pkg' 与 \"dsh-gamma\"）", compEntries[1].name === "@scope/pkg" && compEntries[2].name === "dsh-gamma");
+eq("空文本 / null 不抛", parseComposition(""), []);
+eq("null 输入也不抛", parseComposition(null), []);
+
+const graph = new Map([
+	["root-a", ["dep-x"]],
+	["root-b", []],
+	["dep-x", ["deep-y"]],
+	["deep-y", []],
+	["cfg-only", ["cfg-dep"]],
+	["cfg-dep", []],
+	["disabled-root", []],
+	["lonely", []],
+	["cycle-a", ["cycle-b"]],
+	["cycle-b", ["cycle-a"]],
+]);
+const resolved = resolveLoadPaths({
+	bundles: ["root-a", "root-b", "official-in-asar"],
+	compositions: [
+		{ id: "cfg-entry", name: "cfg-only", disabled: false },
+		{ id: "off-entry", name: "disabled-root", disabled: true },
+	],
+	installed: graph,
+});
+const stateOf = (name) => resolved.byName.get(name) || { state: "", via: "" };
+eq("bundles 命中 → bundle", stateOf("root-a").state, "bundle");
+eq("配置条目名命中已装 → config（不在 bundles 也加载）", { state: stateOf("cfg-only").state, via: stateOf("cfg-only").via }, { state: "config", via: "cfg-entry" });
+eq("被配置条目带到 → transitive，via 记的入口是那个配置条目 id", stateOf("cfg-dep"), { state: "transitive", via: "cfg-entry" });
+eq("沿依赖链两跳也点亮（root-a → dep-x → deep-y）", stateOf("deep-y"), { state: "transitive", via: "root-a" });
+eq("谁都不是 → dormant", stateOf("lonely"), { state: "dormant", via: "" });
+ok("被 `disabled: true` 摘掉的配置条目不进入口（它自己不亮、也不许带亮依赖）", stateOf("disabled-root").state === "dormant");
+eq("入口本身不在 installed 里也算入口（官方包在 asar）", resolved.roots.some((root) => root.name === "official-in-asar" && root.why === "bundle"), true);
+eq("循环依赖不死循环", { a: stateOf("cycle-a").state, b: stateOf("cycle-b").state }, { a: "dormant", b: "dormant" });
+eq("四态计数覆盖全部已装包（不许有包落不进任何一态）", LOAD_STATES.reduce((sum, state) => sum + resolved.counts[state], 0), graph.size);ok("isLoadedState / isDormantState 互斥且只认四态", isLoadedState("bundle") && isLoadedState("config") && isLoadedState("transitive") && !isLoadedState("dormant") && isDormantState("dormant") && !isDormantState("bundle") && isLoadedState("unknown") === false);
+ok("四态各有一句人话，且互不相同（不许两种状态说同一句话）", new Set(LOAD_STATES.map((state) => loadStateLabel(state, "x"))).size === LOAD_STATES.length && loadStateLabel("transitive", "dsh-ops").includes("dsh-ops"));
+
+ok("hostinfo 读的是两份组合文件（cordis.yml + cordis.patch.yml）", hostinfoSource.includes("export async function profileComposition()") && hostinfoSource.includes('["cordis.yml", "cordis.patch.yml"]'));
+ok("catalog 把四态挂到条目上，并记入口数与组合文件数", catalogSource.includes("const loadPaths = resolveLoadPaths({ bundles: [...bundles], compositions, installed: depIndex })") && catalogSource.includes("loadState: pack.loadState ||") && catalogSource.includes("loadRoots: loadPaths.roots.length") && catalogSource.includes("compositionFiles: composition.files.length"));
+ok("官方 asar 包直接记 bundle（它们的入口就是 bundles 本身）", catalogSource.includes('loadState: "bundle"'));
+ok("service 把 loadState / loadVia 透传给面板（缺字段时客户端按未知渲染）", serviceSource.includes("loadState: plugin.loadState ||") && serviceSource.includes("loadVia: plugin.loadVia ||"));
+ok("catalog_health 报加载路径四态（不再只报 bundles 口径）", toolsSource.includes("加载路径：") && toolsSource.includes("health.dependency.loadCounts.dormant") && toolsSource.includes("不在任何入口上"));
+ok("catalog_list 不再用 enabled 说「未启用」（改为 dormant / config 两句话）", !toolsSource.includes('(item.enabled === false ? "｜未启用"') && toolsSource.includes("不会被加载（不在 bundles、没有配置条目、也不在任何依赖链上）"));
+
+ok("客户端 isDormant 只认 loadState === 'dormant'（enabled === false 不算）", /function isDormant\(item\) \{/.test(clientSource) && clientSource.includes('return Boolean(item && item.loadState === "dormant");'));
+ok("卡片置灰只跟 dormant 走（旧口径 `enabled === false ? \" is-off\"` 必须消失）", !clientSource.includes('(item.enabled === false ? " is-off"') && clientSource.includes('(isDormant(item) ? " is-off"'));
+ok("卡片 chip 只给两档（不会被加载 / 配置入口），间接加载 152 条不占版面", clientSource.includes('if (item.loadState === "dormant") return "不会被加载";') && clientSource.includes('if (item.loadState === "config") return "配置入口";'));
+ok("详情页「启用」格子按四态说人话（配置(id)/随 X/是/否）", clientSource.includes('if (item.loadState === "config") return "配置("') && clientSource.includes('if (item.loadState === "transitive") return "随 "') && clientSource.includes("loadCell(item)"));
+ok("工具条有「不会被加载 N」筛选，且进 localStorage（视图记忆）", clientSource.includes('"不会被加载 " + dormantCount') && clientSource.includes("if (state.dormantOnly && !isDormant(item)) return false;"));
+ok("筛选计数只受 kind/source 影响（不随关键词跳）", /const dormantCount = useMemo\(\(\) => \{[\s\S]{0,260}state\.kind === "all"[\s\S]{0,160}state\.source === "any"/.test(clientSource));
+ok("新类名都有样式定义", [".dpc-load{", ".dpc-load.is-config{", ".dpc-load-warn{"].every((needle) => cssSource.includes(needle)));
+ok("README 双语都写了「不会被加载」这个口径", readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("不会被加载") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("not loaded"));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

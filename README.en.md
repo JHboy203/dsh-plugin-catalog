@@ -84,6 +84,12 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   and **never touching the copy DSH is loading**. The popup also offers "Sync this one → staging".
   The write gate lives **server-side** (requires `confirm:true`), so a stray click can at most produce a plan.
   When staging is *newer* (`staging 较新`) there is no button at all — that direction would overwrite the live copy with an older one
+- **Whether it is loaded at all (R12)**: `enabled` (membership in `dsh.profile.bundles`) is **not** a load criterion —
+  top-level entries in `cordis.yml` / `cordis.patch.yml` mount packages by `name:`, and dependency chains pull packages in as well.
+  The panel derives four states from the real entry points: bundle / config entry / reached through a dependency chain / **not loaded** (none of the three).
+  Cards carry only two chips (`不会被加载` grey, `配置入口` blue); the popup names the actual chain ("loaded via `dsh-ops`"),
+  and the toolbar filters "not loaded N" — a harder dead-weight signal than "unused", because such a package never runs at all.
+  ⚠️ This is a **declaration-level** criterion: a runtime `require()` by path is invisible to it, which is why the wording is "not loaded" rather than "definitely never runs".
 - **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
 - **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1

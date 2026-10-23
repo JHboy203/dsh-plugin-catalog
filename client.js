@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r11.0";
+		const BUILD = "r12.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -124,6 +124,9 @@ window.__ModuleLoader__.load({
 			pickedBusy: false,
 			/* R9：只看「无人依赖」的候选（清理决策；候选不是结论，界面会带说明） */
 			orphanOnly: false,
+			/* R12：只看「不会被加载」的条目 —— 不在 bundles、不在配置条目、不在依赖链上，
+			   属于装了也不会跑的那一类（本机实测 26 个包，含整个 mnemon 子系统）。 */
+			dormantOnly: false,
 			/* R11：「同步 staging」的二次确认（**服务端已经出过计划**才允许点确认写盘）。
 			   ★ 这个和 picked 一样**不进 localStorage**：重载后必须重新出计划，
 			     不能拿一份过期的计划去覆盖文件。 */
@@ -136,7 +139,7 @@ window.__ModuleLoader__.load({
 		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
 		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
 		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
-		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly"];
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"];
 
 		function readView() {
 			try {
@@ -547,6 +550,56 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * R12：这个条目会不会被宿主加载。
+		 *
+		 * ★ 只有宿主明确说 `dormant`（不在 bundles、没有配置条目、也不在任何入口的依赖链上）
+		 *   才算"不会被加载"。没有 `loadState`（旧快照 / 宿主还没重载）时一律当**未知**——
+		 *   绝不能用 `enabled` 猜：旧口径正是拿"在不在 bundles"当加载判据，把 24 个实际在跑的包
+		 *   （含 354 MB 的 `@dsh-ops/bash-win32-x64`）标成「启用：否」并置灰。
+		 */
+		function isDormant(item) {
+			return Boolean(item && item.loadState === "dormant");
+		}
+
+		/** 配置条目挂载（不在 bundles 里，但确实会被加载）。 */
+		function isConfigLoaded(item) {
+			return Boolean(item && item.loadState === "config");
+		}
+
+		/** 卡片 chip：只给「不会被加载」与「配置入口」两档，间接加载 152 条不占版面。 */
+		function loadLabel(item) {
+			if (!item || item.kind === "skill") return "";
+			if (item.loadState === "dormant") return "不会被加载";
+			if (item.loadState === "config") return "配置入口";
+			return "";
+		}
+
+		/** chip 的悬停说明书（四态各一句，别让读者自己去猜 enabled 与 loadState 的区别）。 */
+		function loadTitle(item) {
+			if (!item) return "";
+			if (item.loadState === "dormant") return "不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主不会加载它。删掉不影响当前加载；但如果你打算以后在 cordis.patch.yml 里挂它，就别删。";
+			if (item.loadState === "config") return "不在 dsh.profile.bundles，但被 cordis 配置条目" + (item.loadVia ? " `" + item.loadVia + "`" : "") + " 挂着 —— 它会加载。";
+			if (item.loadState === "transitive") return "不在 bundles，但 " + (item.loadVia || "某个入口") + " 声明依赖它 —— 随它一起加载，删了会连带弄坏。";
+			if (item.loadState === "bundle") return "在 dsh.profile.bundles 里，直接启用。";
+			return "宿主还没给出加载态（旧快照 / 还没重载）—— 别拿「在不在 bundles」当结论。";
+		}
+
+		/** 详情页「启用」格子的文案。 */
+		function loadCell(item) {
+			if (!item || item.kind === "skill") return "";
+			if (item.loadState === "dormant") return "否";
+			if (item.loadState === "config") return "配置(" + (item.loadVia || "条目") + ")";
+			if (item.loadState === "transitive") return "随 " + (item.loadVia || "依赖");
+			if (item.loadState === "bundle") return "是";
+			return "未知";
+		}
+
+		/** 状态库里的 dormant 条目数（工具条上的「不会被加载 N」）。 */
+		function dormantCountOf(items) {
+			return (items || []).filter(isDormant).length;
+		}
+
+		/**
 		 * 搜索命中：把**命中的工具名**挑出来（最多 4 个）。
 		 * 这是面板要能回答的第二个问题 —— 「这个工具是谁提供的」。
 		 * 少于 2 个字符不搜，免得一个 `a` 把所有条目都点亮。
@@ -688,7 +741,7 @@ window.__ModuleLoader__.load({
 			return h(
 				"button",
 				{
-					className: "dpc-card" + (item.enabled === false ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
+					className: "dpc-card" + (isDormant(item) ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
 					onClick: () => (picking ? props.onPick(item.id) : openEntry(item)),
 					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的调用明细",
 				},
@@ -699,6 +752,8 @@ window.__ModuleLoader__.load({
 					h(SourceBadge, { source: item.source, why: item.sourceWhy }),
 					h("span", { className: "dpc-name" }, item.name),
 					item.kind === "skill" ? h("span", { className: "dpc-kind" }, "Skill") : null,
+					/* R12：会不会被加载 —— 只有宿主给出 loadState 才敢下结论 */
+					loadLabel(item) ? h("span", { className: "dpc-load" + (isConfigLoaded(item) ? " is-config" : ""), title: loadTitle(item) }, loadLabel(item)) : null,
 					driftLabel(drift) ? h("span", { className: "dpc-drift", title: driftDetail(drift) }, driftLabel(drift)) : null,
 					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
 					hasErrors(item)
@@ -1065,7 +1120,7 @@ window.__ModuleLoader__.load({
 										statCell("涉及会话", String((detail.sessions && detail.sessions.total) || 0)),
 										statCell("其中子代理", fmtNumber(item.subagentCalls || 0)),
 										statCell("最近使用", ago(item.lastUsed)),
-										statCell(item.kind === "skill" ? "创建" : "启用", item.kind === "skill" ? fmtTime(item.createdAt) : item.enabled === false ? "否" : "是"),
+										statCell(item.kind === "skill" ? "创建" : "启用", item.kind === "skill" ? fmtTime(item.createdAt) : loadCell(item)),
 									),
 									item.subagentCalls > 0
 										? h("div", { className: "dpc-note" }, "总调用里包含子代理会话的 " + fmtNumber(item.subagentCalls) + " 次（父会话直呼 " + fmtNumber((item.calls || 0) - (item.subagentCalls || 0)) + " 次）—— 交接链里子代理占比很高时，看这个数才知道真实分布。")
@@ -1119,6 +1174,16 @@ window.__ModuleLoader__.load({
 												item.dependency
 													? h("div", { className: "dpc-muted" }, "写在 profile 的 package.json dependencies 里 —— 不会被依赖树整理顺手清掉")
 													: h("div", { className: "dpc-muted" }, "不在 profile 的 dependencies 里（传递依赖 / 自动装的）—— 整理依赖树时可能消失"),
+												/* R12：加载路径。这是「装了会不会跑」的判据，比 `enabled`（在不在 bundles）严格得多 */
+												isDormant(item)
+													? h("div", { className: "dpc-load-warn" }, "加载路径：❌ 不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主不会加载它；删掉不影响当前加载（但别删你打算以后挂进 cordis.patch.yml 的包）。")
+													: item.loadState === "config"
+														? h("div", { className: "dpc-muted" }, "加载路径：配置条目 `" + (item.loadVia || "?") + "` 挂着（不在 bundles）—— 会加载。")
+														: item.loadState === "transitive"
+															? h("div", { className: "dpc-muted" }, "加载路径：随 " + (item.loadVia || "某个入口") + " 加载（它声明依赖这个包）—— 删了会连带弄坏。")
+															: item.loadState === "bundle"
+																? h("div", { className: "dpc-muted" }, "加载路径：在 bundles 里，直接启用。")
+																: h("div", { className: "dpc-muted" }, "加载路径：宿主还没给出加载态（旧快照 / 还没重载）。"),
 												/* 体积：先用全量快照（打开就有），没有再退到懒算的 /size */
 												sizeRow(),
 											)
@@ -1562,6 +1627,8 @@ window.__ModuleLoader__.load({
 					if (state.usage === "subonly" && !isSubagentOnly(item)) return false;
 					/* R9：只看无人依赖的候选（Skill 永远不参与：它们之间没有 npm 依赖） */
 					if (state.orphanOnly && !isOrphanHint(item)) return false;
+					/* R12：只看「不会被加载」的条目（宿主没给 loadState 时一条都不命中，不做猜测） */
+					if (state.dormantOnly && !isDormant(item)) return false;
 					if (query !== "") {
 						/* ★ 工具名也要进搜索域 —— 否则「pwsh 是谁给的」只能一个个点开看 */
 						const haystack = [item.name, item.title, item.descriptionZh, item.descriptionEn, (item.sourceWhy || []).join(" "), (item.toolNames || []).join(" ")].join(" ").toLowerCase();
@@ -1585,7 +1652,7 @@ window.__ModuleLoader__.load({
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, sizeMap]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, state.dormantOnly, sizeMap]);
 
 			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
 			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
@@ -1603,6 +1670,11 @@ window.__ModuleLoader__.load({
 			/* R9：「无人依赖」候选数（与洞察条同口径：只受来源/类型影响，不被关键词带着跳） */
 			const orphanCount = useMemo(() => {
 				return items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source) && isOrphanHint(item)).length;
+			}, [items, state.kind, state.source]);
+
+			/* R12：「不会被加载」的条数 —— 与洞察条同口径（只受 kind/source 影响，不随关键词跳） */
+			const dormantCount = useMemo(() => {
+				return dormantCountOf(items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source)));
 			}, [items, state.kind, state.source]);
 
 			/* 当前筛选结果的体积合计：回答「删这批能省多少」，不用逐个点开浮窗。
@@ -1967,6 +2039,21 @@ window.__ModuleLoader__.load({
 								(state.orphanOnly ? "✓ " : "") + "无人依赖 " + orphanCount,
 							)
 						: null,
+					/* R12：只看「不会被加载」的条目 —— 这是最硬的死重量判据（装了根本不会跑），
+					   比"未使用"更硬：未使用至少可能是暂时没用到。 */
+					dormantCount > 0 || state.dormantOnly
+						? h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.dormantOnly ? " is-on" : ""),
+									onClick: () => set({ dormantOnly: !state.dormantOnly, page: 1 }),
+									title:
+										"只看「不会被加载」的条目：不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主根本不会加载它们。" +
+										"这是声明层面的判据（运行时按路径 require 的动态加载看不见），所以文案是「不会被加载」而不是「绝对没跑」。",
+								},
+								(state.dormantOnly ? "✓ " : "") + "不会被加载 " + dormantCount,
+							)
+						: null,
 					/* 当前筛选这一屏一共占多少盘 —— 点「未使用」就能直接看到"删这批能省多少" */
 					filtered.length > 0 && sizesAt
 						? h(
@@ -2217,6 +2304,13 @@ window.__ModuleLoader__.load({
 .dpc-dep{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
   color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
 .dpc-dep.is-orphan{color:#8a5a06;background:rgba(217,119,6,.12);border-color:rgba(217,119,6,.32)}
+/* 加载态 chip（R12）：「不会被加载」用灰底而不是红色（红色只留报告错）；
+   「配置入口」是中性事实（不置灰）：它不在 bundles 里，但确实会被加载。 */
+.dpc-load{font-size:10.5px;padding:1px 6px;border-radius:6px;font-weight:650;flex:0 0 auto;
+  color:var(--dsw-alias-label-secondary,#6b7280);background:var(--dpc-fill);border:1px dashed var(--dpc-line)}
+.dpc-load.is-config{color:#002fa7;background:rgba(0,47,167,.07);border:1px solid rgba(0,47,167,.32)}
+.dpc-load-warn{padding:7px 10px;border-radius:9px;font-size:12px;line-height:1.6;
+  color:#8a5a06;background:rgba(217,119,6,.10);border:1px solid rgba(217,119,6,.30)}
 .dpc-calls.is-zero{color:var(--dsw-alias-label-secondary,#8b93a1);font-weight:500}
 .dpc-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;word-break:break-all;
   color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);padding:2px 6px;border-radius:6px;
@@ -2470,6 +2564,13 @@ window.__ModuleLoader__.load({
 			isSubagentOnly,
 			isOrphanHint,
 			depLabel,
+			/* R12：加载态三件套（纯函数，自检直接断言） */
+			isDormant,
+			isConfigLoaded,
+			loadLabel,
+			loadTitle,
+			loadCell,
+			dormantCountOf,
 			togglePick,
 			togglePicking,
 			driftLabel,
