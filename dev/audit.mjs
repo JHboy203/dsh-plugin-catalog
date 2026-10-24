@@ -534,7 +534,7 @@ ok(
 		/async computeSizes\(options = \{\}\)[\s\S]{0,2000}?await dirSize\(/.test(serviceSource),
 );
 ok("没有独立目录时如实返回 size:null + 原因（不返回 0）", serviceSource.includes("Skill 没有独立目录") && serviceSource.includes("在官方 asar 里，没有独立目录"));
-ok("导出的落盘路径由服务端决定（reports/catalog-filtered-<时间戳>.md）", serviceSource.includes('"catalog-filtered-" + stamp + ".md"'));
+ok("导出的落盘路径由服务端决定（reports/catalog-filtered-<时间戳>.md|.csv，扩展名跟 format 走）", serviceSource.includes('"catalog-filtered-" + stamp + "." + format'));
 ok("导出文件写明条数与「只覆盖这一屏」", serviceSource.includes("这份清单只覆盖") && serviceSource.includes("共 **"));
 ok("导出按钮在筛选结果为 0 时禁用", /disabled: state\.exportBusy \|\| filtered\.length === 0/.test(clientSource));
 ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dpc-insight.is-empty{") && clientSource.includes('(insightCounts[option.id] === 0 ? " is-empty" : "")'));
@@ -858,7 +858,7 @@ ok(
 );
 ok("快照口径也进导出：概览有「加载路径」一行", serviceSource.includes('" 份组合文件）；直接 **"') && serviceSource.includes("不在任何入口上"));
 ok("导出单开一节「不会被加载」（含声明层面的边界说明）", serviceSource.includes('"## 不会被加载（"') && serviceSource.includes("运行时按路径 `require()` 的动态加载看不见"));
-ok("当前筛选的清单多一列「加载」（不会被加载 / 配置挂载 / 随 X 加载 / 是 / 未知）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"') && serviceSource.includes('if (item.loadState === "dormant") return "**不会被加载**"'));
+ok("当前筛选的清单多一列「加载」（不会被加载 / 配置挂载 / 随 X 加载 / 是 / 未知）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"') && serviceSource.includes('if (item.loadState === "dormant") return "不会被加载";'));
 /* ─────────── R15（2026-10-24 第十五轮）：标签闭环 ───────────
    这一轮的起点是一个**事实**而不是一个想法：`.dsh-plugin-catalog/tags.json` 从来不存在 ——
    标签系统（内置 27 个标签 / 自定义 / AI 分类 / 详情浮窗编辑器 / catalog_tag 工具）代码齐全、
@@ -925,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.27.0 / r27.0", /"version": "0\.27\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r27.0"'));
+ok("版本号与构建戳同步抬到 0.28.0 / r28.0", /"version": "0\.28\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r28.0"'));
 
 
 ok(
@@ -1047,6 +1047,30 @@ ok("planPath 只许 reports/ 下的一份（不许把数据目录外的 JSON 读
 ok("对账结论**不进** /state（一份过期的「已删干净」会替人背书下一次动手）", !serviceSource.includes("this.lastVerify") && clientSource.includes("verify: null"));
 ok("路由：verify 分支默认只读，confirm:true 才落报告", indexSource.includes('body.action === "verify"') && indexSource.includes("catalog.verifyUninstall({ planPath })") && indexSource.includes("catalog.writeVerifyReport({ confirm: true, planPath })"));
 ok("工具 verify 可点名 planPath，且写明「只算不写盘」与落报告条件", toolsSource.includes('planPath: { type: "string"') && toolsSource.includes("action=verify") && toolsSource.includes("reports/uninstall-verify-*.md"));
+
+/* ── R28-a：CSV 导出 ── */
+const csvSource = readFileSync(new URL("../lib/csv.mjs", import.meta.url), "utf8");
+ok("lib/csv.mjs 是纯函数层：列定义 / 单元格转义 / 序列化三样都在这里", csvSource.includes("export const ENTRY_COLUMNS") && csvSource.includes("export function csvCell") && csvSource.includes("export function renderCsv"));
+ok("CSV 转义覆盖 RFC 4180 三条（逗号 / 双引号双写 / 换行），并默认带 BOM", csvSource.includes('/[",\\r\\n]/') && csvSource.includes(`replace(/"/g, '""')`) && csvSource.includes('"\\uFEFF"'), "");
+ok("CSV 不 import 任何 service / fs（纯函数才测得住）", !/from "\.\/service\.mjs"|node:fs/.test(csvSource));
+ok(
+	"导出的事实只有一份实现：loadTextOf / depTextOf 各定义一次，Markdown 分支不再自带「不会被加载」字面量",
+	(serviceSource.match(/export function loadTextOf/g) || []).length === 1 && (serviceSource.match(/export function depTextOf/g) || []).length === 1 && !serviceSource.includes('"**不会被加载**"') && serviceSource.includes("const text = loadTextOf(item);"),
+);
+ok(
+	"CSV 与 Markdown 走同一批 picked：同一循环既 push 表格行也 push csvRows，最后只换序列化器",
+	serviceSource.includes("csvRows.push(entryCsvRow(item, { sizeOf }))") && serviceSource.includes('format === "csv" ? renderCsv(csvRows, ENTRY_COLUMNS) : markdown'),
+);
+ok("catalog_export 支持 format=md|csv，且提示写明 CSV 的行数与 BOM", toolsSource.includes('format: { type: "string", enum: ["md", "csv"]') && toolsSource.includes("已导出 CSV"));
+ok("index.js 的 /export 透传 format（面板与工具同一条链路，不是两套）", routeSource.includes('format: String(body.format || "md")'));
+
+/* ── R28-b：还原到「更早的那一份」 ── */
+ok("lib/staging.mjs 导出 pickBackupByName，且按**全名**精确比对（同一秒的两份不会随机挑）", stagingSource.includes("export function pickBackupByName") && stagingSource.includes("item.name === wanted || item.name === withPrefix"));
+ok("catalog_skill_sync 有 backup 参数，并写明「省略 = 最近一份」", toolsSource.includes('backup: { type: "string"') && toolsSource.includes("省略 = 最近一份"));
+ok("还原计划回传可选备份清单（backups / backupCount），点名不存在时给出可选项而不是静默", serviceSource.includes("backupCount: backups.count") && serviceSource.includes("没有这份备份"));
+ok("写盘那一步带着**同一份**备份（否则会按「最近一份」重新解析，看起来还完全成功）", clientSource.includes("const backup = plan.backup ||") && routeSource.includes('const backup = body.backup ? String(body.backup) : "";'));
+ok("面板还原确认里可以点「更早的备份」（onPick → 重新出计划），不是只能还原最近一份", clientSource.includes("onPick: (backup) => planStageRestore(item.id, backup)") && clientSource.includes("更早的备份"));
+ok("CSV 两个入口都挂了按钮（当前这一屏 / 选中批次），且结果条会说清格式", clientSource.includes("onClick: exportFilteredCsv") && clientSource.includes("onClick: exportPickedCsv") && clientSource.includes('state.exportFormat === "csv"'));
 ok("对账的措辞只在 uninstall.mjs 一处定义（面板/工具/报告共用）", uninstallSource.includes("export const VERIFY_REASON") && uninstallSource.includes("export const VERIFY_VERDICT") && toolsSource.includes("import { VERIFY_REASON, VERIFY_VERDICT }"));
 ok("报告渲染把「白删 / 计划过期 / 逐成员 / 边界」四节都写出来", uninstallSource.includes("export function renderVerifyReport") && uninstallSource.includes("删了等于白删（最要紧）") && uninstallSource.includes("## 逐成员"));
 ok("面板：VerifyBlock 结论与原因同时出现，且按钮不含「删除」字样", clientSource.includes("function VerifyBlock(props)") && clientSource.includes("对账（不动盘）") && clientSource.includes("白删（会被装回来 / 入口指空）：") && clientSource.includes("对账不改任何东西"));
@@ -1092,7 +1116,7 @@ ok("备份名格式唯一，还原拒绝路径穿越", stagingSource.includes("e
 ok("还原只写 stagedDir（不碰 DSH 加载的那份），覆盖前先备份当前那份", stagingSource.includes("export async function restoreSkillBackup") && stagingSource.includes("const target = join(stagedDir, SKILL_FILE)") && stagingSource.includes("preRestore = await uniqueBackupTarget(stagedDir, stamp)") && !/export async function restoreSkillBackup[\s\S]{0,2400}?loadedDir/.test(stagingSource));
 ok("备份与当前内容一致 → skipped（不制造无意义备份）", /if \(currentText !== null && hashSkillText\(currentText\) === hashSkillText\(backupText\)\) \{\s*return \{ ok: true, skipped: true/.test(stagingSource));
 ok("staging 扫描把备份份数与哈希一并带给面板（drift 数据源）", serviceSource.includes("loadedHash: loadedStat ? loadedStat.hash : null") && serviceSource.includes("backups: { count: backups.count, latest:") && serviceSource.includes("await listSkillBackups(staged)"));
-ok("还原计划只列与当前内容不同的备份，方向写清楚", serviceSource.includes("async restoreStagedSkillPlan(") && serviceSource.includes('direction: "backup → staging"') && serviceSource.includes("最新备份与 staging 当前内容一致"));
+ok("还原计划只列与当前内容不同的备份，方向写清楚", serviceSource.includes("async restoreStagedSkillPlan(") && serviceSource.includes('direction: "backup → staging"') && serviceSource.includes("与 staging 当前内容一致"));
 ok("还原写盘同样要 confirm:true（服务端拒，不靠按钮自觉）", /async restoreStagedSkills[\s\S]{0,900}options\.confirm !== true/.test(serviceSource) && serviceSource.includes("还原必须带 confirm:true"));
 ok("/skillsync 支持 action=restore（不传 action 仍是同步，向后兼容）", indexSource.includes('String(body.action || "sync") === "restore"') && indexSource.includes("catalog.restoreStagedSkillPlan") && indexSource.includes("catalog.restoreStagedSkills"));
 ok("工具 action 枚举含 restore，计划文案可读", /enum: \["plan", "apply", "restore"\]/.test(toolsSource) && toolsSource.includes("还原计划：") && toolsSource.includes("backup → staging"));

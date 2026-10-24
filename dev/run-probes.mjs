@@ -34,6 +34,7 @@ const PROBES = [
 	{ id: "staging", label: "副本判据", file: "dev/probe-staging.mjs" },
 	{ id: "composition", label: "配置层", file: "dev/probe-composition.mjs" },
 	{ id: "handoff", label: "交接单", file: "dev/probe-handoff.mjs" },
+	{ id: "csv", label: "CSV 导出", file: "dev/probe-csv.mjs" },
 ];
 
 /** 探针收尾行形如 `probe-tags: passed 12 / failed 0`。 */

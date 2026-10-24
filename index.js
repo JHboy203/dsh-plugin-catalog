@@ -261,7 +261,16 @@ export async function apply(ctx) {
 
 				if (path === "/export" && method === "POST") {
 					const body = await readJsonBody(req);
-					return json(res, 200, await catalog.exportFiltered({ ids: Array.isArray(body.ids) ? body.ids : [], filters: body.filters && typeof body.filters === "object" ? body.filters : {} }));
+					/* R28：`format:"csv"` —— 与 Markdown 同一批 picked、同一批事实，只换序列化器 */
+					return json(
+						res,
+						200,
+						await catalog.exportFiltered({
+							ids: Array.isArray(body.ids) ? body.ids : [],
+							filters: body.filters && typeof body.filters === "object" ? body.filters : {},
+							format: String(body.format || "md"),
+						}),
+					);
 				}
 
 				if (path === "/job" && method === "GET") return json(res, 200, catalog.jobSnapshot());
@@ -316,10 +325,12 @@ export async function apply(ctx) {
 				if (path === "/skillsync" && method === "POST") {
 					const body = await readJsonBody(req);
 					const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+					/* R28：可以点名还原到更早的那一份（全名或裸时间戳） */
+					const backup = body.backup ? String(body.backup) : "";
 					/* R20：action=restore 走「备份 → staging」的还原（同一个写盘闸：apply + confirm）。 */
 					if (String(body.action || "sync") === "restore") {
-						if (body.apply !== true) return json(res, 200, await catalog.restoreStagedSkillPlan(ids));
-						return json(res, 200, await catalog.restoreStagedSkills({ ids, apply: true, confirm: body.confirm === true }));
+						if (body.apply !== true) return json(res, 200, await catalog.restoreStagedSkillPlan(ids, { backup }));
+						return json(res, 200, await catalog.restoreStagedSkills({ ids, backup, apply: true, confirm: body.confirm === true }));
 					}
 					if (body.apply !== true) return json(res, 200, await catalog.syncStagedSkills({ ids }));
 					return json(res, 200, await catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true }));

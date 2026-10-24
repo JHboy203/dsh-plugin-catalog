@@ -828,6 +828,27 @@ const routeRestoreNoConfirm = await callRoute("/skillsync", "POST", { action: "r
 ok("还原的写盘闸：apply 不带 confirm 直接被拒（绝不静默覆盖 staging）", routeRestoreNoConfirm.json?.ok === false && /confirm/.test(String(routeRestoreNoConfirm.json?.error || "")), JSON.stringify(routeRestoreNoConfirm.json?.error));
 const restoreToolPlan = await callTool("catalog_skill_sync", { action: "restore" });
 ok("catalog_skill_sync action=restore 出还原计划（不写盘）", restoreToolPlan?.ok === true && /还原计划/.test(String(restoreToolPlan?.text || "")) && restoreToolPlan?.applied !== true, String(restoreToolPlan?.count));
+
+/* ── R28：CSV 导出（工具入口，真写一次盘再读回来） ── */
+const csvExport = await callTool("catalog_export", { format: "csv" });
+ok(
+	"catalog_export format=csv 写出 .csv（不是 .md），并报行数",
+	csvExport?.ok === true && /\.csv$/.test(String(csvExport?.path || "")) && Number(csvExport?.rows) > 100 && String(csvExport?.text || "").includes("已导出 CSV"),
+	String(csvExport?.path || ""),
+);
+const csvText = csvExport?.path && existsSync(csvExport.path) ? readFileSync(csvExport.path, "utf8") : "";
+ok(
+	"CSV 文件本身：BOM 开头 + 12 列表头 + 行数 = 表头 + 条目数（Excel 打开不乱码、不丢列）",
+	csvText.startsWith("\uFEFF") && csvText.split("\r\n")[0].split(",").length === 12 && csvText.split("\r\n").filter(Boolean).length === Number(csvExport?.rows) + 1,
+	JSON.stringify({ bytes: csvText.length, rows: csvExport?.rows }),
+);
+/* ── R28：点名一个不存在的备份 —— 必须说清原因，绝不静默退回最近一份 ── */
+const restoreBadBackup = await callTool("catalog_skill_sync", { action: "restore", backup: "SKILL.md.bak-19990101-000000" });
+ok(
+	"点名不存在的备份：count=0 + 说明「没有这份备份」，不写盘也不崩",
+	restoreBadBackup?.ok === true && Number(restoreBadBackup?.count) === 0 && /没有这份备份/.test(String(restoreBadBackup?.text || "")) && restoreBadBackup?.applied !== true,
+	String(restoreBadBackup?.text || "").slice(0, 100),
+);
 const backupName = copied.backup.split(/[\\/]/).pop();
 const restoredTemp = await restoreSkillBackup({ stagedDir: join(stageRoot, "alpha"), backup: backupName, stamp: "20261024-160000" });
 const restoredAgain = await restoreSkillBackup({ stagedDir: join(stageRoot, "alpha"), backup: backupName, stamp: "20261024-160001" });

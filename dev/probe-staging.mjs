@@ -14,7 +14,7 @@ import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { backupStampOf, compareBackupNames, hashSkillText, listSkillBackups, pickLatestBackup, restoreSkillBackup, scanSkillStaging, skillStat, skillVerdict } from "../lib/staging.mjs";
+import { backupStampOf, compareBackupNames, hashSkillText, listSkillBackups, pickBackupByName, pickLatestBackup, restoreSkillBackup, scanSkillStaging, skillStat, skillVerdict } from "../lib/staging.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -186,9 +186,29 @@ try {
 	await rm(root, { recursive: true, force: true });
 }
 
+/* ── P17–P20：点名还原到「更早的那一份」（R28）──
+   一个"看起来挑对了"的实现会在同一秒的两份备份之间随机选一份 ——
+   只有构造出那对名字（`…-234307` 与 `…-234307-2` 的 stamp 完全相同）才测得出来。 */
+{
+	const items = [
+		{ name: "SKILL.md.bak-20261024-100000", stamp: "20261024-100000" },
+		{ name: "SKILL.md.bak-20261024-234307", stamp: "20261024-234307" },
+		{ name: "SKILL.md.bak-20261024-234307-2", stamp: "20261024-234307" },
+	];
+	ok("P17 全名精确命中", pickBackupByName(items, "SKILL.md.bak-20261024-100000")?.name === "SKILL.md.bak-20261024-100000");
+	ok("P18 裸时间戳也能命中（自动补 SKILL.md.bak- 前缀）", pickBackupByName(items, "20261024-100000")?.name === "SKILL.md.bak-20261024-100000");
+	ok(
+		"P19 同一秒的两份备份：按全名各归各的（不按 stamp 瞎挑）",
+		pickBackupByName(items, "SKILL.md.bak-20261024-234307-2")?.name === "SKILL.md.bak-20261024-234307-2" && pickBackupByName(items, "20261024-234307")?.name === "SKILL.md.bak-20261024-234307",
+	);
+	ok(
+		"P20 不存在 / 路径穿越 / 空选择器 / 空列表 → null（还原是写盘动作，宁可拒绝也不替人猜）",
+		pickBackupByName(items, "SKILL.md.bak-19990101-000000") === null && pickBackupByName(items, "../SKILL.md.bak-20261024-100000") === null && pickBackupByName(items, "") === null && pickBackupByName([], "x") === null,
+	);
+}
+
 const failed = results.filter((item) => !item.pass);
-if (process.argv.includes("--json")) {
-	console.log(JSON.stringify({ passed: results.length - failed.length, failed: failed.length, results }, null, 1));
+if (process.argv.includes("--json")) {	console.log(JSON.stringify({ passed: results.length - failed.length, failed: failed.length, results }, null, 1));
 } else {
 	for (const item of results) console.log(`${item.pass ? "  ok" : "  FAIL"}  ${item.name}${item.pass || !item.detail ? "" : "  [" + item.detail + "]"}`);
 	console.log(`\nprobe-staging: passed ${results.length - failed.length} / failed ${failed.length}`);

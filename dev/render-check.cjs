@@ -535,13 +535,15 @@ T.store.pageSize = 0;
 T.store.page = 1;
 const exportButtons = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-export"));
 const exportTexts = exportButtons.map((node) => textsOf(node).join(""));
-ok("工具条有「导出这 N 条」，N 就是当前筛选条数", exportButtons.length === 1 && exportTexts[0].includes("导出这 6 条"), JSON.stringify(exportTexts));
+ok("工具条有「导出这 N 条」，N 就是当前筛选条数", exportButtons.length === 2 && exportTexts.join(" ").includes("导出这 6 条"), JSON.stringify(exportTexts));
+/* R28：CSV 与 Markdown 是同一屏、同一批筛选，只换格式 —— 两个按钮必须都在，否则"能导 CSV"只存在于文档里 */
+ok("工具条还有一个「CSV」（贴进 Excel 用），与 Markdown 那个并列", exportTexts.some((text) => text.includes("同一屏写成 CSV") && text.endsWith("CSV")), JSON.stringify(exportTexts));
 T.store.kind = "skill";
 const zeroChips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-insight") && String(node.props.className).includes("is-empty")).map((node) => textsOf(node).join(""));
 ok("计数为 0 的档位置灰但不隐藏（点开是空态 + 说明书）", zeroChips.length >= 1 && zeroChips.some((text) => text.includes("有报错 0")), JSON.stringify(zeroChips));
 T.store.usage = "subonly";
 const emptyExport = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-export")).map((node) => ({ text: textsOf(node).join(""), disabled: Boolean(node.props.disabled) }));
-ok("筛选结果为 0 时导出按钮禁用（不让用户导出一个空文件）", emptyExport.length === 1 && emptyExport[0].disabled === true && emptyExport[0].text.includes("导出这 0 条"), JSON.stringify(emptyExport));
+ok("筛选结果为 0 时导出按钮禁用（不让用户导出一个空文件）", emptyExport.length === 2 && emptyExport.every((item) => item.disabled === true) && emptyExport.some((item) => item.text.includes("导出这 0 条")), JSON.stringify(emptyExport));
 T.store.usage = "any";
 T.store.kind = "all";
 
@@ -675,7 +677,26 @@ const restorePlanFixture = {
 	ok: true,
 	count: 1,
 	direction: "backup → staging",
-	items: [{ id: "skill:vex-ops", name: "vex-ops", stagedDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops", backup: "SKILL.md.bak-20261024-120000", backupStamp: "20261024-120000", backupBytes: 2048, currentBytes: 2100, verdict: "same" }],
+	backup: null,
+	items: [
+		{
+			id: "skill:vex-ops",
+			name: "vex-ops",
+			stagedDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops",
+			backup: "SKILL.md.bak-20261024-120000",
+			backupStamp: "20261024-120000",
+			backupBytes: 2048,
+			backupCount: 3,
+			/* R28：可选清单 —— 还原确认条里要能把目标换成更早的那一份 */
+			backups: [
+				{ name: "SKILL.md.bak-20261024-120000", stamp: "20261024-120000", size: 2048, at: 1, sameAsStaged: false },
+				{ name: "SKILL.md.bak-20261024-100000", stamp: "20261024-100000", size: 1900, at: 1, sameAsStaged: false },
+				{ name: "SKILL.md.bak-20261023-235900", stamp: "20261023-235900", size: 1800, at: 1, sameAsStaged: true },
+			],
+			currentBytes: 2100,
+			verdict: "same",
+		},
+	],
 	skipped: [],
 };
 T.store.restorePlan = restorePlanFixture;
@@ -684,6 +705,12 @@ ok(
 	"还原确认条：方向 / 只动 staging / 覆盖前另存 / 两个动作齐全",
 	restoreText.includes("覆盖成备份版本") && restoreText.includes("backup → staging") && restoreText.includes("不动 DSH 正在加载的 SKILL.md") && restoreText.includes("确认还原（1 个）") && restoreText.includes("取消"),
 	restoreText.slice(0, 260),
+);
+/* R28：只能还原"最近一份"曾经是这块的天花板 —— 现在要把更早的几份摆出来、点一份就改目标 */
+ok(
+	"还原确认条里有「更早的备份」可选（点一份换目标，而不是只能还原最近那份）",
+	restoreText.includes("更早的备份") && restoreText.includes("20261024-100000") && restoreText.includes("20261023-235900"),
+	restoreText.slice(0, 320),
 );
 T.store.restorePlan = null;
 T.store.data = staleData;

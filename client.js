@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r27.0";
+		const BUILD = "r28.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -115,6 +115,8 @@ window.__ModuleLoader__.load({
 			exportBusy: false,
 			exportPath: "",
 			exportCount: 0,
+			/* R28：md | csv —— 结果条要靠它说清"导出的是哪种" */
+			exportFormat: "md",
 			/* 多选（清理决策用）：选择模式下点卡片 = 选中，不进浮窗。
 			   ★ 选中项不进 localStorage：重载后清空是**故意的**，避免半个批次被忘在那里。 */
 			picking: false,
@@ -365,10 +367,13 @@ window.__ModuleLoader__.load({
 		   ★ 与同步对称：方向 `backup → staging`，只动上传用的那份，永远不碰 DSH 加载的文件。
 		   ★ 走服务端 `/skillsync {action:"restore"}`，与 `catalog_skill_sync action=restore`
 		     是同一个 service 方法；apply 必须带 confirm:true，否则服务端直接拒。 */
-		async function planStageRestore(id) {
+		async function planStageRestore(id, backup) {
 			set({ restoreBusy: true, restorePlan: null });
 			try {
-				const result = await post("/skillsync", { action: "restore", ids: [id] });
+				/* R28：backup 可选 —— 点名还原到更早的那一份（全名或裸时间戳） */
+				const payload = { action: "restore", ids: [id] };
+				if (backup) payload.backup = String(backup);
+				const result = await post("/skillsync", payload);
 				if (!result || result.ok !== true) {
 					set({ restoreBusy: false, notice: "取还原计划失败：" + String((result && result.error) || "未知错误") });
 					return;
@@ -388,9 +393,15 @@ window.__ModuleLoader__.load({
 			const plan = store.restorePlan;
 			if (!plan) return;
 			const ids = (plan.items || []).map((item) => item.id);
+			/* R28：点名还原必须把**同一份**备份带到写盘那一步。
+			   否则服务端会按"最近一份"重新解析 —— 症状是「我点了 09:12 那份，还原出来的是 10:40 那份」，
+			   而且整个过程完全成功、没有任何报错。 */
+			const backup = plan.backup || (plan.items && plan.items[0] ? plan.items[0].backup : "") || "";
 			set({ restoreBusy: true });
 			try {
-				const result = await post("/skillsync", { action: "restore", ids, apply: true, confirm: true });
+				const payload = { action: "restore", ids, apply: true, confirm: true };
+				if (backup) payload.backup = String(backup);
+				const result = await post("/skillsync", payload);
 				set({ restoreBusy: false, restorePlan: null });
 				if (result && result.ok) {
 					const unchanged = Array.isArray(result.unchanged) ? result.unchanged.length : 0;
@@ -1562,7 +1573,15 @@ window.__ModuleLoader__.load({
 													)
 												: null,
 											ownPlan ? h(SyncConfirm, { compact: true, plan: ownPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) }) : null,
-											ownRestorePlan ? h(RestoreConfirm, { plan: ownRestorePlan, busy: state.restoreBusy, onApply: applyStageRestore, onCancel: () => set({ restorePlan: null }) }) : null,
+											ownRestorePlan
+												? h(RestoreConfirm, {
+														plan: ownRestorePlan,
+														busy: state.restoreBusy,
+														onApply: applyStageRestore,
+														onPick: (backup) => planStageRestore(item.id, backup),
+														onCancel: () => set({ restorePlan: null }),
+													})
+												: null,
 										);
 									})(),
 									/* 仓库与操作 */
@@ -1848,6 +1867,31 @@ window.__ModuleLoader__.load({
 					{ className: "dpc-sync-names" },
 					items.slice(0, 5).map((item) => h("code", { key: item.id, className: "dpc-sync-name" }, item.name + " ← " + (item.backupStamp || item.backup))),
 				),
+				/* R28：还原到「更早的那一份」。列表来自服务端计划的 `backups`（最近 8 份），
+				   点一份就重新出计划（方向不变，只是换了目标），然后仍然要按「确认还原」才写盘。 */
+				items.length === 1 && items[0] && Array.isArray(items[0].backups) && items[0].backups.length > 1
+					? h(
+							"div",
+							{ className: "dpc-row" },
+							h("span", { className: "dpc-muted" }, "更早的备份："),
+							items[0].backups
+								.filter((backup) => backup.stamp !== items[0].backupStamp)
+								.slice(0, 4)
+								.map((backup) =>
+									h(
+										"button",
+										{
+											key: backup.name,
+											className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+											title: backup.name + (backup.sameAsStaged ? "（内容与 staging 当前一致，还原等于什么都没做）" : ""),
+											onClick: () => props.onPick && props.onPick(backup.name),
+											disabled: props.busy,
+										},
+										backup.stamp,
+									),
+								),
+						)
+					: null,
 				h(
 					"div",
 					{ className: "dpc-row" },
@@ -2712,11 +2756,16 @@ window.__ModuleLoader__.load({
 
 			/* 导出**当前这一屏**（顺序就是屏幕顺序，并带筛选条件说明）——
 			   「我刚筛出来的这批要发给谁」不用再解释一遍筛了什么。 */
-			async function runExport(ids) {
+			async function runExport(ids, format) {
 				set({ exportBusy: true });
 				try {
-					const result = await post("/export", { ids, filters: { query: state.query, source: state.source, kind: state.kind, usage: state.usage, sort: state.sort } });
-					if (result && result.ok) set({ exportBusy: false, exportPath: result.path, exportCount: result.count, notice: null });
+					const result = await post("/export", {
+						ids,
+						/* R28：csv = 表格用（带 BOM 的裸值）；md = 给人看的（反引号、加粗、条件说明） */
+						format: format === "csv" ? "csv" : "md",
+						filters: { query: state.query, source: state.source, kind: state.kind, usage: state.usage, sort: state.sort },
+					});
+					if (result && result.ok) set({ exportBusy: false, exportPath: result.path, exportCount: result.count, exportFormat: result.format || "md", notice: null });
 					else set({ exportBusy: false, notice: "导出失败：" + String((result && result.error) || "未知错误") });
 				} catch (error) {
 					set({ exportBusy: false, notice: "导出失败：" + String((error && error.message) || error) });
@@ -2727,6 +2776,13 @@ window.__ModuleLoader__.load({
 			}
 			function exportPicked() {
 				return runExport(store.picked.slice());
+			}
+			/* R28：CSV 两个入口与 Markdown 共用同一条链路（同一批 id、同一批筛选条件） */
+			function exportFilteredCsv() {
+				return runExport(filtered.map((item) => item.id), "csv");
+			}
+			function exportPickedCsv() {
+				return runExport(store.picked.slice(), "csv");
 			}
 
 			if (state.loading && !data) {
@@ -2888,7 +2944,7 @@ window.__ModuleLoader__.load({
 				state.exportPath
 					? h(							"div",
 							{ className: "dpc-note" },
-							"已导出 " + state.exportCount + " 条 → ",
+							"已导出 " + state.exportCount + " 条" + (state.exportFormat === "csv" ? "（CSV）" : "") + " → ",
 							h("code", { className: "dpc-path" }, state.exportPath),
 							" ",
 							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ notice: copyText(state.exportPath) ? null : "复制失败：渲染进程不让写剪贴板" }) }, "复制路径"),
@@ -3055,6 +3111,12 @@ window.__ModuleLoader__.load({
 							{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-export", onClick: exportFiltered, disabled: state.exportBusy || filtered.length === 0, title: "把当前这一屏（含筛选条件）写成 Markdown，存到数据目录 reports/ 下" },
 							state.exportBusy ? "导出中…" : "导出这 " + filtered.length + " 条",
 						),
+						/* R28：同一屏、同一批筛选，只换格式 —— 要贴进 Excel 就用这个 */
+						h(
+							"button",
+							{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-export", onClick: exportFilteredCsv, disabled: state.exportBusy || filtered.length === 0, title: "同一屏写成 CSV（带 UTF-8 BOM，Excel 直接打开中文不乱码）" },
+							"CSV",
+						),
 					),
 				),
 				/* R15：标签筛选行 —— 只在「有标签真的被用着」时出现。
@@ -3097,6 +3159,7 @@ window.__ModuleLoader__.load({
 											})(),
 							),
 							h("button", { className: "dpc-btn dpc-btn-sm", onClick: exportPicked, disabled: state.exportBusy || state.picked.length === 0 }, "导出选中"),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: exportPickedCsv, disabled: state.exportBusy || state.picked.length === 0, title: "把这批写成 CSV（带 BOM，Excel 直接打开不乱码）" }, "CSV"),
 							h(
 								"button",
 								{
