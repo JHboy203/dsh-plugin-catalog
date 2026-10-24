@@ -556,7 +556,8 @@ ok("漂移只看 4 个关键文件（不读内容，71 个包也快）", /const 
 ok("只差修改时间时有 60 秒容差（否则每次保存都报不同步）", /DRIFT_MTIME_TOLERANCE = 60 \* 1000/.test(serviceSource));
 ok("大小不同即判 differs，不靠 mtime", /if \(left\.size !== right\.size\) \{\s*differs\.push\(name\)/.test(serviceSource));
 ok("junction 安装单独记为 linked（只有一份，不算漂移）", /verdict: "linked"/.test(serviceSource) && /if \(plugin\.isLink\)/.test(serviceSource));
-ok("漂移结果有 60 秒缓存，且重建目录会作废", serviceSource.includes("async driftOf()") && serviceSource.includes("this.driftCache = null;"));
+ok("漂移结果有 60 秒缓存，且重建目录会作废", serviceSource.includes("async driftOf({ fresh = false } = {})") && serviceSource.includes("this.driftCache = null;"));
+ok("R16：写盘计划跳过缓存（刚改完 Skill 就点同步，不能因 60 秒缓存报「两份一致」）", serviceSource.includes("const drift = await this.driftOf({ fresh: true });"));
 ok("state 里带 drift 映射", /drift: await this\.driftOf\(\)/.test(serviceSource) && /\.dpc-drift\{/.test(cssSource));
 ok("卡片上的漂移标签走纯函数（可断言）", /function driftLabel\(drift\)/.test(clientSource) && /function driftDetail\(drift\)/.test(clientSource));
 ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /skillVerdict\(await skillStat\(liveDir\), await skillStat\(staged\)\)/.test(serviceSource) && /staged: true/.test(serviceSource));
@@ -920,7 +921,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.15.0 / r15.0", /"version": "0\.15\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r15.0"'));
+ok("版本号与构建戳同步抬到 0.16.0 / r16.0", /"version": "0\.16\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r16.0"'));
 
 
 ok(
@@ -998,7 +999,7 @@ ok("写盘要 confirm:true（闸在服务端）", serviceSource.includes("async 
 ok("state 与 health 都带 uninstall 摘要（面板读 state、catalog_health 读 health）", serviceSource.includes("uninstall: this.uninstallSummary()") && serviceSource.includes("uninstall: this.lastUninstall"));
 ok("体积走注入的 sizeOf（service 里 dirSize 调用点还是三处，懒算闸门没被打开）", serviceSource.includes("sizeOf: (dir) => dirSize(dir)") && (serviceSource.match(/await dirSize\(/g) || []).length === 3);
 ok("路由 POST /uninstall：plan 起后台任务、apply+confirm 才写盘", indexSource.includes('if (path === "/uninstall" && method === "POST")') && indexSource.includes("catalog.writeUninstallReport({ confirm: body.confirm === true })"));
-ok("工具 catalog_uninstall 存在且声明了 output（0.2.1 起漏了会整插件失活）", toolsSource.includes('name: "catalog_uninstall"') && toolsSource.includes("action: { type: \"string\", enum: [\"plan\", \"write\"]"));
+ok("工具 catalog_uninstall 存在且声明了 output（0.2.1 起漏了会整插件失活）", toolsSource.includes('name: "catalog_uninstall"') && toolsSource.includes("action: { type: \"string\", enum: [\"plan\", \"write\", \"simulate\"]"));
 ok("工具没有在 description 里许诺「帮你删」（只生成清单）", toolsSource.includes("只生成、绝不执行删除") && !toolsSource.includes("catalog_uninstall 会删除"));
 
 /* ⑤ 探针：I7 在 loadstate 探针、I8–I11 在 uninstall 探针 */
@@ -1010,6 +1011,22 @@ ok("探针不硬编码本机路径（换机器也能跑）", !/D:[\\/]信息库/
 ok("工具条有「处置清单」入口（不会被加载旁边），只生成不执行", clientSource.includes('"处置清单"') && clientSource.includes("只生成、永不执行删除"));
 ok("处置清单卡 + 写入二次确认（第一下只是把按钮变成确认）", clientSource.includes("function UninstallCard(props)") && clientSource.includes("确认写入（不会删任何目录）"));
 ok("详情页点明别名目录（同项目两份安装，不再让人以为它在跑 / 没跑）", clientSource.includes("别名目录：这个目录里装的是"));
+
+/* ⑦ R16：删除预演 —— 只算不删，回答"真删了会不会有东西指空" */
+const simProbeSource = readFileSync(new URL("./probe-simulate.mjs", import.meta.url), "utf8");
+ok("预演是纯函数：图进结论出，函数体不碰磁盘", (() => {
+	const at = uninstallSource.indexOf("export function simulateRemoval(input)");
+	return at >= 0 && !/(readFile|writeFile|readdir|mkdirSync|createWriteStream)/.test(uninstallSource.slice(at));
+})());
+ok("预演保留「摘边不能点亮谁」的恒等（revived），探针拿它当不变式", uninstallSource.includes("revived") && simProbeSource.includes("S8"));
+ok("「入口指空」直接对着 bundles 与组合条目查（不能从 after.roots 里挑：删掉的包恰好不在里面）", uninstallSource.includes("const bundleSet = new Set(bundles)") && uninstallSource.includes("item.name === name && !item.disabled"));
+ok("服务端预演每次重扫依赖图（不吃上次清单缓存）", serviceSource.includes("async simulateUninstall({ packages } = {})") && serviceSource.includes("scanInstalledPackages(profileNodeModules())"));
+ok("路由 /uninstall 的 simulate 分支只读（不经过 apply / confirm）", indexSource.includes('body.action === "simulate"') && indexSource.includes("catalog.simulateUninstall("));
+ok("工具 simulate 可点名 packages；没有名单时给下一步而不是空结果", toolsSource.includes('packages: { type: "array"') && serviceSource.includes("还没有可预演的名单"));
+ok("面板：SimBlock 摊开三类风险 + 加载态前后对比", clientSource.includes("function SimBlock(props)") && clientSource.includes("删完会指空的入口") && clientSource.includes("仍声明它们的包"));
+ok("面板：预演按钮不含「删除」字样（卡里唯一的写动作仍是两次点击的写入）", clientSource.includes("预演（不动盘）") && !/预演删除/.test(clientSource));
+ok("probe-simulate 覆盖 S1–S14 且破一条就非零退出", ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "S14"].every((id) => simProbeSource.includes(id + " ")) && simProbeSource.includes("process.exit(1)"));
+ok("预演按**目录**算摘除（同名两份只删一份不算删掉那个包）", uninstallSource.includes("dirsByPkg") && uninstallSource.includes("removedDirs") && simProbeSource.includes("S13"));
 
 /* ⑦ 文档 */
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));

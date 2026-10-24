@@ -122,6 +122,24 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
      `Remove-Item` 命令 + 复核命令，删不删由人决定；写入 `reports/uninstall-*.md|.json` 还要二次确认。
   3. **判据是声明层面**：运行时按路径 `require()` 看不见；hoisted 扁平 `node_modules` 下，
      一个插件可以**不声明**却 `require('lodash')` 命中 —— 删纯库前先 `pnpm why <name>`。
+- **删之前先预演（R16）**：清单卡片上多一个**「预演（不动盘）」**按钮（工具侧 `catalog_uninstall action=simulate`）。
+  它在**内存里**把选中的目录从依赖图上摘掉、重算四态，然后回答这份清单没回答的问题：
+  删完以后**会不会有东西指空**。三个可能的坑各占一行，空的不出现：
+
+  | 预演里的一行 | 说明什么 | 怎么办 |
+  |---|---|---|
+  | **现在会被加载（本来就不该删）** | 这个包在删之前就在 `bundles` / 配置 / 依赖链上 | 别删 —— 名单本身就选错了 |
+  | **删完会指空的入口** | `bundles` 或 cordis 配置条目还写着它，删完下次启动就是一串缺包 | 先摘入口，或留着 |
+  | **仍声明它们的包** | 留下的包在 `package.json` 里声明了它（含 optional / peer） | 要么一起删，要么留着（hoisted 下 `require` 会直接失败） |
+  | **删完会掉回「不加载」** | 只因这批包才被点亮的下游 | 删完还得再清一轮 |
+
+  ★ 预演**按目录**算，不按包名：同项目第二份（`ghbackup` 与 `dsh-github-backup` 是同一个包名）
+  只删一份时，包名还有一份在盘上 —— 按包名整体算会把**正在被加载**的那一份也算进去，
+  于是把一次安全的清理报成"有风险"。这条是真踩到的：按包名预演，整份清单被判 risky。
+  ★ 它**不是**删吧没问题的背书：判据仍是声明层面（运行时按路径 `require()` 看不见）。
+  ★ 一个自证：**按整份清单预演必须判安全**。判据说 dormant 不在任何入口、也不在任何加载链上，
+  那么把这批目录全摘掉就不该有入口指空、不该有加载中的包声明它们 —— 这条写进了 hosttest，
+  它一旦变红，说明清单选错了包，而不是模拟器坏了。
 - **卸载清单的前提能被证伪（R14）**：「删 dormant 不会弄坏正在加载的东西」不是感觉，是一条不变式 ——
   **I7：没有任何「会被加载」的包声明依赖一个 dormant 包**。`node dev/probe-loadstate.mjs` 每次都会验它，
   而 `node dev/probe-uninstall.mjs` 再验清单本身四条（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 / I11 不误伤加载路径）。
@@ -157,7 +175,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_export` | **导出 Markdown 快照**到 `<数据目录>/reports/`：清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现 |
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、AI 通道、asar 模式、**副本是否同步** |
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>` |
-| `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`。**只生成、永不执行删除**（命令给人复制） |
+| `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`。**三个动作都不执行删除**（命令给人复制） |
 
 ## 数据与隐私
 
@@ -358,20 +376,23 @@ R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发�
 分项跑：
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）**（405 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）**/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（175 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存**（433 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）**/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（193 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 210 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 242 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
                               # 七条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
+node dev/probe-simulate.mjs   # 删除预演自检：14 条（空删除不改态 / dormant 判安全 / transitive 会点名 /
+                              # bundles 与配置入口指空 / dangling / 掉回 dormant / 摘边不能点亮谁 /
+                              # 未知包与去重 / 包数守恒 / 同名两份目录只删一份不算删掉），破一条退出码 1
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率

@@ -970,6 +970,60 @@ ok(
 );
 ok("跑完两次清单，node_modules 还是没少（两次都没删东西）", countNmDirs() === nmBefore, nmBefore + " → " + countNmDirs());
 
+/* ── R16：删除预演（只算不删） ──
+   ★ 这里最值钱的一条是「按整份清单预演必须判安全」：判据说 dormant 不在任何入口、也不在任何
+     加载链上，那么把这批包全摘掉就不该有入口指空、也不该有加载中的包声明它们。
+     它一旦不成立，说明清单本身选错了包 —— 这不是模拟器的 bug，是 R12/R14 的判据破了。 */
+const simulateAll = await callTool("catalog_uninstall", { action: "simulate" });
+ok(
+	"catalog_uninstall simulate：按整份清单预演，给出结论与前后态",
+	simulateAll?.ok === true && typeof simulateAll?.verdict === "string" && typeof simulateAll?.before?.counts === "object" && Array.isArray(simulateAll?.breaking) && Array.isArray(simulateAll?.demoted),
+	JSON.stringify(simulateAll && { ok: simulateAll.ok, verdict: simulateAll.verdict, error: simulateAll.error }),
+);
+const planMemberCount = (uninstallPlan?.groups || []).reduce((sum, group) => sum + (Number(group.count) || 0), 0);
+ok(
+	"预演的名单就是清单里的那些包（不多不少，且已装的才算）",
+	(simulateAll?.remove || []).length > 0 && (simulateAll?.remove || []).length <= planMemberCount && (simulateAll?.unknown || []).length === 0,
+	JSON.stringify({ remove: simulateAll?.remove?.length, planMembers: planMemberCount, unknown: simulateAll?.unknown?.length }),
+);
+ok(
+	"按整份清单预演必然判安全：没有入口指空、没有加载中的包声明它们（判据的自证）",
+	simulateAll?.verdict === "safe" && simulateAll?.breaking?.length === 0 && simulateAll?.brokenEntries?.length === 0 && simulateAll?.dangling?.length === 0,
+	JSON.stringify({ verdict: simulateAll?.verdict, breaking: simulateAll?.breaking?.length, broken: simulateAll?.brokenEntries?.length, dangling: simulateAll?.dangling?.length }),
+);
+ok(
+	"整份清单删完：没有谁掉回 dormant（dormant 本来就不在加载链上），且包数守恒",
+	simulateAll?.demoted?.length === 0 && simulateAll?.revived?.length === 0 && simulateAll?.after?.total === simulateAll?.before?.total - simulateAll?.remove?.length,
+	JSON.stringify({ demoted: simulateAll?.demoted?.length, total: [simulateAll?.before?.total, simulateAll?.after?.total] }),
+);
+ok(
+	"预演不动盘：摘掉的全是内存里的，node_modules 目录数没变",
+	countNmDirs() === nmBefore,
+	nmBefore + " → " + countNmDirs(),
+);
+
+/* 单删父包 = 留孤儿：组内别名包还声明着它 —— 这正是清单要求「整组一起处置」的原因 */
+const simulateOne = await callTool("catalog_uninstall", { action: "simulate", packages: ["dsh-mnemon"] });
+ok(
+	"点名单删 dsh-mnemon：预演报「还有包声明它」，判有风险（组要整组处置）",
+	simulateOne?.ok === true && simulateOne?.verdict === "risky" && (simulateOne?.dangling || []).some((item) => item.dep === "dsh-mnemon"),
+	JSON.stringify(simulateOne && { verdict: simulateOne.verdict, dangling: simulateOne.dangling?.length, breaking: simulateOne.breaking?.length }),
+);
+
+const simulateUnknown = await callTool("catalog_uninstall", { action: "simulate", packages: ["definitely-not-installed"] });
+ok(
+	"点名一个不存在的包：进 unknown、摘 0 个、判安全（不瞎猜）",
+	simulateUnknown?.ok === true && simulateUnknown?.unknown?.length === 1 && simulateUnknown?.remove?.length === 0 && simulateUnknown?.verdict === "safe",
+	JSON.stringify(simulateUnknown && { unknown: simulateUnknown.unknown, remove: simulateUnknown.remove }),
+);
+
+const simulateRoute = await callRoute("/uninstall", "POST", { action: "simulate" });
+ok(
+	"面板路由 action=simulate：直接回结果（不起后台任务、不写盘）",
+	simulateRoute.json?.ok === true && typeof simulateRoute.json?.verdict === "string" && simulateRoute.json?.job === undefined,
+	JSON.stringify(simulateRoute.json && { ok: simulateRoute.json.ok, verdict: simulateRoute.json.verdict, job: simulateRoute.json.job }),
+);
+
 /* ── 越权请求被拒 ── */
 {
 	const handler = routes[0];

@@ -314,6 +314,8 @@ export async function apply(ctx) {
 				   ★ 本接口**永远不删任何目录** —— 清单里的命令是给人复制粘贴的。 */
 				if (path === "/uninstall" && method === "POST") {
 					const body = await readJsonBody(req);
+					/* R16：删除预演 —— 在内存里把包摘掉、重算加载态；不动盘、不删目录、不写文件 */
+					if (body.action === "simulate") return json(res, 200, await catalog.simulateUninstall({ packages: Array.isArray(body.packages) ? body.packages.map(String) : [] }));
 					if (body.apply !== true) {
 						const started = catalog.startJob("uninstall", async (progress) => await catalog.runUninstall({ onProgress: progress }));
 						if (started.ok === false) return json(res, 200, { ...started, hint: "已有后台任务在跑：等它结束后再点一次「处置清单」" });

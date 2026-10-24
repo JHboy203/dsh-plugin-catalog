@@ -800,6 +800,76 @@ ok("没有清单时不画卡（只有点过「处置清单」才占版面）", (
 	T.store.data = saved;
 	return !text.includes("处置清单（只生成、不执行）");
 })());
+
+/* ── R16：删除预演（只算不删） ── */
+const simSafe = {
+	ok: true,
+	verdict: "safe",
+	remove: ["dsh-mnemon", "lib-d"],
+	unknown: [],
+	before: { counts: { bundle: 7, config: 0, transitive: 153, dormant: 26 }, total: 186 },
+	after: { counts: { bundle: 7, config: 0, transitive: 153, dormant: 24 }, total: 184 },
+	breaking: [],
+	brokenEntries: [],
+	dangling: [],
+	demoted: [{ name: "lib-x", state: "transitive" }],
+	revived: [],
+	bytes: { reclaimBytes: 8700000, whyZero: [{ dirName: "ghbackup", provenance: "duplicate" }], unlisted: [] },
+};
+let simSafeText = "";
+ok("预演结果块：安全态写清「摘掉几个 / 可回收多少 / 三行风险都为无」", (() => {
+	const saved = T.store.data;
+	const savedSim = T.store.sim;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.sim = simSafe;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	simSafeText = text;
+	T.store.data = saved;
+	T.store.sim = savedSim;
+	return (
+		text.includes("删除预演（只算不删）") &&
+		text.includes("安全") &&
+		text.includes("摘掉 2 个包") &&
+		text.includes("可回收 8.3 MB") &&
+		text.includes("现在会被加载（本来就不该删）：无") &&
+		text.includes("删完会指空的入口：无") &&
+		text.includes("仍声明它们的包：无") &&
+		text.includes("删完会掉回「不加载」：lib-x") &&
+		text.includes("加载态 bundle 7 / config 0 / 随依赖 153 / 不加载 26 → bundle 7 / config 0 / 随依赖 153 / 不加载 24") &&
+		text.includes("删了省 0 B 的：ghbackup")
+	);
+})(), simSafeText.includes("dpc-sim") ? simSafeText.slice(simSafeText.indexOf("dpc-sim"), simSafeText.indexOf("dpc-sim") + 700) : "NO_SIM_BLOCK");
+ok("预演结果块：有风险时三类问题都点名（入口指空 / 仍被声明 / 本身会被加载）", (() => {
+	const saved = T.store.data;
+	const savedSim = T.store.sim;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.sim = {
+		...simSafe,
+		verdict: "risky",
+		breaking: [{ name: "lib-z", state: "transitive", via: "dsh-ops" }],
+		brokenEntries: [{ name: "dsh-mnemon", why: "bundle", id: "" }],
+		dangling: [{ from: "dsh-ops", dep: "lib-z" }],
+	};
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.sim = savedSim;
+	return (
+		text.includes("有风险") &&
+		text.includes("lib-z（transitive）") &&
+		text.includes("dsh-mnemon（bundle）") &&
+		text.includes("dsh-ops → lib-z")
+	);
+})());
+ok("预演结果块：没预演过就不出现（刷新后不许拿旧「安全」背书一次删除）", (() => {
+	const saved = T.store.data;
+	const savedSim = T.store.sim;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.sim = null;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.sim = savedSim;
+	return !text.includes("删除预演（只算不删）") && text.includes("处置清单（只生成、不执行）");
+})());
 ok("工具条有「处置清单」按钮，title 写明只生成不执行、写入要再确认", (() => {
 	const tree = expand(render(T.Panel, {}));
 	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));

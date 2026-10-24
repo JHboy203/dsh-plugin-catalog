@@ -120,6 +120,25 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
      copy-paste `Remove-Item` commands plus verification commands; saving it to `reports/uninstall-*.md|.json` needs a second confirmation.
   3. **The criterion is declaration-level**: a runtime `require()` by path is invisible; and under a hoisted flat
      `node_modules` a plugin may `require('lodash')` **without declaring it** — run `pnpm why <name>` before removing a pure library.
+- **Simulate before deleting (R16)**: the plan card gains a **"simulate (memory only)"** button (tool side:
+  `catalog_uninstall action=simulate`). It removes the selected directories from the dependency graph **in memory**,
+  recomputes the four load states, and answers the question the plan never answered: **will anything point at nothing
+  afterwards?** Three possible problems each get one row, empty ones are not printed:
+
+  | Row | What it means | What to do |
+  |---|---|---|
+  | **loaded right now (should not be deleted)** | the package was already on `bundles` / config / a dependency chain before the removal | don't delete it — the list itself picked wrong |
+  | **entries left dangling** | a `bundles` entry or a cordis config entry still names it, so the next start reports missing packages | detach the entry first, or keep it |
+  | **still declared by** | a surviving package declares it (optional / peer included) | delete them together, or keep it (under hoisting `require` fails outright) |
+  | **drops back to "not loaded"** | downstream only lit up because of this batch | you will need a second cleanup round |
+
+  ★ The simulation is **per directory, not per package name**: the second copy of a project (`ghbackup` and
+  `dsh-github-backup` share one package name) means deleting one copy still leaves the name on disk. Working per name
+  would also remove the **loaded** copy and report a safe cleanup as "risky" — which is exactly what happened before the fix.
+  ★ It is **not** a clearance to delete: the criterion is still declaration-level (a runtime `require()` by path is invisible).
+  ★ A self-proof: **simulating the whole plan must come out safe**. The criterion says dormant packages sit on no entry
+  and no load chain, so removing them all cannot dangle an entry or hit a loaded declarer. That is asserted in hosttest;
+  if it ever goes red, the plan picked a wrong package rather than the simulator being broken.
 - **The premise of that plan is falsifiable (R14)**: "removing dormant packages cannot break what is loaded" is an invariant, not a feeling —
   **I7: no loaded package declares a dependency on a dormant package**. `node dev/probe-loadstate.mjs` checks it every run, and
   `node dev/probe-uninstall.mjs` checks the plan itself (I8 coverage and no overlap / I9 size accounting / I10 pinned-key safety /
@@ -157,7 +176,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 | `catalog_export` | **Export a Markdown snapshot** to `<数据目录>/reports/`: inventory, source distribution, call Top, repos and git status, to-be-tagged sources, attribution coverage, weekly findings |
 | `catalog_health` | Self-check: which version is running, path resolution, stats coverage, attribution coverage, AI channel, asar mode, **whether copies are in sync** |
 | `catalog_skill_sync` | A Skill has **two copies**: `plan` lists those whose staging copy is stale (publishing pushes staging, so a stale stage ships an old version); `apply` + `confirm:true` copies **live → staging only**, backing up each overwritten file as `SKILL.md.bak-<timestamp>` first |
-| `catalog_uninstall` | **Removal plan for "never loaded" entries**: `plan` groups them by weakly connected component and reports reclaimable bytes, the category (entity / pinned by profile deps / link / second copy of the same project) and the steps; `write` + `confirm:true` saves it as `reports/uninstall-*.md|.json`. **Generates only — never deletes anything** (the commands are for a human to copy) |
+| `catalog_uninstall` | **Removal plan for "never loaded" entries**: `plan` groups them by weakly connected component and reports reclaimable bytes, the category (entity / pinned by profile deps / link / second copy of the same project) and the steps; `simulate` removes those directories in memory, recomputes the load states and reports whether anything would be left dangling or still declaring them (pass `packages` to name package or directory names); `write` + `confirm:true` saves it as `reports/uninstall-*.md|.json`. **None of the three actions deletes anything** (the commands are for a human to copy) |
 
 ## Data and privacy
 
@@ -358,15 +377,15 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only)** (405 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (175 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache** (433 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (193 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (210 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (242 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
                               # derives the four states, then reconciles with cache/catalog.json; seven invariants
                               # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
@@ -374,6 +393,10 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
+node dev/probe-simulate.mjs   # self-check of the removal simulation: 14 checks (empty removal changes nothing / dormant is safe /
+                              # transitive gets flagged / bundle and config entries left dangling / dangling declarers / drop back to dormant /
+                              # removing edges never lights anything up / unknown names and dedupe / package count conserved /
+                              # deleting one of two same-named directories does not count as deleting the package); any violation exits 1
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

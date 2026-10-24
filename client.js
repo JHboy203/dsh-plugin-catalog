@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r15.0";
+		const BUILD = "r16.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -142,6 +142,10 @@ window.__ModuleLoader__.load({
 			   ★ 与服务端一致的纪律：清单**永远不执行删除**，写盘必须显式确认。 */
 			uninstallBusy: false,
 			uninstallConfirm: false,
+			/* R16：删除预演的结论（只算不删）。**不进 localStorage** —— 它是按当前依赖图算出来的，
+			   刷新后必须是「还没预演」，不能拿一份过期的"安全"结论去背书一次删除。 */
+			sim: null,
+			simBusy: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -1755,6 +1759,49 @@ window.__ModuleLoader__.load({
 		   这一块回答的是**动手怎么做**，不是"有没有问题"：候选按弱连通分量分组（删父留子会留孤儿），
 		   每组标出可回收体积与分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）。
 		   ★ 一个删除动作都不提供：清单里的命令要人自己复制去跑。 */
+		/* ── R16：删除预演的结果块 ──
+		   回答的是「真删了会不会有东西指空」，不是「该不该删」。
+		   ★ 三条风险各占一行，只在非空时出现；「安全」也必须把依据写出来（没入口悬空 / 没包声明它们），
+		     否则一个绿字什么都不解释，等于让人闭眼删。 */
+		function SimBlock(props) {
+			const sim = props.sim;
+			if (!sim) return null;
+			const safe = sim.verdict === "safe";
+			const names = (list, limit) => (list.length === 0 ? "无" : list.slice(0, limit).join("、") + (list.length > limit ? " 等 " + list.length + " 条" : ""));
+			const counts = (value) => "bundle " + (value.bundle || 0) + " / config " + (value.config || 0) + " / 随依赖 " + (value.transitive || 0) + " / 不加载 " + (value.dormant || 0);
+			const rows = [];
+			rows.push(h("div", { key: "break", className: "dpc-sim-row" + (sim.breaking.length > 0 ? " dpc-bad" : "") }, "现在会被加载（本来就不该删）：" + names(sim.breaking.map((item) => item.name + "（" + item.state + "）"), 6)));
+			rows.push(h("div", { key: "entries", className: "dpc-sim-row" + (sim.brokenEntries.length > 0 ? " dpc-bad" : "") }, "删完会指空的入口：" + names(sim.brokenEntries.map((item) => item.name + "（" + item.why + "）"), 6)));
+			rows.push(h("div", { key: "dangling", className: "dpc-sim-row" + (sim.dangling.length > 0 ? " dpc-bad" : "") }, "仍声明它们的包：" + names(sim.dangling.map((item) => item.from + " → " + item.dep), 6)));
+			rows.push(
+				h(
+					"div",
+					{ key: "demoted", className: "dpc-sim-row" + (sim.demoted.length > 0 ? " dpc-sim-warn" : "") },
+					"删完会掉回「不加载」：" + names(sim.demoted.map((item) => item.name), 6) + (sim.demoted.length > 0 ? "（还得再清一轮）" : ""),
+				),
+			);
+			rows.push(h("div", { key: "counts", className: "dpc-sim-row dpc-muted" }, "加载态 " + counts(sim.before.counts) + " → " + counts(sim.after.counts)));
+			return h(
+				"div",
+				{ className: "dpc-sim" + (safe ? " is-ok" : " is-bad") },
+				h(
+					"div",
+					{ className: "dpc-sim-head" },
+					h("span", { className: "dpc-sim-mark" }, safe ? "✓" : "!"),
+					h("span", { className: "dpc-sim-title" }, "删除预演（只算不删）"),
+					h("span", { className: "dpc-muted" }, "｜摘掉 " + (sim.remove || []).length + " 个包"),
+					h("span", { className: "dpc-sim-verdict" }, safe ? "安全" : "有风险"),
+					h("span", { className: "dpc-sim-ok dpc-muted" }, "｜可回收 " + fmtBytes((sim.bytes && sim.bytes.reclaimBytes) || 0)),
+					(sim.unknown || []).length > 0 ? h("span", { className: "dpc-muted" }, "｜" + sim.unknown.length + " 个不在已装清单（拼错或已删）") : null,
+				),
+				rows,
+				(sim.bytes && (sim.bytes.whyZero || []).length > 0)
+					? h("div", { className: "dpc-sim-row dpc-muted" }, "删了省 0 B 的：" + names(sim.bytes.whyZero.map((item) => item.dirName), 6) + "（链接 / 被 profile 钉住 —— 删了不省或会被装回来）")
+					: null,
+				h("div", { className: "dpc-sim-foot dpc-muted" }, "判定口径：声明层面（运行时按路径 `require()` 看不见）；「仍声明它们的包」含 optional / peer，那一类可能只是软依赖。本操作不动盘、不删任何目录。"),
+			);
+		}
+
 		function UninstallCard(props) {
 			const plan = props.plan;
 			if (!plan) return null;
@@ -1805,11 +1852,14 @@ window.__ModuleLoader__.load({
 					{ className: "dpc-uninstall-steps" },
 					"判定口径：按「弱连通分量」分组（组内互相声明依赖，单删一个会留孤儿）；被 `profile/package.json` 钉住的，只删目录下次 `pnpm install` 会装回来；只处置 `node_modules` 顶层目录；运行时按路径 `require()` 的动态加载看不见。",
 				),
+				/* R16：预演 —— 删之前先问一句「会不会有东西指空」 */
+				props.sim ? h(SimBlock, { sim: props.sim }) : null,
 				h(
 					"div",
 					{ className: "dpc-row" },
 					h("button", { className: "dpc-btn dpc-btn-sm" + (props.confirm ? " is-on" : ""), onClick: props.onWrite, disabled: props.busy }, props.busy ? "写入中…" : props.confirm ? "确认写入（不会删任何目录）" : "写入 reports/"),
 					props.confirm ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancelConfirm, disabled: props.busy }, "取消") : null,
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onSimulate, disabled: props.busy || props.simBusy, title: "在内存里把这些包从依赖图上摘掉、重算加载态：只算，不动盘、不删任何目录" }, props.simBusy ? "预演中…" : "预演（不动盘）"),
 					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onRerun, disabled: props.busy }, "重新算"),
 					plan.savedTo ? h("span", { className: "dpc-muted dpc-mono" }, plan.savedTo) : null,
 				),
@@ -2116,6 +2166,19 @@ window.__ModuleLoader__.load({
 				await refresh();
 			}
 
+			/* R16：删除预演 —— 服务端在内存里把包从依赖图上摘掉、重算加载态，只算不删。
+			   ★ 结论只放前端 state（不进 localStorage）：刷新后必须是「还没预演」。 */
+			async function runSimulate() {
+				set({ simBusy: true });
+				const result = await post("/uninstall", { action: "simulate" });
+				set({ simBusy: false });
+				if (!result || result.ok === false) {
+					set({ notice: (result && result.error) || "预演失败：先算一次处置清单", sim: null });
+					return;
+				}
+				set({ sim: result, notice: null });
+			}
+
 			async function runClassify() {
 				await post("/classify", {});
 				await refresh();
@@ -2247,6 +2310,9 @@ window.__ModuleLoader__.load({
 							plan: uninstallPlan,
 							busy: state.uninstallBusy,
 							confirm: state.uninstallConfirm,
+							sim: state.sim,
+							simBusy: state.simBusy,
+							onSimulate: runSimulate,
 							onWrite: writeUninstallReport,
 							onCancelConfirm: () => set({ uninstallConfirm: false }),
 							onRerun: runUninstall,
@@ -2790,6 +2856,22 @@ window.__ModuleLoader__.load({
 .dpc-uninstall-members{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary,#6b7280);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dpc-uninstall-steps{font-size:11px;line-height:1.65;color:var(--dsw-alias-label-secondary,#6b7280)}
+/* R16：删除预演 —— 绿=没有入口指空，红=有风险；三条风险各占一行，空的不出现 */
+.dpc-sim{margin-top:8px;padding:8px 10px;border-radius:10px;border:1px solid rgba(0,0,0,.08);
+  display:flex;flex-direction:column;gap:3px;font-size:11.5px;line-height:1.6}
+.dpc-sim.is-ok{border-color:rgba(22,163,74,.35);background:rgba(22,163,74,.05)}
+.dpc-sim.is-bad{border-color:rgba(235,64,52,.35);background:rgba(235,64,52,.05)}
+.dpc-sim-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dpc-sim-mark{font-weight:700}
+.dpc-sim.is-ok .dpc-sim-mark{color:#16a34a}
+.dpc-sim.is-bad .dpc-sim-mark{color:#eb4034}
+.dpc-sim-title{font-weight:600}
+.dpc-sim-verdict{font-size:10px;padding:0 5px;border-radius:5px;background:rgba(0,0,0,.06)}
+.dpc-sim.is-ok .dpc-sim-verdict{background:rgba(22,163,74,.14);color:#15803d}
+.dpc-sim.is-bad .dpc-sim-verdict{background:rgba(235,64,52,.14);color:#b91c1c}
+.dpc-sim-row{color:var(--dsw-alias-label-secondary,#4b5563)}
+.dpc-sim-warn{color:#b45309}
+.dpc-sim-foot{margin-top:3px;font-size:11px;line-height:1.55}
 /* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
 .dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;
