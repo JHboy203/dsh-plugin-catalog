@@ -10,7 +10,7 @@
  * 全程**不碰磁盘**：目录是内存里的合成数据，不读也不写 history.json。
  */
 
-import { compareEntries, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges } from "../lib/history.mjs";
+import { compareEntries, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -231,6 +231,42 @@ const AT = 1760000000000;
 	const noAt = normalizeAck({ at: 0, snapshot: { entries: { "plugin:a": {} } } });
 	const nothing = normalizeAck(null);
 	ok("H23 已看过基线：合法保留、坏 / 空 / 无时间一律当没标记过", Boolean(valid) && valid.at === AT && valid.snapshot.count === 2 && broken === null && empty === null && noAt === null && nothing === null, JSON.stringify({ valid: valid && valid.snapshot.count, broken, empty, noAt, nothing }));
+}
+
+/* ── H24 时间线：只有基线（一条快照）时不产出窗口 ── */
+{
+	const base = snapshotOf(catalogOf({}), null, AT);
+	ok("H24 时间线：只有基线 → 0 个窗口（不能把 133 条写成新增）", timelineOf([base]).length === 0);
+}
+
+/* ── H25 时间线：相邻快照相减，新的在前 ── */
+{
+	const base = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT);
+	const edited = snapshotOf(catalogOf({ gammaHash: "bbbb11112222" }), null, AT + 1000);
+	const bumped = snapshotOf(catalogOf({ alphaVersion: "1.0.1", gammaHash: "bbbb11112222" }), null, AT + 2000);
+	const rows = timelineOf([base, edited, bumped]);
+	ok(
+		"H25 时间线：3 条快照 → 2 个窗口，新的在前（升版 / 被编辑各归各的窗口）",
+		rows.length === 2 && rows[0].at === AT + 2000 && rows[0].counts.version === 1 && rows[0].counts.edited === 0 && rows[1].counts.edited === 1 && rows[1].counts.version === 0,
+		JSON.stringify(rows.map((row) => ({ at: row.at, counts: row.counts }))),
+	);
+}
+
+/* ── H26 时间线：名字只带 cap 条，counts 永远是真实数字 ── */
+{
+	const before = { plugins: [], skills: Array.from({ length: 6 }, (_, index) => ({ id: "skill:s" + index, name: "s" + index, source: "self", hasDescription: true, contentHash: "aaaa0000" + index })) };
+	const after = { plugins: [], skills: Array.from({ length: 6 }, (_, index) => ({ id: "skill:s" + index, name: "s" + index, source: "self", hasDescription: true, contentHash: "bbbb0000" + index })) };
+	const rows = timelineOf([snapshotOf(before, null, AT), snapshotOf(after, null, AT + 1000)], { cap: 2 });
+	ok("H26 时间线：edited 只带 cap 条名字，counts.edited 仍是 6", rows.length === 1 && rows[0].edited.length === 2 && rows[0].counts.edited === 6, JSON.stringify({ names: rows[0]?.edited.length, counts: rows[0]?.counts }));
+}
+
+/* ── H27 时间线：指纹相同的相邻快照跳过（手工改文件才会出现） ── */
+{
+	const base = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT);
+	const same = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT + 1000);
+	const edited = snapshotOf(catalogOf({ gammaHash: "cccc11112222" }), null, AT + 2000);
+	const rows = timelineOf([base, same, edited]);
+	ok("H27 时间线：指纹相同的窗口不产出（不会多出一行 0 处变化）", rows.length === 1 && rows[0].counts.edited === 1, JSON.stringify(rows.map((row) => row.counts)));
 }
 
 const failed = results.filter((item) => !item.pass);

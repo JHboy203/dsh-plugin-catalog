@@ -923,7 +923,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.20.0 / r20.0", /"version": "0\.20\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r20.0"'));
+ok("版本号与构建戳同步抬到 0.21.0 / r21.0", /"version": "0\.21\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r21.0"'));
 
 
 ok(
@@ -1041,7 +1041,7 @@ ok("快照只留最近 20 条", historySource.includes("MAX_SNAPSHOTS = 20") && 
 ok("变化摘要进 /state、health 与导出报告（三处同一份，不各算一遍）", serviceSource.includes("changes: this.changesSummary()") && serviceSource.includes("changes: this.changes") && serviceSource.includes('lines.push("## 变化"'));
 ok("health 文案在「第一条快照」时如实说没有可比历史", toolsSource.includes("还没有可比的历史") && toolsSource.includes("变化：自 "));
 ok("面板变化条：first / 0 处都不占版面，点开才列明细", clientSource.includes("function ChangesBar(props)") && clientSource.includes("if (!changes || changes.first) return null;") && clientSource.includes("dpc-changes-chip"));
-ok("probe-history 覆盖 H1–H23 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19", "H20", "H21", "H22", "H23"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
+ok("probe-history 覆盖 H1–H27 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19", "H20", "H21", "H22", "H23", "H24", "H25", "H26", "H27"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
 ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
 
 /* ⑧ R19：变化追踪收口 —— Skill 正文哈希 + 「已看过」确认窗口 */
@@ -1077,6 +1077,13 @@ ok("面板：历史备份行 + 还原入口 + 二次确认条（两份一致时�
 ok("同步完成后的提示指向还原入口（写盘动作自带撤销说明）", clientSource.includes("要撤销就到条目浮窗点"));
 ok("probe-staging 覆盖 P1–P16 且破一条非零退出", ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16"].every((id) => stagingProbeSource.includes(id + " ")) && stagingProbeSource.includes("process.exit(1)"));
 ok("hosttest 覆盖还原：计划方向 / 无 confirm 被拒 / 真还原 + skipped / 备份列表", hosttestSource.includes('action: "restore"') && hosttestSource.includes("restoreSkillBackup") && hosttestSource.includes("listSkillBackups"));
+
+/* ⑧ R21：更早窗口的时间线（history.json 里一直存着，此前只有最近一个窗口能看见） */
+ok("history 导出 timelineOf：相邻快照相减、新的在前、基线不产出行", historySource.includes("export function timelineOf") && historySource.includes("diffSnapshots(prev, next)") && historySource.includes("rows.reverse()") && historySource.includes('if (prev.fingerprint && next.fingerprint && prev.fingerprint === next.fingerprint) continue;'));
+ok("时间线的名字只带 cap 条、counts 保留真实数字（省略号不能骗人）", historySource.includes('diff.edited.slice(0, cap)') && historySource.includes("const cap = Math.max(1, Number(options.cap) || 4)"));
+ok("/state 带 timeline（total + items），导出报告也有「历史」一节", serviceSource.includes("async historyTimeline()") && serviceSource.includes("timeline: await this.historyTimeline()") && serviceSource.includes('lines.push("### 历史（最近 "') && serviceSource.includes("timeline.items.slice(0, 8)"));
+ok("面板：历史折叠入口 + 每个窗口一行（被编辑标「正文已改」），空时间线不占版面", clientSource.includes("showHistory: false") && clientSource.includes("timeline: data && data.timeline") && clientSource.includes("onToggleHistory") && clientSource.includes('"历史（" + timeline.length') && clientSource.includes("timeline.length > 0"));
+ok("hosttest 覆盖 /state.timeline（total / items / 每行 counts 与分类数组）", hosttestSource.includes("/state.timeline") && hosttestSource.includes("stateTimeline.items.length <="));
 
 /* ⑧ R18：把「跑哪几条命令才算验完」与「宿主里跑的是新代码吗」都固化 */
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");

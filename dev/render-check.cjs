@@ -1006,6 +1006,64 @@ ok("变化条 R19：正文改动写成「正文已改」并带短哈希", (() =>
 	T.store.showChanges = savedOpen;
 	return text.includes("gamma 正文已改（aaaa1111 → bbbb3333）");
 })());
+
+/* ── R21：更早窗口的时间线（history.json 里一直存着，此前只有最近一个窗口能看见） ── */
+const timelineFixture = {
+	total: 3,
+	items: [
+		{
+			at: 1761402000000,
+			baselineAt: 1761400000000,
+			total: 133,
+			counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 1, total: 1 },
+			added: [],
+			removed: [],
+			versionChanged: [],
+			sourceChanged: [],
+			loadStateChanged: [],
+			edited: [{ id: "skill:gamma", name: "gamma", kind: "skill", reason: "content", from: "aaaa1111", to: "bbbb3333" }],
+		},
+		{
+			at: 1761400000000,
+			baselineAt: 1761340000000,
+			total: 133,
+			counts: { added: 0, removed: 0, version: 1, source: 0, loadState: 0, edited: 0, total: 1 },
+			added: [],
+			removed: [],
+			versionChanged: [{ id: "plugin:a", name: "alpha", kind: "plugin", from: "1.0.0", to: "1.1.0" }],
+			sourceChanged: [],
+			loadStateChanged: [],
+			edited: [],
+		},
+	],
+};
+ok("变化条 R21：有更早窗口时出现「历史（N 个窗口 / 共 M 条快照）」，默认收起", (() => {
+	const saved = T.store.data;
+	const savedHistory = T.store.showHistory;
+	T.store.data = { ...data, changes: changesFixture, timeline: timelineFixture };
+	T.store.showHistory = false;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showHistory = savedHistory;
+	return text.includes("历史（2 个窗口 / 共 3 条快照）") && !text.includes("gamma 正文已改");
+})());
+ok("变化条 R21：点开历史后每个窗口一行（被编辑 / 升版各写各的名字）", (() => {
+	const saved = T.store.data;
+	const savedHistory = T.store.showHistory;
+	T.store.data = { ...data, changes: changesFixture, timeline: timelineFixture };
+	T.store.showHistory = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showHistory = savedHistory;
+	return text.includes("被编辑 1（gamma 正文已改）") && text.includes("升版 1（alpha）");
+})());
+ok("变化条 R21：没有更早窗口时不画历史入口（只有基线 = 没有历史可回看）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, changes: changesFixture, timeline: { total: 1, items: [] } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return !text.includes("历史（");
+})());
 ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一致时不出现", (() => {
 	const saved = T.store.data;
 	T.store.data = { ...data, build: { label: "0.18.0 · 2026-10-24 13:20", version: "0.18.0", loaded: "0.17.0", stale: true } };

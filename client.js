@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r20.0";
+		const BUILD = "r21.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -152,6 +152,8 @@ window.__ModuleLoader__.load({
 			simBusy: false,
 			/* R17：变化条默认收起（它是"接手时看一眼"的信息，不该长期占版面）。 */
 			showChanges: false,
+			/* R21：更早窗口的时间线（与当前变化窗口分开折叠，不抢版面） */
+			showHistory: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -1979,6 +1981,26 @@ window.__ModuleLoader__.load({
 				["loadState", "加载态变", changes.loadStateChanged, (item) => item.name + " " + (item.from || "未判") + " → " + (item.to || "未判")],
 				["edited", "被编辑", changes.edited, (item) => (item.reason === "content" ? item.name + " 正文已改（" + (item.from || "?") + " → " + (item.to || "?") + "）" : item.name + "（" + item.from + " → " + item.to + "）")],
 			].filter(([, , list]) => Array.isArray(list) && list.length > 0);
+			/* R21：更早窗口的时间线。只写"谁变了"，不铺开哈希 —— 时间线是索引，明细在当前窗口里 */
+			const timeline = props.timeline && Array.isArray(props.timeline.items) ? props.timeline.items : [];
+			const timelineText = (row) => {
+				const buckets = [
+					["新增", row.added, "added"],
+					["消失", row.removed, "removed"],
+					["升版", row.versionChanged, "version"],
+					["来源变", row.sourceChanged, "source"],
+					["加载态变", row.loadStateChanged, "loadState"],
+					["被编辑", row.edited, "edited"],
+				];
+				const bits = [];
+				for (const [label, list, kind] of buckets) {
+					const count = Number((row.counts || {})[kind]) || 0;
+					if (count === 0) continue;
+					const names = (Array.isArray(list) ? list : []).map((item) => (kind === "edited" && item.reason === "content" ? item.name + " 正文已改" : item.name || item.id)).filter(Boolean);
+					bits.push(label + " " + count + (names.length > 0 ? "（" + names.join("、") + (names.length < count ? "…" : "") + "）" : ""));
+				}
+				return bits.join("；");
+			};
 			/* 把当前目录冻结成基线（服务端要求 confirm:true；只写数据目录里的 history-ack.json） */
 			async function markAcked() {
 				if (acking) return;
@@ -2013,6 +2035,37 @@ window.__ModuleLoader__.load({
 					),
 					h("button", { className: "dpc-changes-ack", onClick: markAcked, disabled: acking, title: "把当前目录冻结成基线：之后的变化单独计数。只写数据目录里的 history-ack.json，不碰任何插件与 Skill 文件" }, acking ? "标记中…" : "标记已看过"),
 				),
+				/* R21：回看更早的窗口 —— history.json 里一直存着，此前只有最近一个窗口能看见 */
+				timeline.length > 0
+					? h(
+							"div",
+							{ className: "dpc-changes-history" },
+							h(
+								"button",
+								{
+									className: "dpc-changes-history-toggle" + (props.historyOpen ? " is-open" : ""),
+									onClick: props.onToggleHistory,
+									title: "回看更早的目录变化窗口：每行是两个相邻快照之间的新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑（正文改了会标出来）。最多保留 20 条快照，基线本身不算一个窗口。",
+								},
+								(props.historyOpen ? "▾ " : "▸ ") + "历史（" + timeline.length + " 个窗口 / 共 " + (Number(props.timeline.total) || timeline.length + 1) + " 条快照）",
+							),
+							props.historyOpen
+								? h(
+										"div",
+										{ className: "dpc-changes-list" },
+										timeline.slice(0, 8).map((row) =>
+											h(
+												"div",
+												{ key: row.at, className: "dpc-changes-row" },
+												h("span", { className: "dpc-changes-tag" }, fmtDateTime(row.at)),
+												h("span", { className: "dpc-mono" }, timelineText(row) || "0 处"),
+											),
+										),
+										timeline.length > 8 ? h("div", { className: "dpc-changes-foot dpc-muted" }, "只列最近 8 个窗口（共 " + timeline.length + " 个）") : null,
+									)
+								: null,
+						)
+					: null,
 				props.open
 					? h(
 							"div",
@@ -2025,7 +2078,7 @@ window.__ModuleLoader__.load({
 									h("span", { className: "dpc-mono" }, list.map(text).join("、") + (Number(counts[key]) > list.length ? "　等 " + counts[key] + " 条" : "")),
 								),
 							),
-							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源 / 有没有描述 / **正文内容哈希**（改一个字也看得见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。点「标记已看过」可把确认窗口清零。"),
+							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源 / 有没有描述 / **正文内容哈希**（改一个字也看得见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条；更早的窗口点「历史」回看。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。点「标记已看过」可把确认窗口清零。"),
 						)
 					: null,
 			);
@@ -2469,7 +2522,15 @@ window.__ModuleLoader__.load({
 						)
 					: null,
 				/* R17：自上次快照以来变了什么（真有变化才占版面）；R19：标记过「已看过」就只看那之后的窗口 */
-				h(ChangesBar, { changes: data && data.changes, sinceAck: data && data.sinceAck, open: state.showChanges, onToggle: () => set({ showChanges: !state.showChanges }) }),
+				h(ChangesBar, {
+					changes: data && data.changes,
+					sinceAck: data && data.sinceAck,
+					timeline: data && data.timeline,
+					open: state.showChanges,
+					onToggle: () => set({ showChanges: !state.showChanges }),
+					historyOpen: state.showHistory,
+					onToggleHistory: () => set({ showHistory: !state.showHistory }),
+				}),
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
@@ -3058,6 +3119,10 @@ window.__ModuleLoader__.load({
 .dpc-changes-row{display:flex;gap:7px;font-size:11.5px;line-height:1.6;align-items:baseline}
 .dpc-changes-tag{flex:0 0 auto;font-size:10px;padding:0 5px;border-radius:5px;background:var(--dpc-fill-hover);color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-changes-foot{font-size:10.5px;line-height:1.55;margin-top:2px}
+/* R21：更早窗口的时间线（折叠在变化条下方，不抢当前窗口的版面） */
+.dpc-changes-history{margin:2px 9px 7px;padding-top:5px;border-top:1px dashed rgba(20,40,80,.12)}
+.dpc-changes-history-toggle{font:inherit;font-size:10.5px;padding:1px 0;border:0;background:none;color:#2f5fd0;cursor:pointer}
+.dpc-changes-history-toggle.is-open{font-weight:600}
 /* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
 .dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;

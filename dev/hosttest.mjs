@@ -824,7 +824,12 @@ ok(
 );
 ok("restoreSkillBackup：备份与当前一致时不再制造备份（skipped）", restoredAgain.skipped === true && restoredAgain.preRestore === "");
 const backupList = await listSkillBackups(join(stageRoot, "alpha"));
-ok("listSkillBackups：列出历史备份（新的在前，含 pre-restore 那份）", backupList.count >= 2 && backupList.items[0].name === "SKILL.md.bak-20261024-160000", JSON.stringify(backupList.items.map((item) => item.name)));
+const backupNames = backupList.items.map((item) => item.name);
+ok(
+	"listSkillBackups：列出历史备份（新的在前，含 pre-restore 那份）",
+	backupList.count >= 2 && backupNames.includes("SKILL.md.bak-20261024-160000") && backupList.items.every((item, index, list) => index === 0 || String(list[index - 1].stamp) >= String(item.stamp)),
+	JSON.stringify(backupNames),
+);
 
 /* 体检第 4 项：真跑一次 ship（只跑 staging 这一项，秒级，不写工作区）
    ★ 沙箱里 spawn 带管道会 EPERM（Windows 沙箱不给建命名管道），这不是代码缺陷 —— 记 SKIP，
@@ -1120,6 +1125,18 @@ ok(
 	"历史只留最近 20 条（无上限的增长会把数据目录堆成垃圾场）",
 	historyAfter.snapshots.length <= 20,
 	String(historyAfter.snapshots.length),
+);
+/* R21：更早窗口的时间线 —— /state 必须给出总条数与窗口数组（基线本身不算窗口） */
+const stateTimeline = (await callRoute("/state")).json?.timeline;
+ok(
+	"/state.timeline：给出 total 与 items，窗口数不超过「快照数 - 1」",
+	Boolean(stateTimeline) && Number(stateTimeline.total) >= 1 && Array.isArray(stateTimeline.items) && stateTimeline.items.length <= Math.max(0, Number(stateTimeline.total) - 1),
+	JSON.stringify({ total: stateTimeline?.total, items: stateTimeline?.items?.length }),
+);
+ok(
+	"timeline 的每一行都带 at / counts / 分类数组（没有窗口时是空数组，不是 null）",
+	(stateTimeline?.items || []).every((row) => Number(row.at) > 0 && row.counts && typeof row.counts.total === "number" && Array.isArray(row.edited) && Array.isArray(row.added) && Array.isArray(row.versionChanged)),
+	JSON.stringify((stateTimeline?.items || []).slice(0, 2)),
 );
 
 /* ── R19：Skill 正文哈希 + 「已看过」确认窗口 ──
