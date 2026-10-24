@@ -139,6 +139,13 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   ★ A self-proof: **simulating the whole plan must come out safe**. The criterion says dormant packages sit on no entry
   and no load chain, so removing them all cannot dangle an entry or hit a loaded declarer. That is asserted in hosttest;
   if it ever goes red, the plan picked a wrong package rather than the simulator being broken.
+- **Is the code the host is running actually new? (R18)**: the panel header and `catalog_health` now report both the
+  **disk version** and the **loaded version**; when they differ they say so out loud: "still running 0.17.0 while the
+  disk already has 0.18.0 — reload the plugin or restart DSH". Why this matters: the build label reads the **disk**
+  (package.json + newest file mtime), so it can show 0.18.0 while the host still runs 0.17.0 — and the new tool or
+  route simply does not exist. Two rounds (R16/R17) were misjudged as "already live" because of it. The same round
+  also folded the five standalone probes into `dev/ship.mjs` (`probes`, 52 invariants), so the one handoff command is
+  now **three suites + probes + copy sync**.
 - **What changed since last time (R17)**: a **changes bar** appears at the top of the panel (only when something
   actually changed): "since 10-24 11:27 · 3 changes · 1 added · 2 upgraded", click to expand. History lives in `history.json`:
 
@@ -392,15 +399,15 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions)** (443 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (196 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions) / the single source of the preflight list + loaded vs disk version** (451 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes)** + **a "not reloaded yet" marker when the loaded version differs from the disk version** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (196 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (248 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, five checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's copy-sync item / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section) + the loaded version versus the disk version** / export write / copy-sync verdicts / skill_sync plan and confirm gate (250 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
                               # derives the four states, then reconciles with cache/catalog.json; seven invariants
                               # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
@@ -408,6 +415,11 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
+node dev/run-probes.mjs       # **the five probes in one command** (ship's 5th item, 52 checks, about 2 s):
+                              # understands both closing formats (`passed N / failed M` and "N invariants hold");
+                              # under the sandbox it says "run this in the host" instead of looking like broken probes
+node dev/ship-checks.mjs      # the **single source** of the preflight list: ship runs it, POST /preflight{dry} reports it
+                              # (two copies had drifted: after adding probes, dry still reported four items — hosttest caught it)
 node dev/probe-simulate.mjs   # self-check of the removal simulation: 14 checks (empty removal changes nothing / dormant is safe /
                               # transitive gets flagged / bundle and config entries left dangling / dangling declarers / drop back to dormant /
                               # removing edges never lights anything up / unknown names and dedupe / package count conserved /

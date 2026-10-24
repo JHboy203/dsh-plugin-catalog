@@ -279,8 +279,8 @@ ok("/health 报告了归属统计", healthRoute.json?.attribution !== null && he
    dry 必须**不起子进程**，所以它能证明路由、参数与返回形状都对，又不会把自检拖成两分钟。 */
 const preflightDry = await callRoute("/preflight", "POST", { dry: true });
 ok(
-	"/preflight dry=true 只回「会跑什么」（四项：三层自检 + 副本同步），不起子进程",
-	preflightDry.status === 200 && preflightDry.json?.ok === true && preflightDry.json?.dry === true && Array.isArray(preflightDry.json?.checks) && preflightDry.json.checks.length === 4 && preflightDry.json.checks.includes("staging"),
+	"/preflight dry=true 只回「会跑什么」（五项：三层自检 + 独立探针 + 副本同步），不起子进程",
+	preflightDry.status === 200 && preflightDry.json?.ok === true && preflightDry.json?.dry === true && Array.isArray(preflightDry.json?.checks) && preflightDry.json.checks.length === 5 && preflightDry.json.checks.includes("staging") && preflightDry.json.checks.includes("probes"),
 	JSON.stringify(preflightDry.json).slice(0, 240),
 );
 ok("service 暴露 runPreflight（宿主侧跑 dev/ship.mjs 并解析结论）", typeof (await import("../lib/service.mjs")).CatalogService?.prototype?.runPreflight === "function");
@@ -295,6 +295,16 @@ ok("catalog_list 的文本里带来源中文标签", /官方|自写|第三方|�
 const healthTool = await callTool("catalog_health", {});
 ok("catalog_health 文本含构建与路径", healthTool.text.includes("构建") && healthTool.text.includes("数据目录"));
 ok("catalog_health 文本提示工具注册数", healthTool.text.includes("注册 8"));
+/* R18：运行中版本 vs 磁盘版本。自检进程读的就是磁盘代码，两者必须一致 ——
+   这条同时在守护「LOADED_VERSION 有没有读到 package.json」：读不到会变成空串，stale 也会变 false，
+   所以这里显式要求它等于磁盘版本，而不是只要求 stale=false。 */
+ok(
+	"health 报「运行中版本」，且与磁盘一致（自检进程读的就是磁盘代码）",
+	typeof healthTool.loaded?.version === "string" && healthTool.loaded.version !== "" && healthTool.loaded.version === healthTool.build?.version && healthTool.loaded.stale === false && healthTool.text.includes("运行中："),
+	JSON.stringify({ loaded: healthTool.loaded, disk: healthTool.build?.version }),
+);
+const stateBuild = (await callRoute("/state")).json?.build;
+ok("/state.build 也带磁盘/运行中两个版本（面板头部靠它标「未重载」）", typeof stateBuild?.version === "string" && typeof stateBuild?.loaded === "string" && typeof stateBuild?.stale === "boolean", JSON.stringify(stateBuild && { version: stateBuild.version, loaded: stateBuild.loaded, stale: stateBuild.stale }));
 
 /* 归属：真机上 catalog_list 自己的描述应该被归到本插件（自写），read 判宿主。
    ⚠️ 要等统计算完（rebuildAttribution 跟着 refreshStats 一起跑），所以这条断言放在下面。 */

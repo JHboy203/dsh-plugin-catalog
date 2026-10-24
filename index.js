@@ -19,6 +19,8 @@ import { CatalogService } from "./lib/service.mjs";
 import { buildCatalogTools } from "./lib/tools.mjs";
 import { buildStamp, hostVersions, profileDir, dataDir as dataDirOf, workspaceRoot } from "./lib/hostinfo.js";
 import { loadSettings } from "./lib/settings.mjs";
+/* R18：发版体检的清单只有一份（dev/ship-checks.mjs）—— ship 真跑它、/preflight dry 报它 */
+import { shipCheckIds } from "./dev/ship-checks.mjs";
 
 const PREFIX = "/plugin-catalog";
 const MAX_JSON_BODY = 1 * 1024 * 1024;
@@ -289,9 +291,11 @@ export async function apply(ctx) {
 
 				if (path === "/preflight" && method === "POST") {
 					const body = await readJsonBody(req);
-					/* dry=true：只回"会跑什么"，不起子进程（自检脚本本身不该在自检里跑一遍） */
+					/* dry=true：只回"会跑什么"，不起子进程（自检脚本本身不该在自检里跑一遍）。
+					   ★ R18：清单来自 `dev/ship-checks.mjs`（单一来源）—— 此前这里硬编码四项，
+					     把 5 个探针收进 ship 之后 dry 仍然只报四项（hosttest 当场抓到）。 */
 					if (body.dry === true) {
-						return json(res, 200, { ok: true, dry: true, script: "dev/ship.mjs", checks: ["audit", "render-check.cjs", "hosttest", "staging"], route: "/preflight", job: "preflight" });
+						return json(res, 200, { ok: true, dry: true, script: "dev/ship.mjs", checks: shipCheckIds(), route: "/preflight", job: "preflight" });
 					}
 					const started = catalog.startJob("preflight", async (progress) => await catalog.runPreflight({ onProgress: progress }));
 					return json(res, 200, started);

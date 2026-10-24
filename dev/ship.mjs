@@ -3,8 +3,8 @@
  *
  * 为什么要有它：这套东西的验收一直是「跑三条命令、人眼对数字、再看 git 干净不干净」。
  * 换会话接手时这一步最容易漏（漏了就等于没验）。把它固定成脚本后：
- *   - 三条自检自动跑、自动解析 passed/failed/skipped；
- *   - **第 4 项「副本同步」**：这台机器上有几个 Skill 的 staging（发布源）是旧的 —— R6 那次
+ *   - 三层自检 + **五个独立探针**自动跑、自动解析 passed/failed/skipped（探针共 52 条，约 2 秒）；
+ *   - **最后一项「副本同步」**：这台机器上有几个 Skill 的 staging（发布源）是旧的 —— R6 那次
  *     是"12 个 Skill 发出去的都是旧版"，靠人翻对话才发现。它**只报不拦**（与 git 脏同一条口径：
  *     改 Skill 的中途 staging 落后是常态，把它算失败会让这个脚本在最该用的时候变成噪音）；
  *   - 版本号与构建戳（package.json version ↔ client.js BUILD）不一致会直接报错 ——
@@ -47,14 +47,11 @@ const reportArg = (() => {
 	return index >= 0 && args[index + 1] ? args[index + 1] : null;
 })();
 
-const CHECKS = [
-	{ id: "audit", label: "自洽契约", script: "dev/audit.mjs" },
-	{ id: "render", label: "界面渲染", script: "dev/render-check.cjs" },
-	{ id: "hosttest", label: "宿主行为", script: "dev/hosttest.mjs" },
-	/* 第 4 项在**本进程内**跑（不 spawn 子进程）：它只 stat 几十个 SKILL.md，比起一个 node 还快。
-	   ★ informational：它报的是**这台机器的状态**（staging 旧了），不是代码缺陷 —— 只报不拦。 */
-	{ id: "staging", label: "副本同步", inline: true, informational: true },
-];
+import { SHIP_CHECKS } from "./ship-checks.mjs";
+
+/* 清单在 `dev/ship-checks.mjs`（R18 单源）：面板 /preflight dry 报的就是它，
+   ship 真跑的也是它 —— 两处各写一份的坑本机踩过一次（dry 只报四项）。 */
+const CHECKS = SHIP_CHECKS;
 
 /** 子进程要用哪个解释器：宿主（Electron）下必须带 ELECTRON_RUN_AS_NODE 才能读到 app.asar。 */
 function childEnv() {

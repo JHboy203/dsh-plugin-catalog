@@ -646,9 +646,11 @@ ok("「被依赖」的体积在合计里单独点出（不算可回收空间）"
              ③ 版本号与构建戳不一致要算失败（"改了代码忘了抬版本"的固定防线）；
              ④ 环境跑不了的断言记 SKIP 而不是 FAIL，但要响亮地打出来。 */
 const shipSource = readFileSync(new URL("../dev/ship.mjs", import.meta.url), "utf8");
+/* R18：清单单独一份（ship 与面板 dry 共用）；不定义它，断言就只能盯着 ship.js 里那个别名 */
+const shipChecksSource = readFileSync(new URL("../dev/ship-checks.mjs", import.meta.url), "utf8");
 const indexSource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 const hosttestSource = readFileSync(new URL("../dev/hosttest.mjs", import.meta.url), "utf8");
-ok("发版体检脚本存在，且默认跑四项（audit / render / hosttest / staging）", shipSource.includes('{ id: "audit"') && shipSource.includes('{ id: "render"') && shipSource.includes('{ id: "hosttest"') && shipSource.includes('{ id: "staging"'));
+ok("发版体检清单是单源（dev/ship-checks.mjs），且默认跑五项（audit / render / hosttest / probes / staging）", ["audit", "render", "hosttest", "probes", "staging"].every((id) => shipChecksSource.includes('id: "' + id + '"')) && shipSource.includes("const CHECKS = SHIP_CHECKS"));
 ok("体检脚本可被面板当接口用：--json 只输出一段 JSON，进度走 stderr", shipSource.includes("if (asJson) {") && shipSource.includes('process.stderr.write("ship:check:start:') && shipSource.includes("delete env.DSH_CATALOG_KEEP"));
 ok("版本号 ↔ 构建戳对不上要算失败（并给出期望前缀）", /export function versionVerdict/.test(shipSource) && shipSource.includes("对不上（应形如 "));
 ok("自检输出解析成 passed / failed / skipped（三条脚本格式一致）", /export function parseCheckOutput/.test(shipSource) && shipSource.includes('pick("skipped")'));
@@ -692,14 +694,14 @@ ok("service 的同步走 copySkillToStaging（与新模块同一份备份/方向
 ok("计划只收「旧了」的（isStaleVerdict），不再手写两种 verdict", serviceSource.includes("if (isStaleVerdict(entry.verdict))"));
 
 ok("路由 POST /skillsync：不带 apply 只出计划，带 apply 必须再带 confirm", indexSource.includes('path === "/skillsync"') && indexSource.includes("catalog.syncStagedSkills({ ids })") && indexSource.includes("catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true })"));
-ok("/preflight 的 dry 清单含第 4 项（面板/调用方知道会跑什么）", indexSource.includes('checks: ["audit", "render-check.cjs", "hosttest", "staging"]'));
+ok("/preflight 的 dry 清单来自单源（不再硬编码：R18 收进探针后 dry 仍只报四项，hosttest 抓到过）", indexSource.includes("checks: shipCheckIds()"));
 /* ★ R14：这条断言改成只看 runPreflight 的正文 —— 别的后台任务（处置清单）有自己的
    `total: 3`（三项固定阶段），拿整个文件做"不许出现 total: 3"会误伤。 */
 const preflightBody = serviceSource.slice(serviceSource.indexOf("async runPreflight({ onProgress } = {})"), serviceSource.indexOf("async refreshStats("));
 ok("runPreflight 的 total 由 ship 事件给（不写死 3，否则加一项进度条就骗人）", preflightBody.includes("ship:check:total:") && !preflightBody.includes("total: 3"));
-ok("ship 发 total 事件（面板画「第 2/4 项」）", shipSource.includes('process.stderr.write("ship:check:total:" + selected.length'));
-ok("第 4 项在本进程内跑（只 stat 几十个文件，不值得再起一个 node）", shipSource.includes("inline: true") && /async function stagingCheck\(/.test(shipSource) && shipSource.includes("scanSkillStaging({ roots: skillRoots(settings.workspace), stageDir })"));
-ok("第 4 项只报不拦，且不进 passed/failed 合计", shipSource.includes("informational: true") && shipSource.includes("const counted = results.filter((result) => result.informational !== true)") && shipSource.includes("results.every((result) => result.ok)"));
+ok("ship 发 total 事件（面板画「第 2/N 项」）", shipSource.includes('process.stderr.write("ship:check:total:" + selected.length'));
+ok("副本同步在 ship 本进程内跑（只 stat 几十个文件，不值得再起一个 node）", shipChecksSource.includes("inline: true") && /async function stagingCheck\(/.test(shipSource) && shipSource.includes("scanSkillStaging({ roots: skillRoots(settings.workspace), stageDir })"));
+ok("副本同步只报不拦，且不进 passed/failed 合计", shipChecksSource.includes("informational: true") && shipSource.includes("const counted = results.filter((result) => result.informational !== true)") && shipSource.includes("results.every((result) => result.ok)"));
 ok("第 4 项自己坏掉要算失败（扫描抛错 ≠ staging 旧了）", shipSource.includes("副本同步检查自身失败"));
 ok("人读输出把「只报不拦」写出来（别让人以为红了也不用管）", shipSource.includes("· 只报不拦"));
 ok("报告单独一段写「几对里几个旧 + 目录 + 处理办法」", shipSource.includes('"## 副本同步（Skill 的 staging）"') && shipSource.includes("catalog_skill_sync action=apply confirm=true"));
@@ -921,7 +923,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.17.0 / r17.0", /"version": "0\.17\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r17.0"'));
+ok("版本号与构建戳同步抬到 0.18.0 / r18.0", /"version": "0\.18\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r18.0"'));
 
 
 ok(
@@ -1041,6 +1043,17 @@ ok("health 文案在「第一条快照」时如实说没有可比历史", toolsS
 ok("面板变化条：first / 0 处都不占版面，点开才列明细", clientSource.includes("function ChangesBar(props)") && clientSource.includes("if (!changes || changes.first) return null;") && clientSource.includes("dpc-changes-chip"));
 ok("probe-history 覆盖 H1–H15 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
 ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
+
+/* ⑧ R18：把「跑哪几条命令才算验完」与「宿主里跑的是新代码吗」都固化 */
+const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
+ok("探针收进发版体检（第 5 项 probes，不再是「有人记得就跑」）", shipChecksSource.includes('id: "probes"') && shipChecksSource.includes('script: "dev/run-probes.mjs"'));
+ok("面板 dry 与 ship 同一份清单（此前硬编码四项，收进探针后 dry 仍只报四项）", indexSource.includes("checks: shipCheckIds()") && indexSource.includes('from "./dev/ship-checks.mjs"'));
+ok("探针串覆盖五个（loadstate / uninstall / simulate / tags / history）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
+ok("探针串兼容两种收尾格式（passed/failed 行 与 「N 条不变式全部成立」）", probesRunner.includes("function parseCounts") && probesRunner.includes("function parseInvariants") && probesRunner.includes("parseCounts(text) ||"));
+ok("沙箱里跑探针串会明说「要在宿主里跑」，不会被误判成探针坏了", probesRunner.includes("EPERM") && probesRunner.includes("host_selfcheck"));
+ok("运行中版本被定格（LOADED_VERSION）并与磁盘比（isStaleBuild）", serviceSource.includes("const LOADED_VERSION = (() =>") && serviceSource.includes("function isStaleBuild(") && serviceSource.includes("loaded: { version: LOADED_VERSION"));
+ok("health 与 /state 都带「磁盘 vs 运行中」，不一致时点名下一步", serviceSource.includes("stale: isStaleBuild(build, LOADED_VERSION)") && toolsSource.includes("重载插件或重启 DSH 之后新代码才生效"));
+ok("面板也标「运行中 X（未重载）」—— build 标签读的是磁盘，不标出来会让人以为已生效", clientSource.includes("data.build && data.build.stale") && clientSource.includes("（未重载）"));
 
 /* ⑦ 文档 */
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));

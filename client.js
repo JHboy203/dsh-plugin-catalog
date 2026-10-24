@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r17.0";
+		const BUILD = "r18.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -2315,6 +2315,9 @@ window.__ModuleLoader__.load({
 								? h("span", null, "｜最近 " + (meta.windowDays || 90) + " 天 " + fmtNumber(meta.calls || 0) + " 次调用（" + (meta.sessions || 0) + " 会话）｜缓存 " + ago(meta.builtAt))
 								: h("span", { className: "dpc-bad" }, "｜统计缓存还没生成（首次约 40~60 秒，已在后台算）"),
 							h("span", { className: "dpc-muted" }, "｜build " + (data.build ? data.build.label : "?")),
+							/* R18：磁盘已更新但宿主里还是旧模块 —— 这时新工具/新路由根本不存在，
+							   而 build 标签读的是磁盘，不标出来会让人以为已经生效了 */
+							data.build && data.build.stale ? h("span", { className: "dpc-bad", title: "磁盘上的代码已经更新，但宿主进程里跑的仍是旧模块。重载插件（plugin_manager set_plugin）或重启 DSH 后新代码才生效" }, "｜运行中 " + (data.build.loaded || "?") + "（未重载）") : null,
 						),
 					),
 					h(

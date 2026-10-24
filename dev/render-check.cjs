@@ -917,6 +917,15 @@ ok("变化条：第一条快照 / 0 处变化都不占版面（「还没有历�
 	T.store.data = saved;
 	return !firstText.includes("处变化") && !zeroText.includes("处变化");
 })());
+ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一致时不出现", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, build: { label: "0.18.0 · 2026-10-24 13:20", version: "0.18.0", loaded: "0.17.0", stale: true } };
+	const staleText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = { ...data, build: { label: "0.18.0 · 2026-10-24 13:20", version: "0.18.0", loaded: "0.18.0", stale: false } };
+	const freshText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return staleText.includes("（未重载）") && staleText.includes("运行中 0.17.0") && !freshText.includes("（未重载）");
+})());
 ok("工具条有「处置清单」按钮，title 写明只生成不执行、写入要再确认", (() => {
 	const tree = expand(render(T.Panel, {}));
 	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));
