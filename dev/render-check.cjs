@@ -1147,7 +1147,7 @@ ok("配置层 R22：条件启用给表达式原文、关掉的条目单列、脚
 	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
 	T.store.data = saved.data;
 	T.store.showComposition = saved.show;
-	return text.includes("条件启用") && text.includes("!!js") && text.includes("关掉的条目") && text.includes("不展开 bundle 自带的 patch 层") && text.includes("表达式不求值");
+	return text.includes("条件启用") && text.includes("!!js") && text.includes("关掉的条目") && text.includes("不展开 bundle 自带的 patch 层") && text.includes("表达式不求值") && text.includes("算于") && text.includes("60 秒缓存");
 })());
 ok("配置层 R22：bundles 真的缺才占公告位；没缺口 / 旧服务端都不出现", (() => {
 	const saved = T.store.data;

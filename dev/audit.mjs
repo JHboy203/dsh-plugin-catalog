@@ -924,7 +924,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.22.0 / r22.0", /"version": "0\.22\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r22.0"'));
+ok("版本号与构建戳同步抬到 0.22.1 / r22.1", /"version": "0\.22\.1"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r22.1"'));
 
 
 ok(
@@ -1144,6 +1144,8 @@ ok("工具面第 11 个 catalog_composition（view 五档；描述写明不求�
 ok("catalog_health 打出配置层一行（读 health.composition.line）", toolsSource.includes("health.composition ? health.composition.line") && toolsSource.includes("配置层：还没读"));
 ok("面板：头部「配置层」入口 + 浮层 + 四类清单 + 缺口公告只在 bad 时占位", clientSource.includes("showComposition: false") && clientSource.includes("function CompositionModal") && clientSource.includes("dpc-conf-link") && clientSource.includes("compositionBad") && clientSource.includes("dpc-conf-block"));
 ok("浮层脚注写明三条边界（不展开 patch 层 / 表达式不求值 / 静态查不到不等于坏）", clientSource.includes("不展开 bundle 自带的 patch 层") && clientSource.includes("表达式不求值") && clientSource.includes("运行期注入"));
+ok("浮层脚注给出缓存年龄（算于 X + 60 秒缓存 + 改完点重新扫描）—— R22.1", clientSource.includes("算于 ") && clientSource.includes("60 秒缓存") && clientSource.includes("重新扫描"));
+ok("health 摘要带 at（配置层陈旧与否要有时间戳可判）—— R22.1", serviceSource.includes("at: composition.at") && serviceSource.includes("/* 审计时间：面板浮层与 /health 都显示"));
 ok("新类名都有样式定义", [".dpc-conf-link{", ".dpc-conf-block{", ".dpc-conf-row{"].every((needle) => cssSource.includes(needle)));
 const compositionProbeSource = readFileSync(new URL("./probe-composition.mjs", import.meta.url), "utf8");
 ok("probe-composition 覆盖 C1–C14 且破一条非零退出", ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"].every((id) => compositionProbeSource.includes(id + " ")) && compositionProbeSource.includes("process.exit(1)"));

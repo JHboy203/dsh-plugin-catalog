@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r22.0";
+		const BUILD = "r22.1";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -2124,7 +2124,8 @@ window.__ModuleLoader__.load({
 						h(
 							"div",
 							{ className: "dpc-conf-foot dpc-muted" },
-							"判据：只读**声明**（两份组合文件的顶层条目 + `dsh.profile.bundles` + `profile/node_modules` + asar 包名）。不展开 bundle 自带的 patch 层、`!!js` 表达式不求值；按路径挂载只检查文件在不在。清单最多列 40 条（完整清单：工具 catalog_composition view=entries）。",
+							(composition.at ? "算于 " + fmtDateTime(composition.at) + "（60 秒缓存；改完配置点头部「重新扫描」） · " : "") +
+								"判据：只读**声明**（两份组合文件的顶层条目 + `dsh.profile.bundles` + `profile/node_modules` + asar 包名）。不展开 bundle 自带的 patch 层、`!!js` 表达式不求值；按路径挂载只检查文件在不在。清单最多列 40 条（完整清单：工具 catalog_composition view=entries）。",
 						),
 					),
 				),

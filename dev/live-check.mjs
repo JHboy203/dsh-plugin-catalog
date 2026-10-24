@@ -97,6 +97,7 @@ const composition = state.json?.composition || null;
 ok(
 	"state.composition: verdict + files + counts conserve + listed rows carry file/line",
 	Boolean(composition) &&
+		Number(composition.at) > 0 &&
 		Array.isArray(composition.files) &&
 		composition.files.length > 0 &&
 		(() => {
