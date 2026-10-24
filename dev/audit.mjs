@@ -925,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.23.0 / r23.0", /"version": "0\.23\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r23.0"'));
+ok("版本号与构建戳同步抬到 0.24.0 / r24.0", /"version": "0\.24\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r24.0"'));
 
 
 ok(
@@ -1185,9 +1185,17 @@ ok("面板：配置层单列一组（chip + 明细 + 时间线一句），不是
 ok("health / 导出 / 面板脚注都写配置层（三处同一口径）", toolsSource.includes("配置层 ${health.changes.counts.composition || 0}") && serviceSource.includes('["配置层", changes.compositionChanged, "composition"]') && clientSource.includes("配置层比**声明签名**"));
 ok("probe-history 覆盖 H28–H32（配置层指纹 / 上报 / 单边缺跳过）", ["H28", "H29", "H30", "H31", "H32"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("signatureOf"));
 
+/* ⑨ R24：配置层条目可点跳卡片 + 「在 bundles 里吗」交叉引用 */
+const compactFn = compositionSource.indexOf("export function compactComposition");
+const compactBody = compactFn >= 0 ? compositionSource.slice(compactFn, compactFn + 2200) : "";
+ok("紧凑视图带 bundleNames（去重 + 排序，只给包名、不传 bundles 整行）", compactBody.includes("bundleNames:") && compactBody.includes("new Set(") && compactBody.includes(".sort()") && !compactBody.includes("rows: report.bundles.rows"));
+ok("面板：只有 profile / asar 行可点，点后写搜索词 + 关浮层 + 清筛选（否则目标卡被筛掉）", clientSource.includes("function jumpToCard(name)") && /kind: "all", source: "any", usage: "any", orphanOnly: false, dormantOnly: false, tagFilter: \[\], showComposition: false/.test(clientSource) && clientSource.includes('item.resolution === "present" || item.resolution === "asar"') && clientSource.includes("onKeyDown"));
+ok("「在 bundles / 不在 bundles」交叉引用 + 解析徽标 + 新类名有样式", clientSource.includes('inside ? "在 bundles" : "不在 bundles"') && clientSource.includes("RES_LABEL") && clientSource.includes('row(item, null, true)') && [".dpc-conf-row.is-link{", ".dpc-conf-flag.is-in{", ".dpc-conf-flag.is-out{", ".dpc-conf-res.is-asar{"].every((needle) => cssSource.includes(needle)));
+ok("hosttest / live-check / probe 都锁了 bundleNames（R24）", hosttestSource.includes("bundleNames") && liveCheckSource.includes("bundleNames") && compositionProbeSource.includes("C15") && compositionProbeSource.includes("C16"));
+
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));
-ok("双语 README 都写了 R23 配置层签名（声明层变化进历史）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)"));
+ok("双语 README 都写了 R23 配置层签名 / R24 点回卡片（声明层变化与导航）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)") && readmeZh.includes("从配置层点回卡片（R24）") && readmeEn.includes("From the composition popup back to the card (R24)"));
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
 /* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
 

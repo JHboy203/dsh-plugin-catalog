@@ -115,6 +115,12 @@ ok(
 		[...(composition.missing || []), ...(composition.conditional || []), ...(composition.disabled || [])].every((row) => typeof row.file === "string" && row.file !== "" && Number(row.line) > 0),
 	JSON.stringify({ verdict: composition?.verdict, files: composition?.files?.length, effective: composition?.counts?.effective, missing: (composition?.missing || []).length }),
 );
+/* R24：面板的「在不在 bundles 里」交叉引用靠这一份包名表（去重 + 排序） */
+ok(
+	"state.composition.bundleNames: unique, sorted, non-empty (R24 cross-reference)",
+	Array.isArray(composition?.bundleNames) && composition.bundleNames.length > 0 && new Set(composition.bundleNames).size === composition.bundleNames.length && JSON.stringify(composition.bundleNames) === JSON.stringify([...composition.bundleNames].sort()),
+	JSON.stringify({ count: composition?.bundleNames?.length, declared: composition?.bundles?.declared }),
+);
 const drift = state.json?.drift || {};
 const stagedSkills = Object.entries(drift).filter(([, entry]) => entry && entry.staged === true);
 ok(

@@ -213,6 +213,18 @@ function auditFixture(overrides = {}) {
 	ok("C12b 紧凑视图按 cap 截断列表，但计数仍是真实数字", compact.missing.length <= 2 && compact.counts.byResolution.missing === report.missing.length && compact.entries === undefined, `missing=${compact.missing.length} counts=${compact.counts.byResolution.missing}`);
 }
 
+/* ── C15 紧凑视图带 bundleNames（R24：面板拿它判「这条在不在 bundles 里」） ── */
+{
+	const compact = compactComposition(auditFixture({ bundles: ["dsh-local", "dsh-both", "dsh-local"] }));
+	ok("C15 bundleNames 去重 + 排序（只给包名，不传 bundles 整行）", JSON.stringify(compact.bundleNames) === JSON.stringify(["dsh-both", "dsh-local"]) && compact.bundleNames.length === 2 && compact.bundles.rows === undefined, JSON.stringify(compact.bundleNames));
+}
+
+/* ── C16 没有 bundles 时给空数组（旧缓存 / 空 profile 不抛） ── */
+{
+	const compact = compactComposition(auditFixture({ bundles: [] }));
+	ok("C16 没有 bundles → bundleNames 是空数组（不是 undefined）", Array.isArray(compact.bundleNames) && compact.bundleNames.length === 0);
+}
+
 /* ── C13 导出的一节：缺口为 0 时不许写"真的缺 N" ── */
 {
 	const clean = renderCompositionSection(auditFixture({ bundles: ["dsh-local"], files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-local" }] }));

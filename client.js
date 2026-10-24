@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r23.0";
+		const BUILD = "r24.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -1981,15 +1981,45 @@ window.__ModuleLoader__.load({
 			const list = (value) => (Array.isArray(value) ? value : []);
 			const shortFile = (file) => String(file || "").split(/[\\/]/).pop();
 			const verdictText = composition.verdict === "bad" ? "bundles 有缺口" : composition.verdict === "warn" ? "有静态查不到 / 无法判定" : "没有缺口";
-			const row = (item, extra) =>
-				h(
+			/* R24：只有「profile 已装」或「官方 asar」的包才有卡片可跳；静态查不到 / 按路径 / 分组都没有。
+			   交叉引用：关掉 / 条件启用的条目，额外标「在 bundles / 不在 bundles」。 */
+			const bundleSet = new Set(list(composition.bundleNames).map(String));
+			const canJump = (item) => Boolean(props.onJump && item && item.package) && (item.resolution === "present" || item.resolution === "asar");
+			const RES_LABEL = { present: "profile", asar: "asar", missing: "查不到", unjudged: "无法判定" };
+			const bundleFlag = (item) => {
+				if (!item || !item.package || bundleSet.size === 0) return null;
+				const inside = bundleSet.has(item.package);
+				return h("span", { className: "dpc-conf-flag " + (inside ? "is-in" : "is-out") }, inside ? "在 bundles" : "不在 bundles");
+			};
+			const row = (item, extra, withBundle = false) => {
+				const jump = canJump(item);
+				return h(
 					"div",
-					{ key: item.id + "|" + item.file + "|" + item.line + "|" + (item.name || ""), className: "dpc-conf-row" },
+					{
+						key: item.id + "|" + item.file + "|" + item.line + "|" + (item.name || ""),
+						className: "dpc-conf-row" + (jump ? " is-link" : ""),
+						title: jump ? "跳到这张卡片（会清掉筛选与搜索，只留这次定位）" : undefined,
+						role: jump ? "button" : undefined,
+						tabIndex: jump ? 0 : undefined,
+						onClick: jump ? () => props.onJump(item.package) : undefined,
+						onKeyDown: jump
+							? (event) => {
+									if (event.key === "Enter" || event.key === " ") {
+										event.preventDefault();
+										props.onJump(item.package);
+									}
+								}
+							: undefined,
+					},
 					h("code", { className: "dpc-conf-name" }, item.name || "（无 name）"),
 					item.id ? h("span", { className: "dpc-conf-id dpc-muted" }, item.id) : null,
 					h("span", { className: "dpc-conf-file dpc-mono" }, shortFile(item.file) + ":" + item.line),
+					RES_LABEL[item.resolution] ? h("span", { className: "dpc-conf-res is-" + item.resolution }, RES_LABEL[item.resolution]) : null,
+					withBundle ? bundleFlag(item) : null,
 					extra || null,
+					jump ? h("span", { className: "dpc-conf-jump dpc-muted" }, "→ 卡片") : null,
 				);
+			};
 			const block = (key, title, tone, children, note) =>
 				h(
 					"div",
@@ -2091,7 +2121,7 @@ window.__ModuleLoader__.load({
 									"missing",
 									"静态查不到的条目 —— " + ((composition.counts && composition.counts.byResolution && composition.counts.byResolution.missing) || missing.length) + " 条",
 									"warn",
-									missing.map((item) => row(item, h("span", { className: "dpc-muted" }, "可能由宿主 / 桌面端在运行期注入"))),
+									missing.map((item) => row(item, h("span", { className: "dpc-muted" }, "可能由宿主 / 桌面端在运行期注入"), true)),
 									"profile/node_modules 与官方 asar 里都没有这个包名。运行期注入的虚拟模块本工具看不见 —— 本机 `dsh-plugin-desktop` 就是这种。",
 								)
 							: null,
@@ -2108,7 +2138,7 @@ window.__ModuleLoader__.load({
 									"conditional",
 									"条件启用（`!!js` 表达式，不求值）—— " + (state.conditional || conditional.length) + " 条",
 									"info",
-									conditional.map((item) => row(item, item.disabledRaw ? h("code", { className: "dpc-conf-expr" }, item.disabledRaw) : null)),
+									conditional.map((item) => row(item, item.disabledRaw ? h("code", { className: "dpc-conf-expr" }, item.disabledRaw) : null, true)),
 									"表达式是任意 JS，本工具不求值 —— 想知道这条现在开没开，看运行中的 MCP/cordis 配置或直接问宿主。",
 								)
 							: null,
@@ -2117,7 +2147,7 @@ window.__ModuleLoader__.load({
 									"disabled",
 									"关掉的条目（`disabled: true`）—— " + (state.off || disabled.length) + " 条",
 									"",
-									disabled.map((item) => row(item, null)),
+									disabled.map((item) => row(item, null, true)),
 									"这是**声明**：bundle 自带的 patch 层可能把它们重新打开（本机 `tool-bash` / `tool-pwsh` 就写着 disabled，但工具确实在跑）。别照这张表判断「某个工具没启用」。",
 								)
 							: null,
@@ -2280,6 +2310,14 @@ window.__ModuleLoader__.load({
 			const sizesAt = (data && data.sizes && data.sizes.at) || 0;
 			/* 超过 1.5 秒 / 2 万文件预算的条目：数字是"至少这么大"，卡片上要标出来 */
 			const sizeTruncated = (data && data.sizes && data.sizes.truncated) || [];
+
+			/* R24：配置层浮层里点「profile 已装 / 官方 asar」条目 → 定位到卡片。
+			   ★ 必须清掉筛选：当前的来源 / 加载态 / 用法 / 标签筛选可能正好把目标卡藏起来，
+			     只 set query 会得到一屏空白，看起来像"跳转坏了"。 */
+			function jumpToCard(name) {
+				if (!name) return;
+				set({ query: name, page: 1, kind: "all", source: "any", usage: "any", orphanOnly: false, dormantOnly: false, tagFilter: [], showComposition: false });
+			}
 
 			/* R15：标签 id → ? 的索引。筛选要按维度分组判定，不能只看 id 在不在。 */
 			const tagMap = useMemo(() => new Map(all.map((tag) => [tag.id, tag])), [all]);
@@ -3088,7 +3126,7 @@ window.__ModuleLoader__.load({
 				state.open ? h(EntryModal, {}) : null,
 				state.tagPick ? h(TagBatchModal, { ids: state.tagPick.ids }) : null,
 				state.plan ? h(PlanModal, {}) : null,
-				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }) }) : null,
+				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }), onJump: jumpToCard }) : null,
 			);
 		}
 
@@ -3364,6 +3402,17 @@ window.__ModuleLoader__.load({
 .dpc-conf-name{font-weight:600;word-break:break-all}
 .dpc-conf-id{font-size:10.5px;opacity:.8}
 .dpc-conf-file{font-size:10.5px;color:var(--dsw-alias-label-secondary,#8b93a1);white-space:nowrap}
+.dpc-conf-row.is-link{cursor:pointer;border-radius:6px;padding:1px 4px;margin:0 -4px}
+.dpc-conf-row.is-link:hover{background:var(--dpc-fill)}
+.dpc-conf-row.is-link:focus-visible{outline:2px solid var(--dpc-klein);outline-offset:1px}
+.dpc-conf-res{font-size:10px;padding:0 5px;border-radius:5px;background:var(--dpc-fill);color:var(--dsw-alias-label-secondary,#8b93a1)}
+.dpc-conf-res.is-present{color:#166534}
+.dpc-conf-res.is-asar{color:#1d4ed8}
+.dpc-conf-res.is-missing{color:#b91c1c}
+.dpc-conf-flag{font-size:10px;padding:0 5px;border-radius:5px;border:1px solid transparent}
+.dpc-conf-flag.is-in{color:#166534;background:rgba(22,101,52,.08);border-color:rgba(22,101,52,.25)}
+.dpc-conf-flag.is-out{color:var(--dsw-alias-label-secondary,#8b93a1);background:var(--dpc-fill)}
+.dpc-conf-jump{font-size:10px;margin-left:auto}
 .dpc-conf-expr{font-size:10.5px;padding:0 5px;border-radius:5px;background:var(--dpc-fill);
   color:#2f5fd0;word-break:break-all}
 .dpc-conf-note{font-size:10.5px;line-height:1.55}

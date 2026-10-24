@@ -1168,8 +1168,17 @@ ok(
 	JSON.stringify({ verdict: stateComposition?.verdict, files: stateComposition?.files?.length, effective: stateComposition?.counts?.effective, bundles: stateComposition?.bundles }),
 );
 ok(
-	"配置层的三组计数各自守恒（kind / resolution / state 都等于生效条目数）",
-	(() => {
+	"/state.composition 带 bundleNames（R24：面板拿它判「这条在不在 bundles 里」）",
+	Array.isArray(stateComposition?.bundleNames) &&
+		stateComposition.bundleNames.length > 0 &&
+		new Set(stateComposition.bundleNames).size === stateComposition.bundleNames.length &&
+		stateComposition.bundleNames.every((name) => typeof name === "string" && name !== "" && name === name.trim()) &&
+		JSON.stringify(stateComposition.bundleNames) === JSON.stringify([...stateComposition.bundleNames].sort()) &&
+		stateComposition.bundleNames.length <= Number(stateComposition.bundles?.declared || 0),
+	JSON.stringify({ count: stateComposition?.bundleNames?.length, declared: stateComposition?.bundles?.declared, first: (stateComposition?.bundleNames || []).slice(0, 3) }),
+);
+ok(
+	"配置层的三组计数各自守恒（kind / resolution / state 都等于生效条目数）",	(() => {
 		const counts = stateComposition?.counts;
 		if (!counts) return false;
 		const sum = (object) => Object.values(object || {}).reduce((total, n) => total + (Number(n) || 0), 0);

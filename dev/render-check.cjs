@@ -1160,6 +1160,8 @@ const compositionFixture = {
 	},
 	packages: { distinct: 231, present: 43, asar: 187, missing: 1, unjudged: 0 },
 	bundles: { declared: 50, present: 43, asar: 7, missing: 0, unjudged: 0 },
+	/* R24：只给包名（面板拿它做「在不在 bundles 里」的交叉引用；不传整行） */
+	bundleNames: ["@deepseek-ai/dsh-tool-bash", "some-other-bundle"],
 	missing: [
 		{
 			id: "desktop-shell",
@@ -1240,6 +1242,50 @@ ok("配置层 R22：bundles 真的缺才占公告位；没缺口 / 旧服务端�
 		!nullText.includes("配置层")
 	);
 })());
+/* R24：配置层条目可点跳卡片 + 「在 bundles 里吗」交叉引用 */
+ok("配置层 R24：profile / asar 行可点并带「→ 卡片」，静态查不到行不可点", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	const rows = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-conf-row"));
+	const link = rows.find((node) => textsOf(node).join(" ").includes("@deepseek-ai/dsh-tool-bash"));
+	const dead = rows.find((node) => textsOf(node).join(" ").includes("dsh-plugin-desktop"));
+	const linkText = link ? textsOf(link).join(" ") : "";
+	const deadText = dead ? textsOf(dead).join(" ") : "";
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return Boolean(link) && typeof link.props.onClick === "function" && linkText.includes("→ 卡片") && Boolean(dead) && !dead.props.onClick && !deadText.includes("→ 卡片");
+})());
+ok("配置层 R24：点行 → 写搜索词、关浮层、清掉会把目标藏起来的筛选", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition, query: T.store.query, source: T.store.source, usage: T.store.usage, orphanOnly: T.store.orphanOnly, kind: T.store.kind, tagFilter: T.store.tagFilter, page: T.store.page };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	T.store.query = "zzz";
+	T.store.source = "self";
+	T.store.usage = "unused";
+	T.store.orphanOnly = true;
+	T.store.tagFilter = ["purpose:build"];
+	T.store.page = 7;
+	const rows = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-conf-row"));
+	const target = rows.find((node) => textsOf(node).join(" ").includes("@deepseek-ai/dsh-tool-bash"));
+	if (target) target.props.onClick();
+	const pass = T.store.query === "@deepseek-ai/dsh-tool-bash" && T.store.showComposition === false && T.store.source === "any" && T.store.usage === "any" && T.store.orphanOnly === false && T.store.tagFilter.length === 0 && T.store.page === 1;
+	Object.assign(T.store, { data: saved.data, showComposition: saved.show, query: saved.query, source: saved.source, usage: saved.usage, orphanOnly: saved.orphanOnly, kind: saved.kind, tagFilter: saved.tagFilter, page: saved.page });
+	return Boolean(target) && pass;
+})());
+ok("配置层 R24：关掉 / 条件条目带「在 bundles / 不在 bundles」与解析徽标", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	const tree = expand(render(T.Panel, {}));
+	const text = textsOf(tree).join(" | ");
+	const flags = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-conf-flag"));
+	const badges = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-conf-res"));
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return text.includes("在 bundles") && text.includes("不在 bundles") && flags.some((node) => textsOf(node).join("").includes("在 bundles")) && flags.some((node) => textsOf(node).join("").includes("不在 bundles")) && badges.some((node) => String(node.props.className).includes("is-asar")) && badges.some((node) => String(node.props.className).includes("is-missing"));
+})());
+
 ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一致时不出现", (() => {
 	const saved = T.store.data;
 	T.store.data = { ...data, build: { label: "0.18.0 · 2026-10-24 13:20", version: "0.18.0", loaded: "0.17.0", stale: true } };
