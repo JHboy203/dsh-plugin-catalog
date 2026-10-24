@@ -925,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.24.0 / r24.0", /"version": "0\.24\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r24.0"'));
+ok("版本号与构建戳同步抬到 0.25.0 / r25.0", /"version": "0\.25\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r25.0"'));
 
 
 ok(
@@ -1193,9 +1193,19 @@ ok("面板：只有 profile / asar 行可点，点后写搜索词 + 关浮层 + 
 ok("「在 bundles / 不在 bundles」交叉引用 + 解析徽标 + 新类名有样式", clientSource.includes('inside ? "在 bundles" : "不在 bundles"') && clientSource.includes("RES_LABEL") && clientSource.includes('row(item, null, true)') && [".dpc-conf-row.is-link{", ".dpc-conf-flag.is-in{", ".dpc-conf-flag.is-out{", ".dpc-conf-res.is-asar{"].every((needle) => cssSource.includes(needle)));
 ok("hosttest / live-check / probe 都锁了 bundleNames（R24）", hosttestSource.includes("bundleNames") && liveCheckSource.includes("bundleNames") && compositionProbeSource.includes("C15") && compositionProbeSource.includes("C16"));
 
+/* ⑩ R25：配置层变化下钻到具体 id / bundle */
+const sigFn = compositionSource.indexOf("export function signatureOf");
+const compositionSignatureSource = sigFn >= 0 ? compositionSource.slice(sigFn, sigFn + 2200) : "";
+const historySourceAll = readFileSync(new URL("../lib/history.mjs", import.meta.url), "utf8");
+ok("签名带 decls / bundles（去重排序的 identity 表），且不把解析结果写进历史", compositionSignatureSource.includes("decls") && compositionSignatureSource.includes("bundles: bundles.slice().sort()") && !compositionSignatureSource.includes("resolution"));
+ok("下钻：compareComposition 返回 stateChanged / bundlesAdded，且单边缺 decls 不伪造明细", historySourceAll.includes("export function compareCompositionDetail") && historySourceAll.includes("stateChanged.push") && historySourceAll.includes("bundlesAdded.push") && historySourceAll.includes("if (left && right)") && historySourceAll.includes("hasDetail"));
+ok("面板 / 报告同一份明细：client compositionText 与 describeChange 都点名 id", clientSource.includes("item.stateChanged") && clientSource.includes("bundles +") && historySourceAll.includes("compositionDetailText(item)") && historySourceAll.includes("DISABLED_KIND_LABELS"));
+ok("快照升级补一条带明细的（老快照没有 decls 时只补一次）", serviceSource.includes("const enrich = Boolean(last && snapshot.composition?.decls && !last.composition?.decls)") && serviceSource.includes("&& !enrich"));
+ok("probe-history 覆盖 H33–H37（decls 排序 / 点名翻转 / 点名 bundle / 单边缺 / 截断）", ["H33", "H34", "H35", "H36", "H37"].every((id) => historyProbeSource.includes(id + " ")));
+
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));
-ok("双语 README 都写了 R23 配置层签名 / R24 点回卡片（声明层变化与导航）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)") && readmeZh.includes("从配置层点回卡片（R24）") && readmeEn.includes("From the composition popup back to the card (R24)"));
+ok("双语 README 都写了 R23 配置层签名 / R24 点回卡片 / R25 下钻（声明层变化、导航与明细）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)") && readmeZh.includes("从配置层点回卡片（R24）") && readmeEn.includes("From the composition popup back to the card (R24)") && readmeZh.includes("配置层变化下钻到具体条目（R25）") && readmeEn.includes("Drill down to the exact declaration (R25)"));
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
 /* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
 

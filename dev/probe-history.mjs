@@ -10,7 +10,7 @@
  * 全程**不碰磁盘**：目录是内存里的合成数据，不读也不写 history.json。
  */
 
-import { compareEntries, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
+import { compareComposition, compareEntries, compositionDetailText, compositionSignalOf, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
 import { signatureOf } from "../lib/composition.mjs";
 
 const results = [];
@@ -324,6 +324,75 @@ const signature = (text, bundles = ["b-one", "b-two"], file = "cordis.yml") => s
 	const plain = snapshotOf(catalogOf(), {}, AT);
 	const withComposition = snapshotOf(catalogOf(), {}, AT, signature(CORDIS_MAIN));
 	ok("H32 快照指纹包含配置层签名（只改声明也会追加一条）", plain.fingerprint !== withComposition.fingerprint && plain.fingerprint === fingerprintOf(plain) && withComposition.fingerprint === fingerprintOf(withComposition), plain.fingerprint + " / " + withComposition.fingerprint);
+}
+
+/* ── R25：配置层下钻（到底哪个 id 从开变关 / 哪个 bundle 被加减） ── */
+
+/* H33：签名里带 decls（按 id 排序）+ bundles（排序）；指纹与计数不受影响 */
+{
+	const sig = signature(CORDIS_MAIN);
+	ok(
+		"H33 签名带 decls（id 排序 / kind 三态）与 bundles（排序）",
+		Array.isArray(sig.decls) &&
+			sig.decls.length === 2 &&
+			sig.decls[0].id === "alpha" &&
+			sig.decls[1].id === "beta" &&
+			sig.decls.every((row) => row.kind === "on") &&
+			JSON.stringify(sig.bundles) === JSON.stringify(["b-one", "b-two"]),
+		JSON.stringify({ decls: sig.decls, bundles: sig.bundles }),
+	);
+}
+
+/* H34：disabled 翻转 → stateChanged 点名到 id；describeChange 写「谁 启用→关掉」 */
+{
+	const before = signature(CORDIS_MAIN);
+	const after = signature(CORDIS_OFF);
+	const diff = diffSnapshots(snapshotOf(catalogOf(), {}, AT, before), snapshotOf(catalogOf(), {}, AT + 1, after));
+	const row = diff.compositionChanged[0] || {};
+	const text = describeChange(row, "composition");
+	ok(
+		"H34 下钻：disabled 翻转点名到 id（alpha 启用→关掉）",
+		diff.counts.composition === 1 &&
+			Array.isArray(row.stateChanged) &&
+			row.stateChanged.length === 1 &&
+			row.stateChanged[0].id === "alpha" &&
+			row.stateChanged[0].from === "on" &&
+			row.stateChanged[0].to === "off" &&
+			text.includes("alpha-pkg 启用→关掉"),
+		text,
+	);
+}
+
+/* H35：bundles 增删 → bundlesAdded 点名；报告/面板同一份明细 */
+{
+	const before = signature(CORDIS_MAIN, ["b-one"]);
+	const after = signature(CORDIS_MAIN, ["b-one", "b-two"]);
+	const diff = diffSnapshots(snapshotOf(catalogOf(), {}, AT, before), snapshotOf(catalogOf(), {}, AT + 1, after));
+	const row = diff.compositionChanged[0] || {};
+	ok(
+		"H35 下钻：加的 bundle 点名（bundles +b-two）",
+		JSON.stringify(row.bundlesAdded) === JSON.stringify(["b-two"]) && Array.isArray(row.stateChanged) && row.stateChanged.length === 0 && describeChange(row, "composition").includes("bundles +b-two"),
+		JSON.stringify({ added: row.bundlesAdded, text: describeChange(row, "composition") }),
+	);
+}
+
+/* H36：旧快照没有 decls → 单边缺不判明细（不能把 50 个 bundle 全报成新加的） */
+{
+	const old = compositionSignalOf({ fingerprint: "aaaaaaaaaaaa", counts: { entries: 2, on: 2, bundles: 1, files: 1 } });
+	const next = compositionSignalOf(signature(CORDIS_MAIN, ["b-one", "b-two"]));
+	const cmp = compareComposition({ composition: old }, { composition: next });
+	ok(
+		"H36 旧快照缺 decls/bundles → 只报计数差，不伪造明细",
+		old.decls === undefined && old.bundles === undefined && Boolean(cmp) && cmp.hasDetail === false && cmp.bundlesAdded.length === 0 && cmp.stateChanged.length === 0,
+		JSON.stringify({ hasDetail: cmp?.hasDetail, added: cmp?.bundlesAdded, changed: cmp?.changed }),
+	);
+}
+
+/* H37：明细最多 4 条，多的写「…等 N 条」 */
+{
+	const item = { stateChanged: Array.from({ length: 6 }, (_, index) => ({ id: "x" + index, name: "x" + index, from: "on", to: "off" })) };
+	const text = compositionDetailText(item, 4);
+	ok("H37 明细截断到 4 条 + 「…等 N 条」", text.length === 5 && text[4].includes("等 2 条"), JSON.stringify(text));
 }
 
 const failed = results.filter((item) => !item.pass);

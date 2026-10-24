@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r24.0";
+		const BUILD = "r25.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -2179,8 +2179,16 @@ window.__ModuleLoader__.load({
 			const compositionText = (item) => {
 				const labels = { entries: "生效条目", on: "启用", off: "关掉", conditional: "条件启用", patched: "被 patch 覆盖", bundles: "bundles", files: "组合文件" };
 				const changed = Array.isArray(item.changed) ? item.changed : [];
-				if (changed.length === 0) return "条目变了（生效 " + (Number(item.entries) || 0) + "）";
-				return changed.map((change) => (labels[change.field] || change.field) + " " + change.from + " → " + change.to).join("，");
+				const bits = changed.map((change) => (labels[change.field] || change.field) + " " + change.from + " → " + change.to);
+				/* R25：下钻 —— 计数说不清「换了谁」，这里补上具体 id（最多各 3 条，完整名单在快照里） */
+				const kindLabels = { on: "启用", off: "关掉", expression: "条件" };
+				for (const row of (Array.isArray(item.stateChanged) ? item.stateChanged : []).slice(0, 3)) bits.push((row.name || row.id) + " " + (kindLabels[row.from] || row.from) + "→" + (kindLabels[row.to] || row.to));
+				for (const name of (Array.isArray(item.bundlesAdded) ? item.bundlesAdded : []).slice(0, 2)) bits.push("bundles +" + name);
+				for (const name of (Array.isArray(item.bundlesRemoved) ? item.bundlesRemoved : []).slice(0, 2)) bits.push("bundles −" + name);
+				for (const row of (Array.isArray(item.declsAdded) ? item.declsAdded : []).slice(0, 2)) bits.push("+ " + (row.name || row.id));
+				for (const row of (Array.isArray(item.declsRemoved) ? item.declsRemoved : []).slice(0, 2)) bits.push("− " + (row.name || row.id));
+				if (bits.length === 0) return "条目变了（生效 " + (Number(item.entries) || 0) + "）";
+				return bits.join("，");
 			};
 			const groups = [
 				["added", "新增", changes.added, (item) => "+ " + item.name + (item.version ? " " + item.version : "")],

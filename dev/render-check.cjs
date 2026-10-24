@@ -1078,6 +1078,9 @@ const compositionChangesFixture = {
 		{ field: "off", from: 25, to: 24 },
 		{ field: "bundles", from: 50, to: 51 },
 	],
+	/* R25：下钻明细（面板应点名到具体 id / bundle） */
+	stateChanged: [{ id: "hmr", name: "@deepseek-ai/dsh-hmr", from: "off", to: "on" }],
+	bundlesAdded: ["dsh-extra"],
 	entries: 246,
 };
 const compositionOnlyChanges = {
@@ -1126,7 +1129,7 @@ ok("变化条 R23：历史窗口里配置层直接给计数差；只换条目（
 			total: 2,
 			items: [
 				{ at: 1761500000000, baselineAt: 1761450000000, total: 133, counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 }, added: [], removed: [], versionChanged: [], sourceChanged: [], loadStateChanged: [], edited: [], compositionChanged: [compositionChangesFixture] },
-				{ at: 1761400000000, baselineAt: 1761340000000, total: 133, counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 }, added: [], removed: [], versionChanged: [], sourceChanged: [], loadStateChanged: [], edited: [], compositionChanged: [{ ...compositionChangesFixture, changed: [] }] },
+				{ at: 1761400000000, baselineAt: 1761340000000, total: 133, counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 }, added: [], removed: [], versionChanged: [], sourceChanged: [], loadStateChanged: [], edited: [], compositionChanged: [{ ...compositionChangesFixture, changed: [], stateChanged: undefined, bundlesAdded: undefined }] },
 			],
 		},
 	};
@@ -1136,7 +1139,19 @@ ok("变化条 R23：历史窗口里配置层直接给计数差；只换条目（
 	T.store.data = saved;
 	T.store.showHistory = savedHistory;
 	T.store.showChanges = savedOpen;
-	return text.includes("配置层 1（关掉 25 → 24，bundles 50 → 51）") && text.includes("配置层 1（条目变了（生效 246））");
+	return text.includes("配置层 1（关掉 25 → 24") && text.includes("dsh-hmr 关掉→启用") && text.includes("bundles +dsh-extra") && text.includes("配置层 1（条目变了（生效 246））");
+})());
+/* R25：下钻 —— 计数之外点名具体条目 / bundle；旧数据（无明细）退回只报计数 */
+ok("变化条 R25：展开后点名 disabled 翻转与新增 bundle；没有明细的旧窗口只报计数", (() => {
+	const saved = { data: T.store.data, open: T.store.showChanges };
+	T.store.data = { ...data, changes: compositionOnlyChanges };
+	T.store.showChanges = true;
+	const withDetail = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = { ...data, changes: { ...compositionOnlyChanges, compositionChanged: [{ ...compositionChangesFixture, stateChanged: undefined, bundlesAdded: undefined }] } };
+	const withoutDetail = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved.data;
+	T.store.showChanges = saved.open;
+	return withDetail.includes("dsh-hmr 关掉→启用") && withDetail.includes("bundles +dsh-extra") && !withoutDetail.includes("dsh-hmr") && withoutDetail.includes("关掉 25 → 24");
 })());
 
 
