@@ -265,6 +265,8 @@ const data = {
 		},
 	},
 	drift: {},
+	/* R22：配置层（声明层）—— 默认 null（旧服务端 / 还没算），单独一份夹具在下面按需挂上。 */
+	composition: null,
 };
 
 /* ① 列表：卡片内容 */
@@ -1063,6 +1065,107 @@ ok("变化条 R21：没有更早窗口时不画历史入口（只有基线 = 没
 	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
 	T.store.data = saved;
 	return !text.includes("历史（");
+})());
+
+/* R22：配置层（声明层）浮层 —— 头部入口、四类清单、缺口公告的占位规则 */
+const compositionFixture = {
+	version: 1,
+	at: Date.now(),
+	verdict: "warn",
+	asarReadable: true,
+	files: [
+		{ file: "C:\\profile\\cordis.yml", entries: 243 },
+		{ file: "C:\\profile\\cordis.patch.yml", entries: 22 },
+	],
+	counts: {
+		parsed: 265,
+		effective: 246,
+		byKind: { package: 233, subpath: 9, file: 1, group: 2, "id-only": 1 },
+		byResolution: { present: 47, asar: 195, missing: 1, unjudged: 0, "n/a": 3 },
+		byState: { on: 212, off: 25, conditional: 9 },
+		patched: 19,
+	},
+	packages: { distinct: 231, present: 43, asar: 187, missing: 1, unjudged: 0 },
+	bundles: { declared: 50, present: 43, asar: 7, missing: 0, unjudged: 0 },
+	missing: [
+		{
+			id: "desktop-shell",
+			name: "dsh-plugin-desktop",
+			package: "dsh-plugin-desktop",
+			kind: "package",
+			resolution: "missing",
+			state: "on",
+			file: "C:\\profile\\cordis.patch.yml",
+			line: 387,
+			why: "profile 的 node_modules 与官方 asar 里都没有（静态判据看不见运行期注入的虚拟模块）",
+		},
+	],
+	unjudged: [],
+	conditional: [
+		{ id: "hmr", name: "@deepseek-ai/dsh-hmr", package: "@deepseek-ai/dsh-hmr", kind: "package", resolution: "asar", state: "conditional", disabledRaw: "!!js '!ctx.get(''profileContext'')'", file: "C:\\profile\\cordis.yml", line: 9 },
+	],
+	disabled: [
+		{ id: "tool-bash", name: "@deepseek-ai/dsh-tool-bash", package: "@deepseek-ai/dsh-tool-bash", kind: "package", resolution: "asar", state: "off", disabledRaw: "true", file: "C:\\profile\\cordis.yml", line: 120 },
+	],
+	bundlesMissing: [],
+	summary: "配置层：cordis.yml 243 + cordis.patch.yml 22 条顶层条目 → 生效 246（包 233 / 子路径 9 / 按路径 1 / 组 2 / 只按 id 1）；已装 43、官方 asar 187、**静态查不到 1**；关掉 25 / 条件 9（不求值）；bundles 50 → 已装 43 + asar 7 + 缺 0",
+};
+ok("配置层 R22：头部有入口，并把「查不到 1」写在链接上（有缺口时不能藏着）", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = false;
+	const link = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-conf-link"))[0];
+	const text = link ? textsOf(link).join("") : "";
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return Boolean(link) && text.includes("配置层") && text.includes("查不到 1");
+})());
+ok("配置层 R22：点开浮层后概览齐全（两份文件 / 生效 246 / 包解析 / bundles 缺口）", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	const tree = expand(render(T.Panel, {}));
+	const modal = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-modal"))[0];
+	const text = modal ? textsOf(modal).join(" | ") : "";
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return text.includes("配置层（声明层）") && text.includes("cordis.yml 243") && text.includes("生效 246") && text.includes("官方 asar 187") && text.includes("bundles 50");
+})());
+ok("配置层 R22：静态查不到的条目带文件名+行号，并写明可能由运行期注入", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return text.includes("dsh-plugin-desktop") && text.includes("cordis.patch.yml:387") && text.includes("运行期注入");
+})());
+ok("配置层 R22：条件启用给表达式原文、关掉的条目单列、脚注写三条边界", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	T.store.data = { ...data, composition: compositionFixture };
+	T.store.showComposition = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return text.includes("条件启用") && text.includes("!!js") && text.includes("关掉的条目") && text.includes("不展开 bundle 自带的 patch 层") && text.includes("表达式不求值");
+})());
+ok("配置层 R22：bundles 真的缺才占公告位；没缺口 / 旧服务端都不出现", (() => {
+	const saved = T.store.data;
+	const bad = { ...compositionFixture, verdict: "bad", bundles: { ...compositionFixture.bundles, missing: 1 }, bundlesMissing: [{ name: "dsh-ghost", package: "dsh-ghost", resolution: "missing" }] };
+	T.store.data = { ...data, composition: bad };
+	const badText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = { ...data, composition: { ...compositionFixture, verdict: "ok", missing: [], packages: { ...compositionFixture.packages, missing: 0 }, counts: { ...compositionFixture.counts, byResolution: { ...compositionFixture.counts.byResolution, missing: 0 } } } };
+	const okText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = { ...data, composition: null };
+	const nullText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return (
+		badText.includes("宿主启用它们时会失败") &&
+		badText.includes("dsh-ghost") &&
+		!okText.includes("宿主启用它们时会失败") &&
+		!okText.includes("查不到 1") &&
+		!nullText.includes("配置层")
+	);
 })());
 ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一致时不出现", (() => {
 	const saved = T.store.data;

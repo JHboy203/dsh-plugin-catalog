@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r21.0";
+		const BUILD = "r22.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -154,6 +154,9 @@ window.__ModuleLoader__.load({
 			showChanges: false,
 			/* R21：更早窗口的时间线（与当前变化窗口分开折叠，不抢版面） */
 			showHistory: false,
+			/* R22：配置层浮层（读**声明**：条目从哪来 / 关掉的 / 条件启用的 / bundles 缺口）。
+			   ★ 不持久化：它是一个"现在看一眼"的面板，重载后不需要自动弹回来。 */
+			showComposition: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -1961,6 +1964,173 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R22：配置层（声明层）浮层 ──
+		   回答的是「这些条目从哪来、谁关掉了、谁指向找不到的东西」—— 与「装了会不会加载」是两件事：
+		   后者看 `loadState`（bundles + 配置条目 + 依赖链），前者只看**两份组合文件的顶层条目**。
+		   ★ 三条边界直接印在脚注里，不许省略：
+		     ① 不展开 bundle 自带的 patch 层（`disabled: true` 可能被它重新打开）；
+		     ② `!!js` 表达式不求值，只给原文；
+		     ③ 组合条目「静态查不到」≠ 一定坏（运行期注入的虚拟模块看不见）。 */
+		function CompositionModal(props) {
+			const composition = props.composition;
+			if (!composition) return null;
+			const counts = composition.counts || {};
+			const kind = counts.byKind || {};
+			const state = counts.byState || {};
+			const bundles = composition.bundles || {};
+			const list = (value) => (Array.isArray(value) ? value : []);
+			const shortFile = (file) => String(file || "").split(/[\\/]/).pop();
+			const verdictText = composition.verdict === "bad" ? "bundles 有缺口" : composition.verdict === "warn" ? "有静态查不到 / 无法判定" : "没有缺口";
+			const row = (item, extra) =>
+				h(
+					"div",
+					{ key: item.id + "|" + item.file + "|" + item.line + "|" + (item.name || ""), className: "dpc-conf-row" },
+					h("code", { className: "dpc-conf-name" }, item.name || "（无 name）"),
+					item.id ? h("span", { className: "dpc-conf-id dpc-muted" }, item.id) : null,
+					h("span", { className: "dpc-conf-file dpc-mono" }, shortFile(item.file) + ":" + item.line),
+					extra || null,
+				);
+			const block = (key, title, tone, children, note) =>
+				h(
+					"div",
+					{ key, className: "dpc-conf-block" + (tone ? " is-" + tone : "") },
+					h("div", { className: "dpc-conf-block-head" }, title),
+					children,
+					note ? h("div", { className: "dpc-conf-note dpc-muted" }, note) : null,
+				);
+			const missing = list(composition.missing);
+			const conditional = list(composition.conditional);
+			const disabled = list(composition.disabled);
+			const bundlesMissing = list(composition.bundlesMissing);
+			return h(
+				"div",
+				{ className: "dpc-overlay", onClick: props.onClose, role: "dialog", "aria-label": "配置层" },
+				h(
+					"div",
+					{ className: "dpc-modal dpc-modal-wide", onClick: (event) => event.stopPropagation() },
+					h(
+						"div",
+						{ className: "dpc-modal-head" },
+						h("span", { className: "dpc-modal-title" }, "配置层（声明层）"),
+						h("span", { className: composition.verdict === "ok" ? "dpc-muted" : "dpc-bad" }, verdictText),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onClose }, "关闭"),
+					),
+					h(
+						"div",
+						{ className: "dpc-modal-body" },
+						h(
+							"div",
+							{ className: "dpc-conf-sum" },
+							h(
+								"div",
+								null,
+								"两份组合文件：" +
+									list(composition.files)
+										.map((file) => shortFile(file.file) + " " + file.entries + " 条")
+										.join(" + ") +
+									"（顶层条目；按 id 合并后生效 " +
+									(counts.effective || 0) +
+									" 条）",
+							),
+							h(
+								"div",
+								null,
+								"条目类型：包 " +
+									(kind.package || 0) +
+									" / 子路径 " +
+									(kind.subpath || 0) +
+									" / 按路径 " +
+									(kind.file || 0) +
+									" / 分组 " +
+									(kind.group || 0) +
+									" / 只按 id 覆盖 " +
+									(kind["id-only"] || 0) +
+									"；被 patch 覆盖 " +
+									(counts.patched || 0) +
+									" 条",
+							),
+							h(
+								"div",
+								null,
+								"包解析：已装 " +
+									((composition.packages && composition.packages.present) || 0) +
+									" · 官方 asar " +
+									((composition.packages && composition.packages.asar) || 0) +
+									" · 静态查不到 " +
+									((composition.packages && composition.packages.missing) || 0) +
+									(composition.asarReadable ? "" : " · asar 读不到：" + ((composition.packages && composition.packages.unjudged) || 0) + " 条无法判定"),
+							),
+							h(
+								"div",
+								null,
+								"声明状态：关掉 " +
+									(state.off || 0) +
+									" · 条件启用 " +
+									(state.conditional || 0) +
+									"（不求值） · bundles " +
+									(bundles.declared || 0) +
+									" → 已装 " +
+									(bundles.present || 0) +
+									" + asar " +
+									(bundles.asar || 0) +
+									" + " +
+									(bundles.unjudged > 0 ? "无法判定 " + bundles.unjudged : "缺 " + (bundles.missing || 0)),
+							),
+						),
+						bundlesMissing.length > 0
+							? block(
+									"bundles",
+									"真的缺（bundles 里点名了，profile 与 asar 都没有）—— " + (bundles.missing || bundlesMissing.length) + " 个",
+									"bad",
+									bundlesMissing.map((item) => h("div", { key: item.name, className: "dpc-conf-row" }, h("code", { className: "dpc-conf-name" }, item.name), h("span", { className: "dpc-bad" }, "宿主启用它时会失败"))),
+									"这一档才是「宿主起不来」的那类；下面的「静态查不到」不是。",
+								)
+							: null,
+						missing.length > 0
+							? block(
+									"missing",
+									"静态查不到的条目 —— " + ((composition.counts && composition.counts.byResolution && composition.counts.byResolution.missing) || missing.length) + " 条",
+									"warn",
+									missing.map((item) => row(item, h("span", { className: "dpc-muted" }, "可能由宿主 / 桌面端在运行期注入"))),
+									"profile/node_modules 与官方 asar 里都没有这个包名。运行期注入的虚拟模块本工具看不见 —— 本机 `dsh-plugin-desktop` 就是这种。",
+								)
+							: null,
+						!composition.asarReadable || list(composition.unjudged).length > 0
+							? block(
+									"unjudged",
+									"无法判定（asar 读不到，不算「缺」）—— " + list(composition.unjudged).length + " 条",
+									"info",
+									h("div", { className: "dpc-conf-note" }, "这个进程没有读到官方 asar（纯 node / 探针环境），asar 内的包名无法核对。在宿主里打开面板时会有结论。"),
+								)
+							: null,
+						conditional.length > 0
+							? block(
+									"conditional",
+									"条件启用（`!!js` 表达式，不求值）—— " + (state.conditional || conditional.length) + " 条",
+									"info",
+									conditional.map((item) => row(item, item.disabledRaw ? h("code", { className: "dpc-conf-expr" }, item.disabledRaw) : null)),
+									"表达式是任意 JS，本工具不求值 —— 想知道这条现在开没开，看运行中的 MCP/cordis 配置或直接问宿主。",
+								)
+							: null,
+						disabled.length > 0
+							? block(
+									"disabled",
+									"关掉的条目（`disabled: true`）—— " + (state.off || disabled.length) + " 条",
+									"",
+									disabled.map((item) => row(item, null)),
+									"这是**声明**：bundle 自带的 patch 层可能把它们重新打开（本机 `tool-bash` / `tool-pwsh` 就写着 disabled，但工具确实在跑）。别照这张表判断「某个工具没启用」。",
+								)
+							: null,
+						h(
+							"div",
+							{ className: "dpc-conf-foot dpc-muted" },
+							"判据：只读**声明**（两份组合文件的顶层条目 + `dsh.profile.bundles` + `profile/node_modules` + asar 包名）。不展开 bundle 自带的 patch 层、`!!js` 表达式不求值；按路径挂载只检查文件在不在。清单最多列 40 条（完整清单：工具 catalog_composition view=entries）。",
+						),
+					),
+				),
+			);
+		}
+
 		/* ── R17：变化条（自上次目录快照以来变了什么）；R19 起：确认过的窗口优先 ──
 		   只在**真有变化**时出现：第一条快照（first）与 0 处变化都不占版面 ——
 		   "还没有历史"和"没变化"是两件事，界面上都不能画成一条空横幅。
@@ -2462,6 +2632,9 @@ window.__ModuleLoader__.load({
 			const preflightResult = (data && data.preflight) || null;
 			/* R14：处置清单也是服务端单独存的（同一理由），只在算过之后出现 */
 			const uninstallPlan = (data && data.uninstall) || null;
+			/* R22：配置层（声明层）—— 服务端 60 秒缓存一份紧凑视图，随 /state 一起下发 */
+			const composition = (data && data.composition) || null;
+			const compositionBad = composition && composition.verdict === "bad" ? composition : null;
 
 			return h(
 				"div",
@@ -2485,6 +2658,24 @@ window.__ModuleLoader__.load({
 							/* R18：磁盘已更新但宿主里还是旧模块 —— 这时新工具/新路由根本不存在，
 							   而 build 标签读的是磁盘，不标出来会让人以为已经生效了 */
 							data.build && data.build.stale ? h("span", { className: "dpc-bad", title: "磁盘上的代码已经更新，但宿主进程里跑的仍是旧模块。重载插件（plugin_manager set_plugin）或重启 DSH 后新代码才生效" }, "｜运行中 " + (data.build.loaded || "?") + "（未重载）") : null,
+							/* R22：配置层入口 —— 不占头部按钮位（那里已经有 9 个），折进这一行里。
+							   有缺口时把计数直接写在链接上，否则没人会点开看。 */
+							data.composition
+								? h(
+										"button",
+										{
+											className: "dpc-conf-link" + (data.composition.verdict === "bad" ? " is-bad" : data.composition.verdict === "warn" ? " is-warn" : ""),
+											onClick: () => set({ showComposition: true }),
+											title: "配置层（声明）：两份组合文件的顶层条目、关掉/条件启用的条目、bundles 缺口。只读声明，不展开 bundle 自带的 patch 层",
+										},
+										"｜配置层" +
+											(((composition.bundles && composition.bundles.missing) || 0) > 0
+												? " 缺 " + composition.bundles.missing
+												: ((composition.counts && composition.counts.byResolution && composition.counts.byResolution.missing) || 0) > 0
+													? " 查不到 " + composition.counts.byResolution.missing
+													: ""),
+									)
+								: null,
 						),
 					),
 					h(
@@ -2531,6 +2722,24 @@ window.__ModuleLoader__.load({
 					historyOpen: state.showHistory,
 					onToggleHistory: () => set({ showHistory: !state.showHistory }),
 				}),
+				/* R22：配置层有**真的缺**（bundles 里点名却找不到）才占用公告位 ——
+				   `静态查不到` 只上琥珀色的链接角标，不在这里吓人（它可能由运行期注入满足）。 */
+				compositionBad
+					? h(
+							"div",
+							{ className: "dpc-note dpc-note-warn" },
+							"配置层：`dsh.profile.bundles` 里有 " +
+								compositionBad.bundles.missing +
+								" 个包既没安装、也不在官方 asar 里 —— 宿主启用它们时会失败：" +
+								(compositionBad.bundlesMissing || [])
+									.slice(0, 4)
+									.map((item) => item.name)
+									.join("、") +
+								((compositionBad.bundlesMissing || []).length > 4 ? " 等" : "") +
+								"　",
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ showComposition: true }) }, "查看配置层"),
+						)
+					: null,
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
@@ -2866,6 +3075,7 @@ window.__ModuleLoader__.load({
 				state.open ? h(EntryModal, {}) : null,
 				state.tagPick ? h(TagBatchModal, { ids: state.tagPick.ids }) : null,
 				state.plan ? h(PlanModal, {}) : null,
+				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }) }) : null,
 			);
 		}
 
@@ -3123,6 +3333,28 @@ window.__ModuleLoader__.load({
 .dpc-changes-history{margin:2px 9px 7px;padding-top:5px;border-top:1px dashed rgba(20,40,80,.12)}
 .dpc-changes-history-toggle{font:inherit;font-size:10.5px;padding:1px 0;border:0;background:none;color:#2f5fd0;cursor:pointer}
 .dpc-changes-history-toggle.is-open{font-weight:600}
+/* R22：配置层 —— 头部链接角标 + 浮层里的四类清单 */
+.dpc-conf-link{appearance:none;font:inherit;font-size:11.5px;padding:0 2px;border:0;background:none;
+  color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer;white-space:nowrap}
+.dpc-conf-link:hover{color:var(--dpc-klein);text-decoration:underline}
+.dpc-conf-link.is-warn{color:#b45309}
+.dpc-conf-link.is-bad{color:#b91c1c;font-weight:600}
+.dpc-conf-sum{display:flex;flex-direction:column;gap:4px;font-size:12px;line-height:1.7;
+  padding:9px 11px;border-radius:10px;background:var(--dpc-fill-hover)}
+.dpc-conf-block{display:flex;flex-direction:column;gap:4px;padding:9px 11px;border-radius:10px;
+  border:1px solid var(--dpc-line);background:var(--dsw-alias-bg-layer-2,rgba(0,0,0,.02))}
+.dpc-conf-block.is-bad{border-color:rgba(220,38,38,.4);background:rgba(220,38,38,.05)}
+.dpc-conf-block.is-warn{border-color:rgba(180,83,9,.4);background:rgba(217,119,6,.05)}
+.dpc-conf-block.is-info{border-color:rgba(57,100,254,.3);background:rgba(57,100,254,.04)}
+.dpc-conf-block-head{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2937)}
+.dpc-conf-row{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:11.5px;line-height:1.65}
+.dpc-conf-name{font-weight:600;word-break:break-all}
+.dpc-conf-id{font-size:10.5px;opacity:.8}
+.dpc-conf-file{font-size:10.5px;color:var(--dsw-alias-label-secondary,#8b93a1);white-space:nowrap}
+.dpc-conf-expr{font-size:10.5px;padding:0 5px;border-radius:5px;background:var(--dpc-fill);
+  color:#2f5fd0;word-break:break-all}
+.dpc-conf-note{font-size:10.5px;line-height:1.55}
+.dpc-conf-foot{font-size:10.5px;line-height:1.6;margin-top:2px}
 /* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
 .dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;
@@ -3310,6 +3542,8 @@ window.__ModuleLoader__.load({
 			RestoreConfirm,
 			/* R14：处置清单卡（只生成不执行） */
 			UninstallCard,
+			/* R22：配置层浮层（声明层；关掉的 / 条件启用的 / 静态查不到的 / bundles 缺口） */
+			CompositionModal,
 			toolHits,
 			hotkeyOf,
 			copyText,

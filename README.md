@@ -147,8 +147,8 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   **运行中版本**；不一致就明说「运行中仍是 0.17.0，磁盘已是 0.18.0 —— 重载插件或重启 DSH 之后
   新代码才生效」。为什么不加就不行：`build` 标签读的是**磁盘**（package.json + 最新文件 mtime），
   所以显示 0.18.0 时宿主里跑的可能是 0.17.0，新工具、新路由**根本不存在** ——
-  R16/R17 两轮都因此误判过一次「已经生效了」。同一轮里还把五个独立探针收进了 `dev/ship.mjs`
-  （`probes` 项，80 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
+  R16/R17 两轮都因此误判过一次「已经生效了」。同一轮里还把独立探针收进了 `dev/ship.mjs`
+  （`probes` 项，现在七个、116 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
 - **这两天变了什么（R17）**：面板顶部多一条**变化条**（只在真有变化时出现）：
   「自 10-24 11:27 以来 · 3 处变化 · 新增 1 · 升版 2」，点开列明细。历史落在 `history.json`：
 
@@ -184,6 +184,17 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   这条抓到过真问题：按「同名副本取最后读到那份」算依赖图，`emoji-regex` 被算成 dormant，
   而顶层 `string-width`（随 `@anweat/dsh-browser` 加载）正声明着它 —— 照那份清单删就会弄坏加载。
   修法是**同名副本取依赖并集**（保守方向：宁可少判一个 dormant），并把 `CATALOG_VERSION` 抬到 8。
+- **配置层到底挂了什么（R22）**：面板头部多一个**「配置层」**入口（有缺口时角标写「查不到 N」/「缺 N」），
+  点开是把两份组合文件的**声明**摊开：`cordis.yml` + `cordis.patch.yml` 各多少条顶层条目、按 id 合并后生效多少条、
+  每条是包 / 子路径 / `file://` 路径 / `cordis:group` 分组 / 只按 id 覆盖，那个包在 profile 还是官方 asar 里，
+  哪些被 `disabled: true` 关掉、哪些是 `!!js` **条件启用**（给原文，不求值）。
+  另有一行专门核对 `dsh.profile.bundles`：**声明 50 → profile 里 43 + 官方 asar 7 + 真的缺 0**。
+  三条边界直接印在浮层脚注里：**不展开 bundle 自带的 patch 层**（本机 `tool-bash` 在 `cordis.yml` 里写着
+  `disabled: true`，但 bash 工具确实在跑）、表达式不求值、组合条目「静态查不到」≠ 一定坏
+  （运行期注入的虚拟模块看不见 —— 本机 `dsh-plugin-desktop` 就是这种）。
+  只有 `bundles` 里点名却找不到才会占顶部公告位并说「宿主启用它们时会失败」。
+  同一份数据还进 `catalog_health`（一行）、第 11 个工具 `catalog_composition`、导出报告的「配置层（声明）」一节。
+  判据在 `lib/composition.mjs`（纯函数、不碰磁盘），`dev/probe-composition.mjs` 用合成文本钉 **C1–C14**。
 - **快捷键**：`/` 聚焦搜索、`Esc` 清空搜索（浮窗里 `Esc` 关闭浮窗）
 - **缓存自愈**：统计缓存超过 10 分钟且没有任务在跑时，面板自己起一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒），不用记着点「刷新统计」；有任务在跑、或本挂载已经刷过，就不再触发 —— 否则会和 20 秒轮询叠成「一直在刷新」
 - **分页**：列表底部「共 N 条 · 第 X / Y 页」+ 上一页/下一页/首页/末页，**每页 12 / 24 / 48 / 96 / 全部**；搜索、筛选、排序任一变化自动回第 1 页
@@ -214,6 +225,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、**Skill 正文哈希覆盖率**、**「已看过」确认窗口**、AI 通道、asar 模式、**副本是否同步** |
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>`；`restore` 是反向撤销（把 staging 还原到最近备份，同样先出计划、`confirm:true` 才写，只动 staging） |
 | `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`。**三个动作都不执行删除**（命令给人复制） |
+| `catalog_composition` | **配置层（声明）**：两份组合文件的顶层条目 —— 从哪份文件来、挂的是包/子路径/`file://`/分组/只按 id、包在 profile 还是官方 asar、`disabled: true` 关掉的、`!!js` 条件启用的（原文，不求值）；并核对 `dsh.profile.bundles` 里有没有点名却找不到的包。`view=overview` 给计数与缺口，`entries` / `disabled` / `conditional` 给清单。**不展开 bundle 自带的 patch 层**，只读 |
 
 ## 数据与隐私
 
@@ -387,7 +399,7 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
-**发版 / 交接前只跑这一条**（三层自检 + **五个独立探针** + 副本同步 + 版本一致性 + git，约 60 秒）：
+**发版 / 交接前只跑这一条**（三层自检 + **七个独立探针** + 副本同步 + 版本一致性 + git，约 60 秒）：
 
 ```bash
 node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
@@ -400,7 +412,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **六个独立探针**（加载路径 / 处置清单 / 删除预演 / 批量打标 / 变化追踪 / 副本判据，共 80 条，约 2 秒） | 算失败 |
+| `probes` | **七个独立探针**（加载路径 / 处置清单 / 删除预演 / 批量打标 / 变化追踪 / 副本判据 / **配置层**，共 116 条，约 2 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -421,15 +433,15 @@ R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发�
 分项跑：
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（488 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞 / 更早窗口的历史时间线）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/**历史备份行与还原确认条**/导出/空态（206 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（515 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞 / 更早窗口的历史时间线）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/**历史备份行与还原确认条**/**配置层入口与浮层（概览 / 静态查不到 / 条件启用 / 关掉的 / 缺口公告只在 bad 时出现）**/导出/空态（211 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 272 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本 + **配置层（/state.composition 形状 / 三组计数守恒 / 每条带 file+line / bundles 缺口守恒 / 工具 view / health 只给摘要 / 导出「配置层」一节）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 286 项；普通 node 里 280 通过 + 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
 node dev/live-check.mjs --base http://127.0.0.1:<GUI端口>  # 对**运行中的面板**只读核验（≈0.2 秒）：
                             # 版本一致 / 工具与目录在 / 时间线形状 / drift 带哈希与备份 / 还原计划只读 / 不带 confirm 的还原被拒
                             # ★ 端口每次重启都会变；走 host_selfcheck 跑（args 传 --base），不写任何文件
@@ -438,7 +450,7 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **六个探针串成一条**（发版体检的第 5 项，共 80 条，约 2 秒）：
+node dev/run-probes.mjs       # **七个探针串成一条**（发版体检的第 5 项，共 116 条，约 2 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
 node dev/ship-checks.mjs      # 发版体检的**清单单一来源**：ship 真跑它、面板 POST /preflight{dry} 报它
@@ -453,6 +465,9 @@ node dev/probe-history.mjs    # 变化追踪自检：27 条（指纹稳定且与
 node dev/probe-staging.mjs    # 副本判据与还原自检：16 条（正文哈希稳定 / 同字数改一字必须 differs / 哈希优先于 mtime /
                               # 读不到哈希退回 size+mtime / 备份名排序与 latest / 还原 + pre-restore 备份 / 一致时 skipped /
                               # 路径穿越与非备份名被拒 / 端到端同字数漏判），破一条退出码 1
+node dev/probe-composition.mjs # 配置层（声明）自检：36 条（顶层条目与块标量 / disabled 三语义 / 按 id 合并 /
+                              # 条目五类与包名去子路径 / 解析五档 / bundles 缺口 / 计数守恒 / 严重度 /
+                              # asar 读不到只算 unjudged / 摘要与紧凑视图 / 导出文案），纯函数、不读 profile
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率

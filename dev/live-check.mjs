@@ -7,7 +7,9 @@
  *   · 时间线：`/state.timeline` 有 total / items（没有窗口时是空数组）；
  *   · 副本：drift 里的 Skill 条目带 hash 与 backups（R20 的数据源）；
  *   · 还原闸门：`/skillsync {action:"restore"}` 只出计划；不带 `confirm` 的 apply 必须被拒
- *     （这条请求本身不写盘 —— 服务端在 confirm 闸之前不会碰文件）。
+ *     （这条请求本身不写盘 —— 服务端在 confirm 闸之前不会碰文件）；
+ *   · R22 配置层：`/health.composition` 有结论与一行摘要，`/state.composition` 的三组计数守恒、
+ *     清单每一条都带 file + line（面板浮层读的就是它）。
  *
  * 用法（必须走宿主，普通 node 也能跑；端口每次重启都会变）：
  *   host_selfcheck script=dev/live-check.mjs args=["--base","http://127.0.0.1:<GUI端口>"]
@@ -71,6 +73,15 @@ ok(
 );
 ok("health: tools registered + catalog built", Number(health.json?.toolsRegistered) >= 10 && Number(health.json?.catalog?.plugins) > 0, JSON.stringify({ tools: health.json?.toolsRegistered, plugins: health.json?.catalog?.plugins }));
 ok("health: timeline summary present (total / windows)", health.json?.timeline && Number(health.json.timeline.total) >= 1 && Number.isInteger(health.json.timeline.windows), JSON.stringify(health.json?.timeline));
+/* R22：配置层在运行中的宿主要能拿到结论（不是只有磁盘代码里有） */
+ok(
+	"health: composition summary (verdict + line + counts)",
+	Boolean(health.json?.composition) &&
+		["ok", "warn", "bad"].includes(health.json.composition.verdict) &&
+		typeof health.json.composition.line === "string" &&
+		Number(health.json.composition.entries) > 0,
+	JSON.stringify({ verdict: health.json?.composition?.verdict, entries: health.json?.composition?.entries, line: String(health.json?.composition?.line || "").slice(0, 80) }),
+);
 
 const state = await getJson("/state");
 ok("state: 200 + build.stale false", state.status === 200 && state.json?.build?.stale === false, `status=${state.status}`);
@@ -80,6 +91,21 @@ ok(
 	"state.timeline rows: at + counts + category arrays",
 	(timeline.items || []).every((row) => Number(row.at) > 0 && row.counts && typeof row.counts.total === "number" && Array.isArray(row.edited)),
 	String((timeline.items || []).length + " rows"),
+);
+/* R22 /state.composition：紧凑视图（计数守恒 + 清单带来源），面板浮层读的就是它 */
+const composition = state.json?.composition || null;
+ok(
+	"state.composition: verdict + files + counts conserve + listed rows carry file/line",
+	Boolean(composition) &&
+		Array.isArray(composition.files) &&
+		composition.files.length > 0 &&
+		(() => {
+			const counts = composition.counts || {};
+			const sum = (object) => Object.values(object || {}).reduce((total, n) => total + (Number(n) || 0), 0);
+			return sum(counts.byKind) === counts.effective && sum(counts.byResolution) === counts.effective && sum(counts.byState) === counts.effective;
+		})() &&
+		[...(composition.missing || []), ...(composition.conditional || []), ...(composition.disabled || [])].every((row) => typeof row.file === "string" && row.file !== "" && Number(row.line) > 0),
+	JSON.stringify({ verdict: composition?.verdict, files: composition?.files?.length, effective: composition?.counts?.effective, missing: (composition?.missing || []).length }),
 );
 const drift = state.json?.drift || {};
 const stagedSkills = Object.entries(drift).filter(([, entry]) => entry && entry.staged === true);

@@ -179,9 +179,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 10 个工具", registeredTools.length, 10);
+eq("注册了 11 个工具", registeredTools.length, 11);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -1137,6 +1137,80 @@ ok(
 	"timeline 的每一行都带 at / counts / 分类数组（没有窗口时是空数组，不是 null）",
 	(stateTimeline?.items || []).every((row) => Number(row.at) > 0 && row.counts && typeof row.counts.total === "number" && Array.isArray(row.edited) && Array.isArray(row.added) && Array.isArray(row.versionChanged)),
 	JSON.stringify((stateTimeline?.items || []).slice(0, 2)),
+);
+
+/* ── R22：配置层（声明层）──
+   这一轮把「两份组合文件里到底挂了什么」从一行 errors 变成可查的清单。
+   hosttest 只锁**形状与守恒**（不锁本机具体条数 —— 换台机器数字就变），
+   判据本身的边界由 dev/probe-composition.mjs 的 C1–C14 覆盖。 */
+const stateComposition = (await callRoute("/state")).json?.composition;
+ok(
+	"/state.composition：结论 / 两份文件 / 生效条目 / bundles 缺口都在",
+	Boolean(stateComposition) &&
+		["ok", "warn", "bad"].includes(stateComposition.verdict) &&
+		Array.isArray(stateComposition.files) &&
+		stateComposition.files.length > 0 &&
+		Number(stateComposition.counts?.effective) > 0 &&
+		typeof stateComposition.bundles?.missing === "number",
+	JSON.stringify({ verdict: stateComposition?.verdict, files: stateComposition?.files?.length, effective: stateComposition?.counts?.effective, bundles: stateComposition?.bundles }),
+);
+ok(
+	"配置层的三组计数各自守恒（kind / resolution / state 都等于生效条目数）",
+	(() => {
+		const counts = stateComposition?.counts;
+		if (!counts) return false;
+		const sum = (object) => Object.values(object || {}).reduce((total, n) => total + (Number(n) || 0), 0);
+		return sum(counts.byKind) === counts.effective && sum(counts.byResolution) === counts.effective && sum(counts.byState) === counts.effective;
+	})(),
+	JSON.stringify(stateComposition?.counts),
+);
+ok(
+	"配置层清单里的每一条都带 file + line（没有来源的条目无法复核）",
+	[...(stateComposition?.missing || []), ...(stateComposition?.conditional || []), ...(stateComposition?.disabled || [])].every((row) => typeof row.file === "string" && row.file !== "" && Number(row.line) > 0) &&
+		(stateComposition?.conditional || []).length > 0 &&
+		(stateComposition?.disabled || []).length > 0,
+	JSON.stringify({ conditional: stateComposition?.conditional?.length, disabled: stateComposition?.disabled?.length }),
+);
+ok(
+	"bundles 缺口口径守恒：已装 + 官方 asar + 真的缺 + 无法判定 = 声明数",
+	(() => {
+		const bundles = stateComposition?.bundles;
+		if (!bundles) return false;
+		return bundles.present + bundles.asar + bundles.missing + bundles.unjudged === bundles.declared;
+	})(),
+	JSON.stringify(stateComposition?.bundles),
+);
+const compositionTool = await callTool("catalog_composition", { view: "overview" });
+ok(
+	"catalog_composition overview：摘要 + 缺口 + 边界都写出来",
+	String(compositionTool.text || "").includes("配置层：") &&
+		String(compositionTool.text || "").includes("缺口：") &&
+		String(compositionTool.text || "").includes("bundle 自带的 patch 层"),
+	String(compositionTool.text || "").slice(0, 240),
+);
+const compositionToolEntries = await callTool("catalog_composition", { view: "entries", limit: 5 });
+ok(
+	"catalog_composition view=entries：按 limit 截断，并给出总数与每条的 kind / resolution",
+	Array.isArray(compositionToolEntries?.missing) &&
+		String(compositionToolEntries.text || "").includes("生效条目") &&
+		(compositionToolEntries.text || "").split("\n").filter((line) => line.startsWith("- [")).length <= 5,
+	String(compositionToolEntries.text || "").slice(0, 240),
+);
+const healthComposition = (await callRoute("/health")).json?.composition;
+ok(
+	"/health.composition：只给摘要 + 一条 line（清单在 /state 与工具里，不塞进 health）",
+	Boolean(healthComposition) &&
+		typeof healthComposition.line === "string" &&
+		healthComposition.line.includes("配置层：") &&
+		typeof healthComposition.entries === "number" &&
+		typeof healthComposition.missing === "number" &&
+		healthComposition.items === undefined,
+	JSON.stringify({ line: String(healthComposition?.line || "").slice(0, 90), entries: healthComposition?.entries, missing: healthComposition?.missing }),
+);
+ok(
+	"导出报告新增「配置层（声明）」一节，并把判据边界写进去",
+	fullExportText.includes("## 配置层（声明）") && fullExportText.includes("不展开 bundle 自带的 patch 层") && fullExportText.includes("运行期注入"),
+	fullExportText.split("\n").filter((line) => line.startsWith("## 配置层") || line.startsWith("- 配置层：")).join(" | ").slice(0, 240),
 );
 
 /* ── R19：Skill 正文哈希 + 「已看过」确认窗口 ──

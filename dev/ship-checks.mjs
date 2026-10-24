@@ -16,8 +16,9 @@ export const SHIP_CHECKS = Object.freeze([
 	{ id: "audit", label: "自洽契约", script: "dev/audit.mjs" },
 	{ id: "render", label: "界面渲染", script: "dev/render-check.cjs" },
 	{ id: "hosttest", label: "宿主行为", script: "dev/hosttest.mjs" },
-	/* R18：独立探针（loadstate / uninstall / simulate / tags / history；R20 加 staging，共六个）。
-	   之前它们只是"交接文件里写着、有人记得就跑"，不变式从没进过发版体检。 */
+	/* R18：独立探针（loadstate / uninstall / simulate / tags / history；R20 加 staging；
+	   R22 加 composition，共七个）。之前它们只是"交接文件里写着、有人记得就跑"，
+	   不变式从没进过发版体检。 */
 	{ id: "probes", label: "独立探针", script: "dev/run-probes.mjs" },
 	/* 最后一项在 ship **本进程内**跑（不 spawn）：只 stat 几十个 SKILL.md。
 	   informational = 报的是这台机器的状态（staging 旧了），不是代码缺陷 —— 只报不拦。 */

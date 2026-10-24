@@ -25,6 +25,7 @@ import { buildAggregate, descendantsOf, STATS_VERSION } from "../lib/stats.mjs";
 import { eachFrame, parseEvents, findFrameCuts } from "../lib/frames.mjs";
 import { parseFrontmatter } from "../lib/catalog.mjs";
 import { LOAD_STATES, parseComposition, resolveLoadPaths, isLoadedState, isDormantState, loadStateLabel } from "../lib/loadstate.mjs";
+import { COMPOSITION_KINDS, DISABLE_KINDS, ENTRY_RESOLUTIONS, auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseDisabled, summarizeComposition } from "../lib/composition.mjs";
 import { PROVENANCE, buildUninstallPlan, renderUninstallPlan, summarizeUninstallPlan } from "../lib/uninstall.mjs";
 import { computeStats } from "../lib/stats.mjs";
 
@@ -923,7 +924,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.21.0 / r21.0", /"version": "0\.21\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r21.0"'));
+ok("版本号与构建戳同步抬到 0.22.0 / r22.0", /"version": "0\.22\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r22.0"'));
 
 
 ok(
@@ -1097,14 +1098,59 @@ ok("health 带 timeline 摘要（total / windows），工具输出有「历史�
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
 ok("探针收进发版体检（第 5 项 probes，不再是「有人记得就跑」）", shipChecksSource.includes('id: "probes"') && shipChecksSource.includes('script: "dev/run-probes.mjs"'));
 ok("面板 dry 与 ship 同一份清单（此前硬编码四项，收进探针后 dry 仍只报四项）", indexSource.includes("checks: shipCheckIds()") && indexSource.includes('from "./dev/ship-checks.mjs"'));
-ok("探针串覆盖六个（loadstate / uninstall / simulate / tags / history / staging）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
+ok("探针串覆盖七个（loadstate / uninstall / simulate / tags / history / staging / composition）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging", "probe-composition"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
 ok("探针串兼容两种收尾格式（passed/failed 行 与 「N 条不变式全部成立」）", probesRunner.includes("function parseCounts") && probesRunner.includes("function parseInvariants") && probesRunner.includes("parseCounts(text) ||"));
 ok("沙箱里跑探针串会明说「要在宿主里跑」，不会被误判成探针坏了", probesRunner.includes("EPERM") && probesRunner.includes("host_selfcheck"));
 ok("运行中版本被定格（LOADED_VERSION）并与磁盘比（isStaleBuild）", serviceSource.includes("const LOADED_VERSION = (() =>") && serviceSource.includes("function isStaleBuild(") && serviceSource.includes("loaded: { version: LOADED_VERSION"));
 ok("health 与 /state 都带「磁盘 vs 运行中」，不一致时点名下一步", serviceSource.includes("stale: isStaleBuild(build, LOADED_VERSION)") && toolsSource.includes("重载插件或重启 DSH 之后新代码才生效"));
 ok("面板也标「运行中 X（未重载）」—— build 标签读的是磁盘，不标出来会让人以为已生效", clientSource.includes("data.build && data.build.stale") && clientSource.includes("（未重载）"));
 
+/* ⑨ R22：配置层（声明层）—— 两份组合文件的顶层条目从没进过界面，
+    health 里的「配置挂载 0」其实是判据只看得见已装的包。这一轮锁九件事：
+      ① 解析只有一份（composition.mjs），块标量 `name: >-` 必须读到内容；
+      ② `disabled` 三语义分开（true / false|空 / `!!js` 条件），只有字面量 true 改加载判据；
+      ③ 同 id 按 patch 语义合并（后者覆盖 name/disabled），没 name 的也能覆盖基线；
+      ④ 条目五类（包 / 子路径 / 按路径 / 组 / 只按 id），包名去子路径；
+      ⑤ 解析五档（present / asar / missing / unjudged / n/a），asar 读不到只能是 unjudged；
+      ⑥ 严重度：只有 bundles 点名却找不到才算 bad，组合条目静态查不到只到 warn；
+      ⑦ 三组计数各自守恒（kind / resolution / state 都等于生效条目数）；
+      ⑧ 面板/工具/health/导出同一份数据（compact + summarize + render 三处都来自 audit）；
+      ⑨ 探针 C1–C14 覆盖上面每一条。 */
+const compositionSource = readFileSync(new URL("../lib/composition.mjs", import.meta.url), "utf8");
+ok("composition 是纯函数层（不 import node:fs，只做文本与 URL）", !/from "node:(fs|fs\/promises)"/.test(compositionSource) && compositionSource.includes('from "node:url"'));
+ok("解析只有一份实现：loadstate 转出 composition 的 parseComposition，自己不再定义", !/export function parseComposition/.test(loadstateSource) && loadstateSource.includes('export { parseComposition } from "./composition.mjs"'));
+const blockEntries = parseComposition(["- id: a", '  name: >-', "    file:///D:/x/y.mjs", "- id: b", "  name: dsh-b"].join("\n"));
+ok("块标量 name（>）读到内容而不是字面量（R22 修掉的真实解析 bug）", blockEntries[0].name === "file:///D:/x/y.mjs" && blockEntries[1].name === "dsh-b", JSON.stringify(blockEntries.map((entry) => entry.name)));
+eq("三组白名单冻结（类型 / 解析 / 禁用语义）", [Object.isFrozen(COMPOSITION_KINDS), Object.isFrozen(ENTRY_RESOLUTIONS), Object.isFrozen(DISABLE_KINDS)], [true, true, true]);
+ok("disabled 只有字面量 true 算关掉（条件表达式不改加载判据）", parseDisabled("true").kind === "off" && parseDisabled("false").kind === "on" && parseDisabled("").kind === "on" && parseDisabled("!!js 'x'").kind === "expression" && parseDisabled("0").kind === "expression");
+const mergedFixture = mergeCompositionEntries([...parseComposition("- id: a\n  name: dsh-a\n  disabled: true", { file: "cordis.yml" }), ...parseComposition("- id: a\n  disabled: false", { file: "cordis.patch.yml" })]);
+ok("同 id 按 patch 语义合并（后者覆盖 disabled，并记下来源与覆盖次数）", mergedFixture.length === 1 && mergedFixture[0].disabled === false && mergedFixture[0].patches === 1 && mergedFixture[0].file === "cordis.patch.yml", JSON.stringify(mergedFixture));
+ok("条目五类分得开 + 包名去子路径（scope 与裸名都试）", COMPOSITION_KINDS.join(",") === "package,subpath,file,group,id-only" && packageNameOf("@s/p/sub") === "@s/p" && packageNameOf("pkg/sub") === "pkg" && classifyCompositionName("file:///D:/a.mjs").kind === "file" && classifyCompositionName("cordis:group").kind === "group");
+const compBundlesBad = auditComposition({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }], bundles: ["dsh-ghost"], installed: new Map([["dsh-a", []]]), asarNames: new Set(), at: 1 });
+ok("严重度：bundles 里点名却找不到才算 bad", compBundlesBad.verdict === "bad" && compBundlesBad.bundlesMissing.length === 1, JSON.stringify({ verdict: compBundlesBad.verdict, missing: compBundlesBad.bundlesMissing.length }));
+const compEntryMissing = auditComposition({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a\n- id: b\n  name: dsh-ghost" }], bundles: [], installed: new Map([["dsh-a", []]]), asarNames: new Set(), at: 1 });
+ok("组合条目静态查不到只到 warn（运行期注入的虚拟模块看不见，不许喊必坏）", compEntryMissing.verdict === "warn" && compEntryMissing.missing.length === 1 && compEntryMissing.missing[0].why.includes("运行期注入"), JSON.stringify({ verdict: compEntryMissing.verdict, why: compEntryMissing.missing[0] && compEntryMissing.missing[0].why }));
+const compUnjudged = auditComposition({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }], bundles: ["dsh-a"], installed: new Map(), asarNames: null, at: 1 });
+ok("asar 读不到时包条目 unjudged，绝不当成「缺」", compUnjudged.entries[0].resolution === "unjudged" && compUnjudged.packages.missing === 0 && compUnjudged.packages.unjudged === 1 && compUnjudged.asarReadable === false);
+const compCounts = auditComposition({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a\n- id: b\n  name: cordis:group\n- id: c\n  disabled: true" }], bundles: [], installed: new Map([["dsh-a", []]]), asarNames: new Set(), at: 1 });
+const compKindSum = Object.values(compCounts.counts.byKind).reduce((sum, n) => sum + n, 0);
+const compResolutionSum = Object.values(compCounts.counts.byResolution).reduce((sum, n) => sum + n, 0);
+const compStateSum = Object.values(compCounts.counts.byState).reduce((sum, n) => sum + n, 0);
+ok("三组计数各自守恒（kind / resolution / state 都等于生效条目数）", compKindSum === compCounts.counts.effective && compResolutionSum === compCounts.counts.effective && compStateSum === compCounts.counts.effective, `${compKindSum}/${compResolutionSum}/${compStateSum} vs ${compCounts.counts.effective}`);
+ok("摘要与紧凑视图同源（summary 说「静态查不到」；compact 不带全量 entries）", summarizeComposition(compEntryMissing).includes("静态查不到") && compactComposition(compEntryMissing, 5).entries === undefined && compactComposition(compEntryMissing, 5).counts.byResolution.missing === 1);
+ok("service：compositionAudit 60 秒缓存 + /state.composition + health 摘要 + 导出「配置层」一节", serviceSource.includes("async compositionAudit(") && serviceSource.includes("< 60 * 1000") && serviceSource.includes("composition: compactComposition(await this.compositionAudit())") && serviceSource.includes("renderCompositionSection(await this.compositionAudit())"));
+ok("配置层与安装形态同源：重建目录时缓存一起作废", serviceSource.includes("this.compositionReport = null") && /rebuildCatalog[\s\S]{0,700}this\.compositionReport = null/.test(serviceSource));
+ok("工具面第 11 个 catalog_composition（view 五档；描述写明不求值/不展开 patch 层）", tools.some((tool) => tool.name === "catalog_composition") && /enum: \["overview", "entries", "missing", "disabled", "conditional"\]/.test(toolsSource) && toolsSource.includes("不展开 bundle 自带的 patch 层"));
+ok("catalog_health 打出配置层一行（读 health.composition.line）", toolsSource.includes("health.composition ? health.composition.line") && toolsSource.includes("配置层：还没读"));
+ok("面板：头部「配置层」入口 + 浮层 + 四类清单 + 缺口公告只在 bad 时占位", clientSource.includes("showComposition: false") && clientSource.includes("function CompositionModal") && clientSource.includes("dpc-conf-link") && clientSource.includes("compositionBad") && clientSource.includes("dpc-conf-block"));
+ok("浮层脚注写明三条边界（不展开 patch 层 / 表达式不求值 / 静态查不到不等于坏）", clientSource.includes("不展开 bundle 自带的 patch 层") && clientSource.includes("表达式不求值") && clientSource.includes("运行期注入"));
+ok("新类名都有样式定义", [".dpc-conf-link{", ".dpc-conf-block{", ".dpc-conf-row{"].every((needle) => cssSource.includes(needle)));
+const compositionProbeSource = readFileSync(new URL("./probe-composition.mjs", import.meta.url), "utf8");
+ok("probe-composition 覆盖 C1–C14 且破一条非零退出", ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"].every((id) => compositionProbeSource.includes(id + " ")) && compositionProbeSource.includes("process.exit(1)"));
+ok("hosttest 覆盖 /state.composition（形状 / 计数守恒 / 每类都带 file+line）", hosttestSource.includes("/state.composition"));
+
 /* ⑦ 文档 */
+ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
 /* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
 
