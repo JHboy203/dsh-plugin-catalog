@@ -838,6 +838,52 @@ ok("自定义标签的解释进入了给模型的提示词", String(afterTagStat
 const before = (await callRoute("/state")).json?.tags?.assignments?.[target.id];
 ok("用户手标的标签还在（AI 不覆盖）", Array.isArray(before?.purpose) && before.purpose.includes(customId), JSON.stringify(before));
 
+/* ── R15：批量打标（只加不减 / 幂等 / 维度校验 / 幽灵 id / 清空删记录）──
+   ★ 全部走真路由，不调 service 的私有字段：面板点「应用」走的就是这条路。
+   ★ 刻意避开 entries[1]（上面 AI 分类的落点）与 target（entries[0]），别互相污染。 */
+const batchA = entries[2];
+const batchB = entries[3];
+if (batchA && batchB) {
+	await callRoute("/tags", "POST", { action: "set", id: batchA.id, purpose: [customId], context: [] });
+	await callRoute("/tags", "POST", { action: "set", id: batchB.id, purpose: [customId], context: [] });
+
+	const addBatch = await callRoute("/tags", "POST", { action: "batch", ids: [batchA.id, batchB.id], ops: [{ dimension: "purpose", tagId: "ui", op: "add" }] });
+	ok("批量打标：一次给两条各加上一个标签", addBatch.json?.ok === true && addBatch.json?.changed === 2, JSON.stringify(addBatch.json && { changed: addBatch.json.changed }));
+
+	const addAgain = await callRoute("/tags", "POST", { action: "batch", ids: [batchA.id, batchB.id], ops: [{ dimension: "purpose", tagId: "ui", op: "add" }] });
+	ok("批量打标幂等：重复点第二次 changed=0（不会把标签翻倍或重写）", addAgain.json?.changed === 0 && addAgain.json?.unchanged === 2, JSON.stringify(addAgain.json && { changed: addAgain.json.changed, unchanged: addAgain.json.unchanged }));
+
+	const afterBatch = await callRoute("/state");
+	const batchTags = afterBatch.json?.entries?.find((item) => item.id === batchA.id)?.tags;
+	ok("批量「加上」不清掉条目原有的其它标签（customId 与 ui 同时在场）", (batchTags?.purpose || []).includes(customId) && (batchTags?.purpose || []).includes("ui"), JSON.stringify(batchTags?.purpose));
+
+	const badDimension = await callRoute("/tags", "POST", { action: "batch", ids: [batchA.id], ops: [{ dimension: "context", tagId: "ui", op: "add" }] });
+	ok("维度不符的标签被拒并报出来（ui 是 purpose，当作 context 打进去以后永远筛不出来）", badDimension.json?.ok === true && (badDimension.json?.unknownTags || []).includes("ui") && badDimension.json?.changed === 0, JSON.stringify(badDimension.json && { unknownTags: badDimension.json.unknownTags, changed: badDimension.json.changed }));
+
+	const ghostId = "plugin:definitely-not-in-catalog";
+	const ghost = await callRoute("/tags", "POST", { action: "batch", ids: [ghostId], ops: [{ dimension: "purpose", tagId: "ui", op: "add" }] });
+	ok("id 不在目录里时整批拒绝（防 tags.json 长幽灵分配）", ghost.json?.ok === false && (ghost.json?.unknownIds || []).includes(ghostId), JSON.stringify(ghost.json && { ok: ghost.json.ok, unknownIds: ghost.json.unknownIds }));
+
+	const clearBatch = await callRoute("/tags", "POST", {
+		action: "batch",
+		ids: [batchA.id],
+		ops: [
+			{ dimension: "purpose", tagId: "ui", op: "remove" },
+			{ dimension: "purpose", tagId: customId, op: "remove" },
+		],
+	});
+	ok("批量「去掉」执行成功", clearBatch.json?.ok === true && clearBatch.json?.changed === 1, JSON.stringify(clearBatch.json && { changed: clearBatch.json.changed }));
+
+	const afterClear = await callRoute("/state");
+	ok(
+		"标签被清空后分配记录整条删掉（不留 by=user 的空记录 —— 那会让 AI 分类永远跳过这条）",
+		!afterClear.json?.tags?.assignments?.[batchA.id],
+		JSON.stringify(afterClear.json?.tags?.assignments?.[batchA.id]),
+	);
+	const clearTags = afterClear.json?.entries?.find((item) => item.id === batchA.id)?.tags;
+	ok("清空后界面上也真的没有标签了", (clearTags?.purpose || []).length === 0 && (clearTags?.context || []).length === 0, JSON.stringify(clearTags));
+}
+
 /* ── 上传门禁 ── */
 const applyNoConfirm = await callRoute("/upload", "POST", { action: "apply", planId: "nope", confirm: false });
 ok("apply 不带 confirm 被拒", applyNoConfirm.json?.ok === false && /confirm/i.test(applyNoConfirm.json?.error || ""), JSON.stringify(applyNoConfirm.json));

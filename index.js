@@ -327,6 +327,8 @@ export async function apply(ctx) {
 					const action = String(body.action || "list");
 					if (action === "list") return json(res, 200, { ok: true, tags: catalog.listTags() });
 					if (action === "set") return json(res, 200, await catalog.setTags(String(body.id || ""), { purpose: body.purpose, context: body.context }, body.by === "ai" ? "ai" : "user"));
+					/* R15：批量打标 —— ops 是 [{dimension, tagId, op}]，语义是加上/去掉，不是替换 */
+					if (action === "batch") return json(res, 200, await catalog.applyTags(Array.isArray(body.ids) ? body.ids : [], Array.isArray(body.ops) ? body.ops : [], body.by === "ai" ? "ai" : "user"));
 					if (action === "add") return json(res, 200, await catalog.addTag({ label: body.label, gloss: body.gloss, dimension: body.dimension }));
 					if (action === "remove") return json(res, 200, await catalog.removeTag(String(body.tagId || "")));
 					return json(res, 400, { ok: false, error: "unknown action" });

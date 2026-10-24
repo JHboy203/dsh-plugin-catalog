@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r14.0";
+		const BUILD = "r15.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -127,6 +127,12 @@ window.__ModuleLoader__.load({
 			/* R12：只看「不会被加载」的条目 —— 不在 bundles、不在配置条目、不在依赖链上，
 			   属于装了也不会跑的那一类（本机实测 26 个包，含整个 mnemon 子系统）。 */
 			dormantOnly: false,
+			/* R15：标签筛选（可多选）。判据：**同维度 OR、跨维度 AND** ——
+			   「做截图 或 做媒体」+「用在 Web GUI」＝ 这一块里我要的。 */
+			tagFilter: [],
+			/* R15：批量打标浮层（null = 关）。浮层里的勾选是**本地待提交状态**，
+			   点「应用」才发一次 batch 请求 —— 逐条发请求会在中途失败时留下半个批次。 */
+			tagPick: null,
 			/* R11：「同步 staging」的二次确认（**服务端已经出过计划**才允许点确认写盘）。
 			   ★ 这个和 picked 一样**不进 localStorage**：重载后必须重新出计划，
 			     不能拿一份过期的计划去覆盖文件。 */
@@ -143,7 +149,7 @@ window.__ModuleLoader__.load({
 		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
 		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
 		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
-		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"];
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"];
 
 		function readView() {
 			try {
@@ -1039,6 +1045,141 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* R15：批量打标浮层。
+		   ★ 三态是这个浮层的全部难度：一个批次里的条目标签各不相同，
+		     只画「开 / 关」会骗人 —— 那会让你以为点一下是"设成这个"，实际是"给缺的补上"。
+		       全部都有 → 已选，点一下＝从这批里**去掉**（显示 −）
+		       部分有   → 半选，点一下＝给缺的那些**加上**（不动已经有的）
+		       都没有   → 空，点一下＝给全部**加上**
+		   ★ 勾选只是**本地意图**，点「应用」才发一次 batch 请求；
+		     逐条发请求会在中途失败时留下半个批次，而用户以为全成了。 */
+		function TagBatchModal(props) {
+			const state = useStore();
+			const all = (state.data && state.data.tags && state.data.tags.all) || [];
+			const ids = props.ids || [];
+			const byId = new Map(((state.data && state.data.entries) || []).map((item) => [item.id, item]));
+			/* props.ids 可能包含已被卸载的条目（选中后重扫过）：只对还存在的打标 */
+			const picked = ids.map((id) => byId.get(id)).filter(Boolean);
+			const [ops, setOps] = useState({});
+			const [busy, setBusy] = useState(false);
+			const [error, setError] = useState("");
+
+			function have(tagId, dimension) {
+				let n = 0;
+				for (const item of picked) if ((item.tags?.[dimension] || []).includes(tagId)) n += 1;
+				return n;
+			}
+			/* 没有待提交操作时的**默认意图**：全都有＝去掉，其余＝加上 */
+			function defaultOp(tagId, dimension) {
+				return picked.length > 0 && have(tagId, dimension) === picked.length ? "remove" : "add";
+			}
+			function toggle(tagId, dimension) {
+				const key = dimension + ":" + tagId;
+				const next = { ...ops };
+				if (next[key]) delete next[key];
+				else next[key] = defaultOp(tagId, dimension);
+				setOps(next);
+				setError("");
+			}
+			function stateClass(tagId, dimension) {
+				const op = ops[dimension + ":" + tagId];
+				if (op === "add") return " is-add";
+				if (op === "remove") return " is-remove";
+				const n = have(tagId, dimension);
+				if (n === 0) return "";
+				return n === picked.length ? " is-all" : " is-part";
+			}
+			async function apply() {
+				const list = Object.entries(ops).map(([key, op]) => {
+					const cut = key.indexOf(":");
+					return { dimension: key.slice(0, cut), tagId: key.slice(cut + 1), op };
+				});
+				if (list.length === 0) return;
+				setBusy(true);
+				let result = null;
+				try {
+					result = await post("/tags", { action: "batch", ids: picked.map((item) => item.id), ops: list });
+				} catch (err) {
+					result = { ok: false, error: String((err && err.message) || err) };
+				}
+				setBusy(false);
+				if (!result || result.ok === false) {
+					setError((result && result.error) || "打标失败");
+					return;
+				}
+				set({ tagPick: null, notice: "已给 " + result.changed + " 条打上/去掉标签（" + list.length + " 个标签操作，无变化 " + result.unchanged + " 条）" });
+				await refresh();
+			}
+
+			function group(title, dimension) {
+				const tags = all.filter((tag) => tag.dimension === dimension);
+				if (tags.length === 0) return null;
+				return h(
+					"div",
+					{ className: "dpc-block" },
+					h("div", { className: "dpc-block-title" }, title),
+					h(
+						"div",
+						{ className: "dpc-tag-list" },
+						tags.map((tag) => {
+							const n = have(tag.id, dimension);
+							const op = ops[dimension + ":" + tag.id];
+							/* 还没点过时也要说清「点一下会发生什么」—— 三态光靠实心/虚线是认不出来的 */
+							const hint = op === "add" ? "　→ 应用后全部带上" : op === "remove" ? "　→ 应用后全部去掉" : n === picked.length && picked.length > 0 ? "　→ 点一下＝全部去掉" : "　→ 点一下＝给缺的补上";
+							return h(
+								"button",
+								{
+									key: tag.id,
+									className: "dpc-tag" + stateClass(tag.id, dimension),
+									title: (tag.gloss || tag.label) + "\n这批 " + picked.length + " 条里有 " + n + " 条已经带这个标签" + hint,
+									onClick: () => toggle(tag.id, dimension),
+								},
+								op === "add" ? "＋ " : op === "remove" ? "− " : "",
+								tag.label,
+								h("span", { className: "dpc-tag-ratio" }, n + "/" + picked.length),
+							);
+						}),
+					),
+				);
+			}
+
+			const opCount = Object.keys(ops).length;
+			return h(
+				"div",
+				{ className: "dpc-overlay", onClick: () => set({ tagPick: null }), role: "dialog", "aria-label": "批量打标" },
+				h(
+					"div",
+					{ className: "dpc-modal", onClick: (event) => event.stopPropagation() },
+					h(
+						"div",
+						{ className: "dpc-modal-head" },
+						h("span", { className: "dpc-modal-title" }, "批量打标"),
+						h("span", { className: "dpc-muted" }, "已选 " + picked.length + " 条"),
+						h("span", { className: "dpc-grow" }),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ tagPick: null }) }, "关闭"),
+					),
+					h(
+						"div",
+						{ className: "dpc-modal-body" },
+						h(
+							"div",
+							{ className: "dpc-muted" },
+							"点一下 = 排上「加」或「减」，再点一下撤回。只改你点过的标签，其它标签原样保留；应用后这批记为手标，AI 自动分类不再覆盖它们。",
+						),
+						group("做什么", "purpose"),
+						group("用在哪里", "context"),
+						error ? h("div", { className: "dpc-bad" }, error) : null,
+						h(
+							"div",
+							{ className: "dpc-row" },
+							h("button", { className: "dpc-btn dpc-btn-sm", onClick: apply, disabled: busy || opCount === 0 || picked.length === 0 }, busy ? "应用中…" : opCount === 0 ? "没改动可应用" : "应用 " + opCount + " 个标签操作"),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => { setOps({}); setError(""); }, disabled: opCount === 0 }, "全部撤回"),
+						),
+					),
+				),
+			);
+		}
+
 		function EntryModal(props) {
 			const state = useStore();
 			const detail = state.detail;
@@ -1689,8 +1830,17 @@ window.__ModuleLoader__.load({
 			/* 超过 1.5 秒 / 2 万文件预算的条目：数字是"至少这么大"，卡片上要标出来 */
 			const sizeTruncated = (data && data.sizes && data.sizes.truncated) || [];
 
+			/* R15：标签 id → ? 的索引。筛选要按维度分组判定，不能只看 id 在不在。 */
+			const tagMap = useMemo(() => new Map(all.map((tag) => [tag.id, tag])), [all]);
+
 			const filtered = useMemo(() => {
 				const query = state.query.trim().toLowerCase();
+				/* R15：标签筛选按维度分组 —— 同维度内 OR，跨维度 AND */
+				const grouped = { purpose: [], context: [] };
+				for (const id of state.tagFilter) {
+					const tag = tagMap.get(id);
+					if (tag && grouped[tag.dimension]) grouped[tag.dimension].push(id);
+				}
 				let list = items.filter((item) => {
 					if (state.kind !== "all" && item.kind !== state.kind) return false;
 					if (state.source !== "any" && item.source !== state.source) return false;
@@ -1703,6 +1853,9 @@ window.__ModuleLoader__.load({
 					if (state.orphanOnly && !isOrphanHint(item)) return false;
 					/* R12：只看「不会被加载」的条目（宿主没给 loadState 时一条都不命中，不做猜测） */
 					if (state.dormantOnly && !isDormant(item)) return false;
+					/* R15：标签筛选 —— 选中了某一维的标签，条目就必须命中该维至少一个 */
+					if (grouped.purpose.length > 0 && !grouped.purpose.some((id) => (item.tags?.purpose || []).includes(id))) return false;
+					if (grouped.context.length > 0 && !grouped.context.some((id) => (item.tags?.context || []).includes(id))) return false;
 					if (query !== "") {
 						/* ★ 工具名也要进搜索域 —— 否则「pwsh 是谁给的」只能一个个点开看 */
 						const haystack = [item.name, item.title, item.descriptionZh, item.descriptionEn, (item.sourceWhy || []).join(" "), (item.toolNames || []).join(" ")].join(" ").toLowerCase();
@@ -1726,7 +1879,7 @@ window.__ModuleLoader__.load({
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, state.dormantOnly, sizeMap]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, state.dormantOnly, state.tagFilter, tagMap, sizeMap]);
 
 			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
 			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
@@ -1750,6 +1903,57 @@ window.__ModuleLoader__.load({
 			const dormantCount = useMemo(() => {
 				return dormantCountOf(items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source)));
 			}, [items, state.kind, state.source]);
+
+			/* R15：每个标签被多少条目用着（只算 purpose / context；origin 是推导值，不可筛）。
+			   ★ 只列**真的有条目在用**的标签：27 个内置标签全铺出来会把工具条撑成三行，
+			     而且 0 命中的标签点进去就是空页 —— 那不是筛选，是陷阱。 */
+			const tagUsage = useMemo(() => {
+				const counts = new Map();
+				const pool = items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source));
+				for (const item of pool) {
+					for (const dimension of ["purpose", "context"]) {
+						for (const id of item.tags?.[dimension] || []) counts.set(id, (counts.get(id) || 0) + 1);
+					}
+				}
+				return counts;
+			}, [items, state.kind, state.source]);
+
+			/* 标签筛选行要展示的面板：按维度分组、按用量倒序 —— 用得最多的那几类应该最先点到 */
+			const tagFacets = useMemo(() => {
+				const byDim = { purpose: [], context: [] };
+				for (const [id, count] of tagUsage) {
+					const tag = tagMap.get(id);
+					if (tag && byDim[tag.dimension]) byDim[tag.dimension].push({ ...tag, count });
+				}
+				for (const dimension of ["purpose", "context"]) byDim[dimension].sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)));
+				return byDim;
+			}, [tagUsage, tagMap]);
+
+			function renderTagFacet(dimension, prefix) {
+				const list = tagFacets[dimension];
+				if (list.length === 0) return null;
+				return h(
+					"span",
+					{ className: "dpc-facet" },
+					h("span", { className: "dpc-facet-dim", title: dimension === "purpose" ? "做什么" : "用在哪里" }, prefix),
+					list.map((tag) =>
+						h(
+							"button",
+							{
+								key: tag.id,
+								className: "dpc-facet-chip" + (state.tagFilter.includes(tag.id) ? " is-on" : ""),
+								title: (tag.gloss || tag.label) + "　·　" + tag.count + " 条",
+								onClick: () => {
+									const has = state.tagFilter.includes(tag.id);
+									set({ tagFilter: has ? state.tagFilter.filter((id) => id !== tag.id) : state.tagFilter.concat(tag.id), page: 1 });
+								},
+							},
+							tag.label,
+							h("span", { className: "dpc-facet-count" }, tag.count),
+						),
+					),
+				);
+			}
 
 			/* 当前筛选结果的体积合计：回答「删这批能省多少」，不用逐个点开浮窗。
 			   noDir = 量不到的条数（官方包在 asar 里 / 没有独立目录）—— 它们不计入合计，但要说出来。 */
@@ -2210,7 +2414,7 @@ window.__ModuleLoader__.load({
 						{ className: "dpc-toolbar-actions" },
 						h(
 							"button",
-							{ className: "dpc-btn dpc-btn-sm" + (state.picking ? " is-on" : ""), onClick: togglePicking, title: "多选：点卡片选中，再一次性导出这批（选中项不跨重载保留）" },
+							{ className: "dpc-btn dpc-btn-sm" + (state.picking ? " is-on" : ""), onClick: togglePicking, title: "多选：点卡片选中，再一次性导出 / 打标这批（选中项不跨重载保留）" },
 							state.picking ? "退出选择" : "选择",
 						),
 						h(
@@ -2220,6 +2424,24 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
+				/* R15：标签筛选行 —— 只在「有标签真的被用着」时出现。
+				   一条标签都没有时整行不占位，而不是显示一行空框等用户去猜。 */
+				tagUsage.size > 0
+					? h(
+							"div",
+							{ className: "dpc-tagfilter" },
+							h(
+								"span",
+								{ className: "dpc-tagfilter-title", title: "同维度多选＝或（做截图 或 做媒体），跨维度＝且（再叠 用在 Web GUI）。\n标签可以在这个行里点、也可以在「选择 → 打标」里一次给一批加上。" },
+								"标签",
+							),
+							renderTagFacet("purpose", "做"),
+							renderTagFacet("context", "用"),
+							state.tagFilter.length > 0
+								? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ tagFilter: [], page: 1 }), title: "清空标签筛选（其它筛选条件保持不变）" }, "清除标签")
+								: null,
+						)
+					: null,
 				/* 选择模式下的批次条：已选几条、一共多大、一次导出 */
 				state.picking
 					? h(
@@ -2242,6 +2464,16 @@ window.__ModuleLoader__.load({
 											})(),
 							),
 							h("button", { className: "dpc-btn dpc-btn-sm", onClick: exportPicked, disabled: state.exportBusy || state.picked.length === 0 }, "导出选中"),
+							h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm",
+									onClick: () => set({ tagPick: { ids: state.picked.slice() } }),
+									disabled: state.picked.length === 0,
+									title: "给选中的这批条目一次打上 / 去掉标签。语义是「只加」「只减」，不会清掉它们各自已有的其它标签；标完记为手标，AI 不再覆盖。",
+								},
+								"打标",
+							),
 							h(
 								"button",
 								{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ picked: filtered.slice(0, 200).map((item) => item.id), pickedBytes: null, pickedBusy: true }), disabled: filtered.length === 0 },
@@ -2335,6 +2567,7 @@ window.__ModuleLoader__.load({
 					"数据目录：" + (data.dataDir || "?") + "　｜　禁用一个插件即恢复官方界面：从 dsh.profile.bundles 去掉 dsh-plugin-catalog。",
 				),
 				state.open ? h(EntryModal, {}) : null,
+				state.tagPick ? h(TagBatchModal, { ids: state.tagPick.ids }) : null,
 				state.plan ? h(PlanModal, {}) : null,
 			);
 		}
@@ -2596,6 +2829,26 @@ window.__ModuleLoader__.load({
 .dpc-tag.is-on{background:var(--dsw-alias-brand-primary,#3964fe);border-color:var(--dsw-alias-brand-primary,#3964fe);
   color:var(--dsw-alias-bg-base,#fff)}
 .dpc-tag-custom{font-size:9px;margin-left:4px;opacity:.75}
+/* R15：批量打标的三态（全有 / 部分有 / 已排上加或减）—— 让"点一下会发生什么"在按之前就看得见 */
+.dpc-tag.is-all{background:var(--dsw-alias-brand-primary,#3964fe);border-color:var(--dsw-alias-brand-primary,#3964fe);
+  color:var(--dsw-alias-bg-base,#fff)}
+.dpc-tag.is-part{border-style:dashed;border-color:var(--dpc-klein);color:var(--dpc-klein)}
+.dpc-tag.is-add{border-color:#16a34a;color:#15803d;background:rgba(22,163,74,.08)}
+.dpc-tag.is-remove{border-color:#dc2626;color:#b91c1c;background:rgba(220,38,38,.07);text-decoration:line-through}
+.dpc-tag-ratio{font-size:9.5px;margin-left:5px;opacity:.72;font-variant-numeric:tabular-nums}
+/* R15：标签筛选行（只在有标签被用着时才出现） */
+.dpc-tagfilter{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:2px 2px 4px}
+.dpc-tagfilter-title{font-size:11px;color:var(--dsw-alias-label-secondary,#8b93a1);flex:0 0 auto}
+.dpc-facet{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.dpc-facet-dim{font-size:10px;padding:0 5px;border-radius:4px;background:var(--dpc-fill);
+  color:var(--dsw-alias-label-secondary,#8b93a1);flex:0 0 auto}
+.dpc-facet-chip{appearance:none;display:inline-flex;align-items:center;gap:5px;font-size:11px;
+  padding:2px 8px;border-radius:999px;cursor:pointer;border:1px solid var(--dpc-line);
+  background:var(--dpc-fill);color:var(--dsw-alias-label-secondary,#4b5563);
+  transition:border-color .14s ease,color .14s ease,background .14s ease}
+.dpc-facet-chip:hover{border-color:var(--dpc-klein);color:var(--dpc-klein)}
+.dpc-facet-chip.is-on{background:var(--dpc-klein);border-color:var(--dpc-klein);color:#fff}
+.dpc-facet-count{font-size:9.5px;opacity:.72;font-variant-numeric:tabular-nums}
 .dpc-chip-x{appearance:none;border:0;background:transparent;cursor:pointer;color:inherit;font-size:11px;padding:0 2px;opacity:.6}
 .dpc-add-form{display:flex;flex-direction:column;gap:6px;padding:9px;border-radius:9px;
   border:1px dashed var(--dsw-alias-border-strong,#d0d5dd)}
@@ -2683,6 +2936,7 @@ window.__ModuleLoader__.load({
 			Panel,
 			Card,
 			EntryModal,
+			TagBatchModal,
 			PlanModal,
 			SessionList,
 			ToolTable,

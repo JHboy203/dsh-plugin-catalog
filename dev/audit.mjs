@@ -512,7 +512,7 @@ ok("视图持久化的读、写都有 try（存储被禁用时不拖垮渲染）
 	return readBlock.includes("try {") && readBlock.includes("catch (error)") && writeBlock.includes("try {") && writeBlock.includes("catch (error)");
 })());
 ok("读视图前先判断 typeof localStorage（无头 / 禁用存储都不能假设存在）", /typeof localStorage !== "undefined" \? localStorage\.getItem/.test(clientSource) && clientSource.includes('if (typeof localStorage === "undefined") return false'));
-ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"\]/.test(clientSource));
+ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*"data"/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*"detail"/.test(clientSource));
 ok("滚动位置恢复只发生一次（用 ref 挡后续轮询重渲染）", /const restoredScroll = useRef\(false\)/.test(clientSource) && /if \(restoredScroll\.current \|\| !data\) return;/.test(clientSource));
 ok("换筛选 / 换页后回到顶部（否则第 2 页第一条落在屏幕外）", clientSource.includes('"page" in patch') && clientSource.includes("panel.scrollTop = 0"));
 ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
@@ -543,7 +543,7 @@ ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dp
 ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
 ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
 ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, Math.max(1, queue.length))"));
-ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
+ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
 ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
 ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
 ok("选中态与批次条都有样式（is-picked / dpc-pickedbar / dpc-pick-badge）", [".dpc-card.is-picked{", ".dpc-pickedbar{", ".dpc-pick-badge{"].every((needle) => cssSource.includes(needle)));
@@ -854,7 +854,75 @@ ok(
 ok("快照口径也进导出：概览有「加载路径」一行", serviceSource.includes('" 份组合文件）；直接 **"') && serviceSource.includes("不在任何入口上"));
 ok("导出单开一节「不会被加载」（含声明层面的边界说明）", serviceSource.includes('"## 不会被加载（"') && serviceSource.includes("运行时按路径 `require()` 的动态加载看不见"));
 ok("当前筛选的清单多一列「加载」（不会被加载 / 配置挂载 / 随 X 加载 / 是 / 未知）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"') && serviceSource.includes('if (item.loadState === "dormant") return "**不会被加载**"'));
-ok("版本号与构建戳同步抬到 0.14.0 / r14.0", /"version": "0\.14\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r14.0"'));
+/* ─────────── R15（2026-10-24 第十五轮）：标签闭环 ───────────
+   这一轮的起点是一个**事实**而不是一个想法：`.dsh-plugin-catalog/tags.json` 从来不存在 ——
+   标签系统（内置 27 个标签 / 自定义 / AI 分类 / 详情浮窗编辑器 / catalog_tag 工具）代码齐全、
+   却在这台机器上**一次都没被用过**。没跑过的子系统是最不可信的那部分代码，
+   所以要补的不是"再来一个功能"，而是让标签这条链**真的有入口、有出口**：
+     ① 入口：批量打标（面板多选 → 打标；工具 catalog_tag 传 ids）—— 逐条点 133 个条目不现实；
+     ② 出口：按标签筛选（同维度 OR、跨维度 AND）—— 打了却筛不出来的标签等于没打。 */
+
+const tagsSource = readFileSync(new URL("../lib/tags.mjs", import.meta.url), "utf8");
+
+ok(
+	"批量打标是独立的加减函数，不是复用「整条替换」",
+	tagsSource.includes("export function applyTagOps(") && tagsSource.includes('op === "remove" ? "remove" : "add"') && !/applyTagOps[\s\S]{0,400}store\.assignments\[entryId\] = \{ \.\.\.clean/.test(tagsSource),
+);
+ok(
+	"批量打标保持幂等：先算目标集合再与现状比，无变化就不写盘",
+	tagsSource.includes("sameSet(previous[dimension] ?? [], next[dimension])") && tagsSource.includes("function sameSet("),
+);
+ok(
+	"标签维度必须对得上（把「界面」当 context 打进去以后永远筛不出来）",
+	tagsSource.includes("if (!tag || tag.dimension !== dimension)") && tagsSource.includes("unknownTags.push(tagId)"),
+);
+ok(
+	"把标签全去掉时删分配记录、不写空记录（写空记录会让 AI 分类永远跳过这条）",
+	tagsSource.includes("delete store.assignments[entryId]") && !/next\.purpose\.length === 0 && next\.context\.length === 0\) continue;/.test(tagsSource),
+);
+ok(
+	"service 的 applyTags 先校验 id 在目录里（防 tags.json 长幽灵分配）",
+	serviceSource.includes("async applyTags(entryIds, ops, by = \"user\")") && serviceSource.includes("new Set(this.listEntries().items.map((entry) => entry.id))") && serviceSource.includes("unknownIds"),
+);
+ok("/tags 路由注册了 batch 动作，并走同一个 service 方法", routeSource.includes('if (action === "batch")') && routeSource.includes("catalog.applyTags("));
+ok(
+	"catalog_tag 支持批量（ids）与去掉标签（untag），schema 里都声明了",
+	toolsSource.includes('"untag"') && toolsSource.includes("ids: { type: \"array\"") && toolsSource.includes("service.applyTags(args.ids, ops"),
+);
+ok(
+	"批量与单个的语义在工具描述里写清楚（追加/去掉 vs 整条替换）",
+	/批量（传 ids）的语义是\*\*追加\/去掉\*\*/.test(toolsSource) && toolsSource.includes("整条替换"),
+);
+ok("面板有标签筛选状态，且进了视图持久化白名单", clientSource.includes("tagFilter: []") && /VIEW_KEYS = \[[^\]]*"tagFilter"/.test(clientSource));
+ok(
+	"筛选是「同维度 OR、跨维度 AND」（不是把所有选中标签取交集）",
+	clientSource.includes("const grouped = { purpose: [], context: [] };") && clientSource.includes("grouped.purpose.some((id) => (item.tags?.purpose || []).includes(id))") && clientSource.includes("grouped.context.some((id) => (item.tags?.context || []).includes(id))"),
+);
+ok(
+	"筛选行只列「真的有条目在用」的标签（0 命中的标签点进去是空页，不是筛选）",
+	clientSource.includes("const tagUsage = useMemo(") && clientSource.includes("tagUsage.size > 0"),
+);
+ok("批次条上有「打标」入口，且只在有选中项时可点", clientSource.includes("onClick: () => set({ tagPick: { ids: state.picked.slice() } }),") && /disabled: state\.picked\.length === 0,[\s\S]{0,200}?title: "给选中的这批条目一次打上/.test(clientSource));
+ok(
+	"批量打标浮层是三态的（全有 / 部分有 / 已排上加减），不是二态开关",
+	clientSource.includes("function TagBatchModal(props)") && clientSource.includes('return picked.length > 0 && have(tagId, dimension) === picked.length ? "remove" : "add";') && clientSource.includes('return n === picked.length ? " is-all" : " is-part";'),
+);
+ok(
+	"浮层里的勾选是本地待提交（点应用才发一次请求，不会留半个批次）",
+	clientSource.includes("const [ops, setOps] = useState({});") && clientSource.includes('post("/tags", { action: "batch", ids: picked.map((item) => item.id), ops: list })'),
+);
+ok("标签筛选行与三态都有样式", [".dpc-tagfilter{", ".dpc-facet-chip{", ".dpc-facet-chip.is-on{", ".dpc-tag.is-part{", ".dpc-tag.is-add{", ".dpc-tag.is-remove{"].every((needle) => cssSource.includes(needle)));
+
+const tagsProbeSource = readFileSync(new URL("./probe-tags.mjs", import.meta.url), "utf8");
+ok(
+	"批量打标有独立探针（幂等 / 只加不减 / 清空删记录 —— 这三条静态契约看不出来）",
+	tagsProbeSource.includes("applyTagOps") && ["T1", "T2", "T5", "T6"].every((id) => tagsProbeSource.includes(id)) && tagsProbeSource.includes("process.exit(1)"),
+);
+ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
+
+ok("版本号与构建戳同步抬到 0.15.0 / r15.0", /"version": "0\.15\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r15.0"'));
+
+
 ok(
 	"双语 README 都写了独立探针（英文版也要能照着跑）",
 	readFileSync(new URL("../README.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs") && readFileSync(new URL("../README.en.md", import.meta.url), "utf8").includes("dev/probe-loadstate.mjs"),

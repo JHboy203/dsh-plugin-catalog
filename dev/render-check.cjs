@@ -215,7 +215,10 @@ const data = {
 		all: [
 			{ id: "screenshot", dimension: "purpose", label: "截图", gloss: "抓屏与 OCR", builtin: true },
 			{ id: "ops", dimension: "purpose", label: "运维", gloss: "体检与清理", builtin: true },
+			/* R15：game / astrbot 只有 vex-ops 一条在用 —— 用来验「同维度或、跨维度且」里那个「或」 */
+			{ id: "game", dimension: "purpose", label: "游戏", gloss: "Minecraft 相关", builtin: true },
 			{ id: "web-gui", dimension: "context", label: "Web GUI", gloss: "作用在界面上", builtin: true },
+			{ id: "astrbot", dimension: "context", label: "AstrBot", gloss: "QQ 机器人链路", builtin: true },
 			{ id: "c-1", dimension: "purpose", label: "视频剪辑", gloss: "处理视频素材", builtin: false },
 		],
 		assignments: {},
@@ -521,7 +524,7 @@ ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate
 
 /* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
 ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
-ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly/tagFilter），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly,tagFilter" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
 
 /* R4：导出当前筛选 / 0 值档位置灰 */
 T.store.kind = "all";
@@ -1306,6 +1309,105 @@ ok(
 		return text.includes("宿主还没给出加载态") && text.includes("启用") && text.includes("未知");
 	})(),
 );
+
+/* ─────────── R15：标签闭环（批量打标 + 按标签筛选）───────────
+   这一轮最容易"看着对、其实没用"的两处：
+     ① 筛选行画出来了但点不动，或点了不减少卡片；
+     ② 批量浮层画成二态开关 —— 用户以为点一下是"设成这个"，实际是"给缺的补上"。
+   所以这里不只看元素在不在，还要**真的点一下**再数卡片。 */
+
+function resetView() {
+	T.store.error = null;
+	T.store.data = data;
+	T.store.loading = false;
+	T.store.open = null;
+	T.store.detail = null;
+	T.store.size = null;
+	T.store.sizeError = "";
+	T.store.pageSize = 0;
+	T.store.page = 1;
+	T.store.query = "";
+	T.store.source = "any";
+	T.store.kind = "all";
+	T.store.usage = "any";
+	T.store.orphanOnly = false;
+	T.store.dormantOnly = false;
+	T.store.tagFilter = [];
+	T.store.tagPick = null;
+	T.store.picking = false;
+	T.store.picked = [];
+}
+
+function cards() {
+	/* 精确匹配 dpc-card 且带 title（Card 是按钮、一定有 title；网格容器没有）：
+	   startsWith 会把 dpc-card-head / dpc-card-body 一起数进来（21 vs 6 条） */
+	return findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(" ").includes("dpc-card") && typeof (node.props && node.props.title) === "string");
+}
+
+resetView();
+const facetChips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-facet-chip"));
+ok("标签筛选行只列「有条目在用」的标签（夹具里 6 个标签，其中 c-1 没人用，不该出现）", facetChips.length > 0 && !facetChips.some((node) => textsOf(node).join("").includes("视频剪辑")), JSON.stringify(facetChips.map((node) => textsOf(node).join(""))));
+ok(
+	"每个筛选 chip 带命中条数（点之前就知道点了会剩几条）",
+	facetChips.every((node) => /[0-9]/.test(textsOf(node).join(""))),
+	JSON.stringify(facetChips.map((node) => textsOf(node).join(""))),
+);
+
+const facetTexts = facetChips.map((node) => textsOf(node).join(""));
+const shotChip = facetChips.find((node) => textsOf(node).join("").includes("截图"));
+const countWith = (dimension, tagId) => data.entries.filter((item) => (item.tags?.[dimension] || []).includes(tagId)).length;
+ok(`「截图」chip 的计数与夹具一致（${countWith("purpose", "screenshot")} 条带 screenshot）`, Boolean(shotChip) && textsOf(shotChip).join("").includes(String(countWith("purpose", "screenshot"))), JSON.stringify(facetTexts));
+
+const beforeTagClick = cards().length;
+if (shotChip && typeof shotChip.props.onClick === "function") shotChip.props.onClick();
+ok(
+	"点一下标签 chip 真的把卡片筛掉了（不是只变了个样式）",
+	T.store.tagFilter.includes("screenshot") && cards().length === countWith("purpose", "screenshot") && cards().length < beforeTagClick,
+	`before=${beforeTagClick} after=${cards().length} expect=${countWith("purpose", "screenshot")}`,
+);
+ok("筛完还会再渲染出「清除标签」按钮", findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && textsOf(node).join("").includes("清除标签")).length === 1);
+
+/* 跨维度是 AND：再叠一个 context，必须两个维度都命中 */
+T.store.tagFilter = ["screenshot", "web-gui"];
+ok("跨维度是「且」（screenshot + web-gui 两个都命中）", cards().length === 5, JSON.stringify(T.store.tagFilter));
+T.store.tagFilter = ["screenshot", "astrbot"];
+ok("跨维度是「且」（没有人既 screenshot 又 astrbot → 0 条，而不是取并集）", cards().length === 0, JSON.stringify(T.store.tagFilter));
+
+/* 同一维度是 OR */
+T.store.tagFilter = ["screenshot", "game"];
+ok("同维度是「或」（screenshot 或 game，比单筛截图多出 vex-ops）", cards().length === 6 && cards().length > countWith("purpose", "screenshot"), `${cards().length} 条`);
+
+resetView();
+ok("没有标签被用着时整行不占位（不显示空框）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, entries: data.entries.map((item) => ({ ...item, tags: { purpose: [], context: [], origin: item.tags.origin } })) };
+	const row = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-tagfilter"));
+	T.store.data = saved;
+	return row.length === 0;
+})());
+
+/* 批量浮层的三态 */
+resetView();
+T.store.tagPick = { ids: ["plugin:dsh-screenshot", "plugin:dsh-never-used"] };
+const batchChips = findAll(expand(render(T.TagBatchModal, { ids: T.store.tagPick.ids })), (node) => String((node.props && node.props.className) || "").split(" ").includes("dpc-tag"));
+const batchTexts = batchChips.map((node) => textsOf(node).join(""));
+ok("批量浮层把「这批全都有的标签」画成已选（截图 2/2）", batchChips.some((node) => String(node.props.className).includes("is-all") && textsOf(node).join("").includes("截图")), JSON.stringify(batchTexts));
+ok("批量浮层把「部分有的标签」画成半选（虚线，2/2 之外的标签为 0/2 空态）", batchChips.every((node) => textsOf(node).join("").includes("/2")), JSON.stringify(batchTexts));
+ok("每个标签都带「这批里几个有」的比值（n/N），不让人盲点", batchTexts.filter((text) => text.includes("/2")).length === batchChips.length);
+
+/* 三态不能靠"点一下再看"验（每次 render 都是新实例、useState 不跨渲染保留），
+   所以验的是**点之前就能看见的承诺**：title 里写清这次点击会加上还是去掉。 */
+const allChip = batchChips.find((node) => String(node.props.className).split(" ").includes("is-all"));
+const emptyChips = batchChips.filter((node) => !String(node.props.className).includes("is-all"));
+ok("全都有的标签：点之前就写明「点一下＝全部去掉」", Boolean(allChip) && String(allChip.props.title).includes("点一下＝全部去掉"), allChip ? String(allChip.props.title) : "无");
+ok("一条都没有的标签：点之前就写明「点一下＝给缺的补上」", emptyChips.length > 0 && emptyChips.every((node) => String(node.props.title).includes("点一下＝给缺的补上")), JSON.stringify(emptyChips.map((node) => String(node.props.title))));
+ok("「应用」按钮在没有改动时是禁用的（不会发一个空请求）", (() => {
+	const buttons = findAll(expand(render(T.TagBatchModal, { ids: T.store.tagPick.ids })), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && textsOf(node).join("").includes("没改动"));
+	return buttons.length === 1 && buttons[0].props.disabled === true;
+})(), "应用按钮");
+
+T.store.tagPick = null;
+resetView();
 
 /* ── 汇总 ── */
 console.log("");
