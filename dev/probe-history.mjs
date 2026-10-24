@@ -10,7 +10,7 @@
  * 全程**不碰磁盘**：目录是内存里的合成数据，不读也不写 history.json。
  */
 
-import { describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges } from "../lib/history.mjs";
+import { compareEntries, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges } from "../lib/history.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -25,7 +25,7 @@ function catalogOf(patch = {}) {
 			{ id: "plugin:beta", name: "beta", source: patch.betaSource ?? "third", version: "2.0.0", loadState: "transitive" },
 			...(patch.dropBeta ? [] : []),
 		],
-		skills: [{ id: "skill:gamma", name: "gamma", source: "self", hasDescription: patch.gammaDescribed ?? true }],
+		skills: [{ id: "skill:gamma", name: "gamma", source: "self", hasDescription: patch.gammaDescribed ?? true, contentHash: patch.gammaHash ?? "" }],
 	};
 }
 
@@ -158,6 +158,79 @@ const AT = 1760000000000;
 		summary.first === true && summary.counts.total === 0 && summary.counts.added === 0 && summary.total === 3 && after.counts.total === 1,
 		JSON.stringify({ first: summary.counts, after: after.counts }),
 	);
+}
+
+/* ── R19：Skill 正文指纹（catalog 读 SKILL.md 时顺手算的 12 位哈希） ── */
+
+/* ── H16 正文改了 → 被编辑（reason=content），带短哈希 ── */
+{
+	const prev = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT);
+	const next = snapshotOf(catalogOf({ gammaHash: "bbbb33334444" }), null, AT);
+	const diff = diffSnapshots(prev, next);
+	ok(
+		"H16 正文指纹变 → 被编辑（reason=content，带 8 位短哈希）",
+		diff.counts.total === 1 && diff.counts.edited === 1 && diff.edited[0].reason === "content" && diff.edited[0].from === "aaaa1111" && diff.edited[0].to === "bbbb3333" && diff.counts.version === 0,
+		JSON.stringify(diff.counts) + " " + JSON.stringify(diff.edited),
+	);
+}
+
+/* ── H17 升级迁移：旧快照没有 content 字段，不能把"开始记哈希"当编辑 ──
+   ★ 否则 R19 第一次重建会把 58 个技能全报成「被编辑」，用户以为谁改了所有技能。 */
+{
+	const prev = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT);
+	delete prev.entries["skill:gamma"].content; /* 复刻 v1 历史文件的形状 */
+	const next = snapshotOf(catalogOf({ gammaHash: "cccc55556666" }), null, AT);
+	const diff = diffSnapshots(prev, next);
+	ok("H17 旧快照没有正文哈希 → 升级不算编辑（total=0，全部计入没动）", diff.counts.total === 0 && diff.counts.edited === 0 && diff.unchanged === 3, JSON.stringify(diff.counts));
+}
+
+/* ── H18 正文与描述同时变 → 只报一行（内容哈希已包含描述，别报成两处） ── */
+{
+	const prev = snapshotOf(catalogOf({ gammaHash: "aaaa11112222", gammaDescribed: true }), null, AT);
+	const next = snapshotOf(catalogOf({ gammaHash: "bbbb33334444", gammaDescribed: false }), null, AT);
+	const diff = diffSnapshots(prev, next);
+	ok("H18 正文 + 描述同时变 → 一行（reason=content）", diff.counts.total === 1 && diff.counts.edited === 1 && diff.edited.length === 1 && diff.edited[0].reason === "content", JSON.stringify(diff.edited));
+}
+
+/* ── H19 正文哈希进指纹：同内容稳定、改一字就变 ── */
+{
+	const a = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT);
+	const b = snapshotOf(catalogOf({ gammaHash: "aaaa11112222" }), null, AT + 5000);
+	const c = snapshotOf(catalogOf({ gammaHash: "aaaa11112223" }), null, AT);
+	ok("H19 指纹随正文变：同内容稳定、改一个字符就变", a.fingerprint === b.fingerprint && a.fingerprint !== c.fingerprint, a.fingerprint + " / " + c.fingerprint);
+}
+
+/* ── H20 措辞：正文改动写「正文已改」，不能打出 undefined ── */
+{
+	const text = describeChange({ name: "gamma", reason: "content", from: "aaaa1111", to: "bbbb3333" }, "edited");
+	const descText = describeChange({ name: "gamma", reason: "description", from: "有描述", to: "无描述" }, "edited");
+	ok("H20 正文改动措辞带「正文已改」与短哈希，描述改动仍走旧措辞", text.includes("正文已改") && text.includes("aaaa1111") && !/undefined|null/.test(text) && descText.includes("被编辑"), text + " | " + descText);
+}
+
+/* ── H21 插件没有"正文"这个概念：改版本只进升版，不进被编辑 ── */
+{
+	const prev = snapshotOf(catalogOf(), null, AT);
+	const next = snapshotOf(catalogOf({ alphaVersion: "1.0.1" }), null, AT);
+	const diff = diffSnapshots(prev, next);
+	ok("H21 插件改版本只进升版（content 恒空，不参与比较）", diff.counts.version === 1 && diff.counts.edited === 0, JSON.stringify(diff.counts));
+}
+
+/* ── H22 compareEntries / sameSignal 同源：单边缺哈希不算变化（与 H17 同一个判据） ── */
+{
+	const withHash = signalOf({ version: "1", source: "self", loadState: "bundle", kind: "skill", contentHash: "aaaa11112222" });
+	const without = signalOf({ version: "1", source: "self", loadState: "bundle", kind: "skill" });
+	const compare = compareEntries(without, withHash);
+	ok("H22 单边缺哈希 → sameSignal 判一致（diff 里也不会冒出一行）", sameSignal(without, withHash) === true && compare.changed.content === false, JSON.stringify(compare));
+}
+
+/* ── H23 「已看过」基线：合法的留着，坏的 / 空的 / 没有时间的当没标记过 ── */
+{
+	const valid = normalizeAck({ at: AT, snapshot: { at: AT, count: 2, entries: { "plugin:a": {}, "skill:b": {} }, fingerprint: "abcdef123456" } });
+	const broken = normalizeAck({ at: AT, snapshot: { entries: "nope" } });
+	const empty = normalizeAck({ at: AT, snapshot: { entries: {} } });
+	const noAt = normalizeAck({ at: 0, snapshot: { entries: { "plugin:a": {} } } });
+	const nothing = normalizeAck(null);
+	ok("H23 已看过基线：合法保留、坏 / 空 / 无时间一律当没标记过", Boolean(valid) && valid.at === AT && valid.snapshot.count === 2 && broken === null && empty === null && noAt === null && nothing === null, JSON.stringify({ valid: valid && valid.snapshot.count, broken, empty, noAt, nothing }));
 }
 
 const failed = results.filter((item) => !item.pass);

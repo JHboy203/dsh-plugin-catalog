@@ -624,7 +624,7 @@ ok(
 	"条目带 dependents / dependentCount / dependsOn / dependsOnCount",
 	["dependents: pack.dependents || []", "dependentCount: pack.dependentCount || 0", "dependsOn: pack.dependsOn || []", "dependsOnCount: pack.dependsOnCount || 0"].every((needle) => catalogSource.includes(needle)),
 );
-ok("条目形状变了 → CATALOG_VERSION = 8（R14 加了 packageName / aliasOf，并改了加载态的查表口径）", /export const CATALOG_VERSION = 8;/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION = 9（R19 给 Skill 加了 contentHash；R14 的 packageName / aliasOf 同一条线索）", /export const CATALOG_VERSION = 9;/.test(catalogSource));
 ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选 / 加载路径四态）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0, loadRoots: 0, loadCounts: \{ bundle: 0, config: 0, transitive: 0, dormant: 0 \}, compositionFiles: 0 \}/.test(catalogSource));
 ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
 ok("导出清单加「被依赖 / 加载」两列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"'));
@@ -923,7 +923,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.18.0 / r18.0", /"version": "0\.18\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r18.0"'));
+ok("版本号与构建戳同步抬到 0.19.0 / r19.0", /"version": "0\.19\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r19.0"'));
 
 
 ok(
@@ -943,7 +943,7 @@ const readmeEn = readFileSync(new URL("../README.en.md", import.meta.url), "utf8
 ok("处置清单复用 `scanInstalledPackages`（不自己再扫一遍 node_modules）", uninstallSource.includes("scanInstalledPackages") && !/from "node:fs\/promises"/.test(uninstallSource) && !uninstallSource.includes("readdir("));
 ok("同一个包的多份副本取**依赖并集**（并集写在 lib/loadstate.mjs 里，一处定义）", loadstateSource.includes("mergeDeps") && loadstateSource.includes("并集") && catalogSource.includes("mergeDep("));
 ok("catalog 的加载态先按目录名、再按包名查（别名目录不再被误报成「不会被加载」）", catalogSource.includes("loadPaths.byName.get(pack.pkg) || loadPaths.byName.get(pack.packageName"));
-ok("目录快照版本抬到 v8（判据改了，旧快照必须作废）", catalogSource.includes("export const CATALOG_VERSION = 8;"));
+ok("目录快照版本抬到 v9（判据改了，旧快照必须作废）", catalogSource.includes("export const CATALOG_VERSION = 9;"));
 
 /* ② 只生成、不执行：源码里不许出现任何删除调用 */
 ok(
@@ -1041,8 +1041,23 @@ ok("快照只留最近 20 条", historySource.includes("MAX_SNAPSHOTS = 20") && 
 ok("变化摘要进 /state、health 与导出报告（三处同一份，不各算一遍）", serviceSource.includes("changes: this.changesSummary()") && serviceSource.includes("changes: this.changes") && serviceSource.includes('lines.push("## 变化"'));
 ok("health 文案在「第一条快照」时如实说没有可比历史", toolsSource.includes("还没有可比的历史") && toolsSource.includes("变化：自 "));
 ok("面板变化条：first / 0 处都不占版面，点开才列明细", clientSource.includes("function ChangesBar(props)") && clientSource.includes("if (!changes || changes.first) return null;") && clientSource.includes("dpc-changes-chip"));
-ok("probe-history 覆盖 H1–H15 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
+ok("probe-history 覆盖 H1–H23 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19", "H20", "H21", "H22", "H23"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
 ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
+
+/* ⑧ R19：变化追踪收口 —— Skill 正文哈希 + 「已看过」确认窗口 */
+ok("catalog 在读 SKILL.md 时顺手算正文哈希（不额外读文件），并抬了 CATALOG_VERSION", catalogSource.includes('createHash("sha1")') && catalogSource.includes("contentHash") && /export const CATALOG_VERSION = 9;/.test(catalogSource));
+ok("history 信号含 content（仅 Skill），v2 加了升级迁移规则（旧快照没哈希不算编辑）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 2;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
+ok("compareEntries 是 diff 与 sameSignal 的唯一判据（两处各写一份判据迟早会差）", historySource.includes("return !compareEntries(a, b).any;") && /const \{ changed, any \} = compareEntries\(old, entry\)/.test(historySource));
+ok("正文改动单列成 edited（reason=content），且与描述改动互斥（只报一行）", historySource.includes('reason: "content"') && historySource.includes("else if (changed.description)") && historySource.includes("正文已改"));
+ok("「已看过」基线单独存 history-ack.json（不改写 history.json），写回走原子写", serviceSource.includes('return join(this.dir, "history-ack.json")') && serviceSource.includes("await writeJson(this.ackFile(), ack)"));
+ok("normalizeAck 在纯函数模块里（service 只负责读写文件，判据不分散）", historySource.includes("export function normalizeAck(") && !serviceSource.includes("export function normalizeAck"));
+ok("基线冻结整份快照（不是时间戳），读回用 normalizeAck 兜坏文件 / 空目录", historySource.includes("export function normalizeAck") && serviceSource.includes("normalizeAck(raw)") && serviceSource.includes("ackSnapshotAt"));
+ok("/ack 路由必须 confirm:true 才写盘（按钮可误点，接口不该给「少传一个字段」的机会）", /if \(path === "\/ack" && method === "POST"\)/.test(indexSource) && indexSource.includes("body.confirm !== true") && indexSource.includes("catalog.markAcked()"));
+ok("/state 同时给两个窗口：changes（上次快照）与 sinceAck（上次确认），不互相冒充", serviceSource.includes("sinceAck: await this.sinceAckSummary()") && serviceSource.includes("changes: this.changesSummary()"));
+ok("health 报出正文哈希覆盖率与确认时间（0/N、「没标记过」都要说得出来）", serviceSource.includes("skillHashes:") && serviceSource.includes("ack: ack") && toolsSource.includes("正文指纹：Skill") && toolsSource.includes("变化确认："));
+ok("导出报告区分「自上次快照」与「自上次确认」，并删掉「正文改动看不见」的旧口径", serviceSource.includes("自上次确认（") && !serviceSource.includes("**Skill 正文改动看不见**"));
+ok("面板：确认过的窗口优先（sinceAck），带「标记已看过」按钮，正文改动写成「正文已改」", clientSource.includes("props.sinceAck") && clientSource.includes("标记已看过") && clientSource.includes('api("/ack"') && clientSource.includes("正文已改"));
+ok("hosttest 覆盖确认闭环：无 confirm 被拒 / 写基线 / 清零 / health 报得出", hosttestSource.includes('callRoute("/ack"') && hosttestSource.includes("history-ack.json") && hosttestSource.includes("sinceAck") && hosttestSource.includes("skillHashes"));
 
 /* ⑧ R18：把「跑哪几条命令才算验完」与「宿主里跑的是新代码吗」都固化 */
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");

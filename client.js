@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r18.0";
+		const BUILD = "r19.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -1868,11 +1868,15 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/* ── R17：变化条（自上次目录快照以来变了什么） ──
+		/* ── R17：变化条（自上次目录快照以来变了什么）；R19 起：确认过的窗口优先 ──
 		   只在**真有变化**时出现：第一条快照（first）与 0 处变化都不占版面 ——
-		   "还没有历史"和"没变化"是两件事，界面上都不能画成一条空横幅。 */
+		   "还没有历史"和"没变化"是两件事，界面上都不能画成一条空横幅。
+		   ★ R19：标记过「已看过」之后显示的是**自那次确认以来**的窗口（sinceAck）；
+		     没标记过才退回"自上次快照以来"。两个窗口语义不同，不能混着写。 */
 		function ChangesBar(props) {
-			const changes = props.changes;
+			const [acking, setAcking] = useState(false);
+			const acked = props.sinceAck && !props.sinceAck.first ? props.sinceAck : null;
+			const changes = acked || props.changes;
 			if (!changes || changes.first) return null;
 			const counts = changes.counts || {};
 			if (!(Number(counts.total) > 0)) return null;
@@ -1882,22 +1886,41 @@ window.__ModuleLoader__.load({
 				["version", "升版", changes.versionChanged, (item) => item.name + " " + (item.from || "?") + " → " + (item.to || "?")],
 				["source", "来源变", changes.sourceChanged, (item) => item.name + " " + (item.from || "?") + " → " + (item.to || "?")],
 				["loadState", "加载态变", changes.loadStateChanged, (item) => item.name + " " + (item.from || "未判") + " → " + (item.to || "未判")],
-				["edited", "被编辑", changes.edited, (item) => item.name + "（" + item.from + " → " + item.to + "）"],
+				["edited", "被编辑", changes.edited, (item) => (item.reason === "content" ? item.name + " 正文已改（" + (item.from || "?") + " → " + (item.to || "?") + "）" : item.name + "（" + item.from + " → " + item.to + "）")],
 			].filter(([, , list]) => Array.isArray(list) && list.length > 0);
+			/* 把当前目录冻结成基线（服务端要求 confirm:true；只写数据目录里的 history-ack.json） */
+			async function markAcked() {
+				if (acking) return;
+				setAcking(true);
+				try {
+					const result = await api("/ack", { method: "POST", body: JSON.stringify({ confirm: true }) });
+					if (result && result.ok) set({ notice: "已标记看过（基线 " + fmtDateTime(result.ackAt) + "，共 " + (result.entries || 0) + " 条）—— 之后的变化会单独计数" });
+					else set({ notice: "标记失败：" + String((result && result.error) || "未知错误") });
+				} catch (error) {
+					set({ notice: "标记失败：" + String((error && error.message) || error) });
+				}
+				setAcking(false);
+				await refresh();
+			}
 			return h(
 				"div",
 				{ className: "dpc-changes" + (props.open ? " is-open" : "") },
 				h(
-					"button",
-					{
-						className: "dpc-changes-head",
-						onClick: props.onToggle,
-						title: "自上次目录快照以来：新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑。点一下摊开明细；判据是声明层面（Skill 正文改动看不见）",
-					},
-					h("span", { className: "dpc-changes-mark" }, props.open ? "▾" : "▸"),
-					h("span", { className: "dpc-changes-title" }, "自 " + fmtDateTime(changes.baselineAt) + " 以来"),
-					h("span", { className: "dpc-changes-count" }, (counts.total || 0) + " 处变化"),
-					groups.map(([key, label, list]) => h("span", { key: key, className: "dpc-changes-chip" }, label + " " + list.length + (Number(counts[key]) > list.length ? "+" : ""))),
+					"div",
+					{ className: "dpc-changes-headrow" },
+					h(
+						"button",
+						{
+							className: "dpc-changes-head",
+							onClick: props.onToggle,
+							title: "自上次目录快照以来：新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑。点一下摊开明细；判据是声明层面（Skill 比正文内容哈希，改一个字也看得见）",
+						},
+						h("span", { className: "dpc-changes-mark" }, props.open ? "▾" : "▸"),
+						h("span", { className: "dpc-changes-title" }, acked ? "自你 " + fmtDateTime(changes.ackAt || changes.baselineAt) + " 确认以来" : "自 " + fmtDateTime(changes.baselineAt) + " 以来"),
+						h("span", { className: "dpc-changes-count" }, (counts.total || 0) + " 处变化"),
+						groups.map(([key, label, list]) => h("span", { key: key, className: "dpc-changes-chip" }, label + " " + list.length + (Number(counts[key]) > list.length ? "+" : ""))),
+					),
+					h("button", { className: "dpc-changes-ack", onClick: markAcked, disabled: acking, title: "把当前目录冻结成基线：之后的变化单独计数。只写数据目录里的 history-ack.json，不碰任何插件与 Skill 文件" }, acking ? "标记中…" : "标记已看过"),
 				),
 				props.open
 					? h(
@@ -1911,7 +1934,7 @@ window.__ModuleLoader__.load({
 									h("span", { className: "dpc-mono" }, list.map(text).join("、") + (Number(counts[key]) > list.length ? "　等 " + counts[key] + " 条" : "")),
 								),
 							),
-							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源与有没有描述（正文改动看不见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。"),
+							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源 / 有没有描述 / **正文内容哈希**（改一个字也看得见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。点「标记已看过」可把确认窗口清零。"),
 						)
 					: null,
 			);
@@ -2354,8 +2377,8 @@ window.__ModuleLoader__.load({
 							"后台任务：" + job.kind + " · " + (job.progress.done || 0) + "/" + (job.progress.total || "?") + (job.progress.paused ? "（已暂停）" : "") + "　界面可以继续用，算完自动刷新",
 						)
 					: null,
-				/* R17：自上次快照以来变了什么（真有变化才占版面） */
-				h(ChangesBar, { changes: data && data.changes, open: state.showChanges, onToggle: () => set({ showChanges: !state.showChanges }) }),
+				/* R17：自上次快照以来变了什么（真有变化才占版面）；R19：标记过「已看过」就只看那之后的窗口 */
+				h(ChangesBar, { changes: data && data.changes, sinceAck: data && data.sinceAck, open: state.showChanges, onToggle: () => set({ showChanges: !state.showChanges }) }),
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
@@ -2930,6 +2953,11 @@ window.__ModuleLoader__.load({
 .dpc-sim-foot{margin-top:3px;font-size:11px;line-height:1.55}
 /* R17：变化条 —— 一行摘要 + 点开明细；只在真有变化时出现 */
 .dpc-changes{margin:0 0 6px;border-radius:10px;border:1px solid rgba(57,100,254,.22);background:rgba(57,100,254,.05)}
+.dpc-changes-headrow{display:flex;align-items:center;gap:2px;padding-right:5px}
+.dpc-changes-headrow .dpc-changes-head{flex:1;min-width:0;width:auto}
+.dpc-changes-ack{flex:0 0 auto;font:inherit;font-size:10.5px;padding:2px 6px;border-radius:6px;border:1px solid rgba(57,100,254,.3);background:none;color:#2f5fd0;cursor:pointer;white-space:nowrap}
+.dpc-changes-ack:hover{background:rgba(57,100,254,.08)}
+.dpc-changes-ack:disabled{opacity:.55;cursor:default}
 .dpc-changes-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap;width:100%;text-align:left;background:none;border:0;padding:6px 9px;cursor:pointer;font:inherit;color:inherit}
 .dpc-changes-mark{color:var(--dpc-klein);font-weight:700}
 .dpc-changes-title{font-size:11.5px;color:var(--dsw-alias-label-secondary,#6b7280)}

@@ -917,6 +917,52 @@ ok("变化条：第一条快照 / 0 处变化都不占版面（「还没有历�
 	T.store.data = saved;
 	return !firstText.includes("处变化") && !zeroText.includes("处变化");
 })());
+
+/* ── R19：确认窗口（标记「已看过」之后只看那之后的变化）+ 正文改动措辞 ── */
+const sinceAckFixture = {
+	at: 1761400000000,
+	baselineAt: 1761350000000,
+	first: false,
+	total: 133,
+	unchanged: 132,
+	acked: true,
+	ackAt: 1761350000000,
+	ackEntries: 133,
+	counts: { added: 0, removed: 0, version: 1, source: 0, loadState: 0, edited: 0, total: 1 },
+	added: [],
+	removed: [],
+	versionChanged: [{ id: "plugin:a", name: "alpha", kind: "plugin", from: "1.0.0", to: "1.1.0" }],
+	sourceChanged: [],
+	loadStateChanged: [],
+	edited: [],
+};
+ok("变化条 R19：标记过「已看过」后显示确认窗口（不再冒充「自上次快照」），并带标记按钮", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, changes: changesFixture, sinceAck: sinceAckFixture };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return text.includes("确认以来") && text.includes("1 处变化") && text.includes("标记已看过") && !text.includes("3 处变化");
+})());
+ok("变化条 R19：确认窗口为 0 处时不占版面（窗口真的清零，而不是继续显示旧变化）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, changes: changesFixture, sinceAck: { ...sinceAckFixture, counts: { ...sinceAckFixture.counts, total: 0 }, versionChanged: [] } };
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return !text.includes("处变化");
+})());
+ok("变化条 R19：正文改动写成「正文已改」并带短哈希", (() => {
+	const saved = T.store.data;
+	const savedOpen = T.store.showChanges;
+	T.store.showChanges = true;
+	T.store.data = {
+		...data,
+		changes: { ...changesFixture, counts: { ...changesFixture.counts, added: 0, version: 0, edited: 1, total: 1 }, added: [], versionChanged: [], edited: [{ id: "skill:gamma", name: "gamma", kind: "skill", reason: "content", from: "aaaa1111", to: "bbbb3333" }] },
+	};
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showChanges = savedOpen;
+	return text.includes("gamma 正文已改（aaaa1111 → bbbb3333）");
+})());
 ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一致时不出现", (() => {
 	const saved = T.store.data;
 	T.store.data = { ...data, build: { label: "0.18.0 · 2026-10-24 13:20", version: "0.18.0", loaded: "0.17.0", stale: true } };

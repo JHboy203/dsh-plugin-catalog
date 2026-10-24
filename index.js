@@ -289,6 +289,15 @@ export async function apply(ctx) {
 					return json(res, 400, { ok: false, error: "unknown what" });
 				}
 
+				/* R19：把当前目录冻结成「已看过」基线（确认后变化窗口清零）。
+				   ★ 写盘闸照抄 /skillsync：必须显式 confirm:true —— 按钮可以被误点，
+				     接口不该给"少传一个字段就写盘"的机会。只写数据目录里的 history-ack.json。 */
+				if (path === "/ack" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (body.confirm !== true) return json(res, 400, { ok: false, error: "需要 confirm:true：标记「已看过」会冻结当前目录作为基线" });
+					return json(res, 200, await catalog.markAcked());
+				}
+
 				if (path === "/preflight" && method === "POST") {
 					const body = await readJsonBody(req);
 					/* dry=true：只回"会跑什么"，不起子进程（自检脚本本身不该在自检里跑一遍）。

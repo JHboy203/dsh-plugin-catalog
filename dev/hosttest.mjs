@@ -1077,6 +1077,52 @@ ok(
 	String(historyAfter.snapshots.length),
 );
 
+/* ── R19：Skill 正文哈希 + 「已看过」确认窗口 ──
+   判据落在磁盘上的 history.json / history-ack.json 与 /state、/health 两处视图：
+   正文哈希必须进快照（否则正文改动永远看不见）；确认必须写基线文件、之后窗口清零。 */
+const ackPath = join(dataDir, "history-ack.json");
+const ackBefore = existsSync(ackPath);
+const stateBeforeAck = (await callRoute("/state")).json;
+ok(
+	"确认窗口：没标记过时 /state.sinceAck 是 null（不能拿「自上次快照」冒充确认过）",
+	ackBefore ? Boolean(stateBeforeAck.sinceAck && stateBeforeAck.sinceAck.acked === true) : stateBeforeAck.sinceAck === null,
+	JSON.stringify(stateBeforeAck.sinceAck && { acked: stateBeforeAck.sinceAck.acked, total: stateBeforeAck.sinceAck.counts?.total }),
+);
+const skillSnapshotEntries = Object.entries(historyAfter.snapshots[historyAfter.snapshots.length - 1]?.entries || {}).filter(([, entry]) => entry.kind === "skill");
+ok(
+	"Skill 正文哈希进快照：每条 skill 都有 12 位内容哈希（缺一条 = 那条正文改动永远看不见）",
+	skillSnapshotEntries.length > 0 && skillSnapshotEntries.every(([, entry]) => /^[0-9a-f]{12}$/.test(String(entry.content || ""))),
+	`${skillSnapshotEntries.length} 条 skill / 有哈希 ${skillSnapshotEntries.filter(([, entry]) => /^[0-9a-f]{12}$/.test(String(entry.content || ""))).length}`,
+);
+const healthHashes = (await callRoute("/health")).json?.skillHashes;
+ok("正文指纹覆盖率：/health 报出 hashed = total（0/N 意味着正文改动完全看不见）", Boolean(healthHashes) && healthHashes.total > 0 && healthHashes.hashed === healthHashes.total, JSON.stringify(healthHashes));
+const ackRejected = await callRoute("/ack", "POST", {});
+ok(
+	"标记已看过：不带 confirm 直接被拒（400，且不写基线文件）",
+	ackRejected.status === 400 && ackRejected.json?.ok === false && (ackBefore || !existsSync(ackPath)),
+	JSON.stringify({ status: ackRejected.status, json: ackRejected.json }),
+);
+const ackAccepted = await callRoute("/ack", "POST", { confirm: true });
+ok(
+	"标记已看过：带 confirm 才写基线（返回确认时间与冻结的条目数）",
+	ackAccepted.status === 200 && ackAccepted.json?.ok === true && Number(ackAccepted.json.ackAt) > 0 && Number(ackAccepted.json.entries) > 0,
+	JSON.stringify(ackAccepted.json && { ok: ackAccepted.json.ok, entries: ackAccepted.json.entries }),
+);
+const ackFile = existsSync(ackPath) ? JSON.parse(readFileSync(ackPath, "utf8")) : null;
+ok(
+	"已看过基线落 history-ack.json（冻结整份快照，不是只存一个时间戳）",
+	Boolean(ackFile) && Number(ackFile.at) > 0 && ackFile.snapshot && Object.keys(ackFile.snapshot.entries || {}).length > 0 && /^[0-9a-f]{12}$/.test(String(ackFile.snapshot.fingerprint || "")),
+	JSON.stringify(ackFile && { at: ackFile.at, entries: Object.keys(ackFile.snapshot.entries || {}).length, fingerprint: ackFile.snapshot.fingerprint }),
+);
+const stateAfterAck = (await callRoute("/state")).json?.sinceAck;
+ok(
+	"确认之后 /state.sinceAck 立即清零（同一目录：total=0，基线时间就是确认时间）",
+	Boolean(stateAfterAck) && stateAfterAck.acked === true && stateAfterAck.counts.total === 0 && Number(stateAfterAck.ackAt) > 0 && Number(stateAfterAck.baselineAt) === Number(stateAfterAck.ackAt),
+	JSON.stringify(stateAfterAck && { acked: stateAfterAck.acked, total: stateAfterAck.counts?.total, ackAt: stateAfterAck.ackAt, baselineAt: stateAfterAck.baselineAt }),
+);
+const healthAck = (await callRoute("/health")).json?.ack;
+ok("确认之后 /health.ack 报出确认时间与自那以来的计数", Boolean(healthAck) && Number(healthAck.at) > 0 && healthAck.since && healthAck.since.total === 0, JSON.stringify(healthAck && { at: healthAck.at, since: healthAck.since }));
+
 /* ── 越权请求被拒 ── */
 {
 	const handler = routes[0];
