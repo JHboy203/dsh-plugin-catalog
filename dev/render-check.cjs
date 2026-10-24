@@ -915,6 +915,71 @@ ok("预演结果块：没预演过就不出现（刷新后不许拿旧「安全�
 	T.store.sim = savedSim;
 	return !text.includes("删除预演（只算不删）") && text.includes("处置清单（只生成、不执行）");
 })());
+/* ── R27：对账（执行并复核） ──
+   验的是「结论与原因必须同时出现」：只报一句"白删"不解释为什么，等于让人重来一遍；
+   以及**卡里仍然没有任何删除按钮** —— 对账只回答事实，处置仍由人自己做。 */
+const verifyFake = {
+	ok: true,
+	verdict: "fake",
+	at: 1761300000000,
+	now: 1761300000000 + 2 * 86400000,
+	ageMs: 2 * 86400000,
+	counts: { total: 4, gone: 2, still: 2, fakeGone: 2, drift: 1, reclaimedBytes: 3 * 1024 * 1024, remainingBytes: 5 * 1024 * 1024, linkBytes: 0 },
+	members: [],
+	fakeGone: [
+		{ dirName: "dsh-pinned", pkg: "dsh-pinned", reasons: ["pinned"], drift: [], declarers: [] },
+		{ dirName: "dsh-half", pkg: "dsh-half", reasons: ["declared-outside"], drift: [], declarers: ["dsh-live"] },
+	],
+	drift: [{ dirName: "dsh-loaded", pkg: "dsh-loaded", reasons: [], drift: ["nowLoaded"], declarers: [], state: "bundle", via: "bundles" }],
+	boundaries: [],
+};
+let verifyText = "";
+ok("对账结果块：结论 + 白删名单 + 逐条原因 + 计划龄 + 已回收/还能回收 同时出现", (() => {
+	const saved = T.store.data;
+	const savedVerify = T.store.verify;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.verify = verifyFake;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	verifyText = text;
+	T.store.data = saved;
+	T.store.verify = savedVerify;
+	return (
+		text.includes("对账（不动盘）") &&
+		text.includes("白删") &&
+		text.includes("dsh-pinned") &&
+		text.includes("dsh-half") &&
+		text.includes("pnpm install 会装回来") &&
+		text.includes("组外还有已装的包声明它") &&
+		text.includes("计划过期") &&
+		text.includes("dsh-loaded") &&
+		text.includes("今天它已经会被加载了") &&
+		text.includes("计划 2 天前 · 成员 4 个") &&
+		text.includes("已回收 3.0 MB") &&
+		text.includes("还能回收 5.0 MB")
+	);
+})(), verifyText.includes("对账（不动盘）") ? verifyText.slice(verifyText.indexOf("对账（不动盘）"), verifyText.indexOf("对账（不动盘）") + 700) : "NO_VERIFY_BLOCK");
+ok("对账结果块：卡里**依然没有任何删除按钮**（对账只出结论，不给动作）", (() => {
+	const saved = T.store.data;
+	const savedVerify = T.store.verify;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.verify = verifyFake;
+	const tree = expand(render(T.Panel, {}));
+	const card = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-uninstall"))[0];
+	const labels = card ? findAll(card, (node) => String((node.props && node.props.className) || "").includes("dpc-btn")).map((node) => textsOf(node).join(" ")) : [];
+	T.store.data = saved;
+	T.store.verify = savedVerify;
+	return labels.some((text) => text.includes("对账（不动盘）")) && labels.every((text) => !/删除|卸载执行|立即清/.test(text));
+})(), "卡内按钮：" + JSON.stringify(cardButtonTexts));
+ok("对账结果块：没对账过就不出现（刷新后不许拿旧「已删干净」背书下一次动手）", (() => {
+	const saved = T.store.data;
+	const savedVerify = T.store.verify;
+	T.store.data = { ...data, uninstall: uninstallFixture };
+	T.store.verify = null;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.verify = savedVerify;
+	return !text.includes("白删（会被装回来 / 入口指空）") && !text.includes("计划过期：") && text.includes("对账（不动盘）") && text.includes("处置清单（只生成、不执行）");
+})());
 /* ── R17：变化条（自上次快照以来变了什么） ── */
 const changesFixture = {
 	at: 1761300000000,

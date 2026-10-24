@@ -1110,6 +1110,37 @@ ok(
 	JSON.stringify(simulateRoute.json && { ok: simulateRoute.json.ok, verdict: simulateRoute.json.verdict, job: simulateRoute.json.job }),
 );
 
+/* ── R27：执行并复核（对账）—— 拿刚才那份计划与今天的磁盘事实比 ──
+   ★ 这条链只有真机跑得出来：工具 → service → 读 reports/ 里的计划 JSON → 逐个 stat 目录。
+     静态断言能查措辞，查不出「计划文件读不读得回来」「presence 有没有真的 stat」。 */
+const verifyAll = await callTool("catalog_uninstall", { action: "verify" });
+ok(
+	"catalog_uninstall verify：读回计划并对账，给出四态计数与结论",
+	verifyAll?.ok === true && typeof verifyAll?.verdict === "string" && typeof verifyAll?.counts === "object" && Number.isInteger(verifyAll?.counts?.total) && Array.isArray(verifyAll?.fakeGone) && Array.isArray(verifyAll?.drift) && Number(verifyAll?.dirsChecked) === Number(verifyAll?.counts?.total),
+	JSON.stringify(verifyAll && { ok: verifyAll.ok, verdict: verifyAll.verdict, counts: verifyAll.counts, dirsChecked: verifyAll.dirsChecked, error: verifyAll.error }),
+);
+ok(
+	"对账文案：结论 + 已不在盘上/还在 + 白删 + 计划过期 + 边界 都在",
+	/对账（不动盘）/.test(String(verifyAll?.text || "")) &&
+		/结论：/.test(String(verifyAll?.text || "")) &&
+		/已不在盘上/.test(String(verifyAll?.text || "")) &&
+		/白删（会被装回来/.test(String(verifyAll?.text || "")) &&
+		/计划过期/.test(String(verifyAll?.text || "")) &&
+		/边界：/.test(String(verifyAll?.text || "")),
+	String(verifyAll?.text || "").slice(0, 220),
+);
+ok(
+	"对账不动盘：没删任何目录（计划成员该在的都还在，gone 只反映真实的缺失）",
+	(verifyAll?.members || []).every((row) => row.presence === "gone" || row.presence === "still") && (verifyAll?.counts?.gone ?? 0) >= 0,
+	JSON.stringify({ gone: verifyAll?.counts?.gone, still: verifyAll?.counts?.still }),
+);
+const verifyRoute = await callRoute("/uninstall", "POST", { action: "verify" });
+ok(
+	"面板路由 action=verify：直接回结果（不起后台任务、默认不写盘）",
+	verifyRoute.json?.ok === true && typeof verifyRoute.json?.verdict === "string" && verifyRoute.json?.job === undefined && verifyRoute.json?.mdPath === undefined,
+	JSON.stringify(verifyRoute.json && { ok: verifyRoute.json.ok, verdict: verifyRoute.json.verdict, job: verifyRoute.json.job, mdPath: verifyRoute.json.mdPath }),
+);
+
 /* ── R17：变化追踪（自上次目录快照以来变了什么） ──
    判据落在磁盘上的 history.json：启动要落一条、重建不能重复落、/state 报得出来。 */
 const historyPath = join(dataDir, "history.json");

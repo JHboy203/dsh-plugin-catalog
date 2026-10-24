@@ -334,6 +334,13 @@ export async function apply(ctx) {
 					const body = await readJsonBody(req);
 					/* R16：删除预演 —— 在内存里把包摘掉、重算加载态；不动盘、不删目录、不写文件 */
 					if (body.action === "simulate") return json(res, 200, await catalog.simulateUninstall({ packages: Array.isArray(body.packages) ? body.packages.map(String) : [] }));
+					/* R27：执行并复核 —— 拿一份已存在的计划与今天的磁盘事实对账。
+					   默认只算不写盘；只有 `confirm:true` 且明确 action=verify 才落一份 reports/uninstall-verify-*.md。 */
+					if (body.action === "verify") {
+						const planPath = String(body.planPath || "");
+						if (body.confirm === true) return json(res, 200, await catalog.writeVerifyReport({ confirm: true, planPath }));
+						return json(res, 200, await catalog.verifyUninstall({ planPath }));
+					}
 					if (body.apply !== true) {
 						const started = catalog.startJob("uninstall", async (progress) => await catalog.runUninstall({ onProgress: progress }));
 						if (started.ok === false) return json(res, 200, { ...started, hint: "已有后台任务在跑：等它结束后再点一次「处置清单」" });

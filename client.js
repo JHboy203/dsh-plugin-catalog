@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r26.1";
+		const BUILD = "r27.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -150,6 +150,10 @@ window.__ModuleLoader__.load({
 			   刷新后必须是「还没预演」，不能拿一份过期的"安全"结论去背书一次删除。 */
 			sim: null,
 			simBusy: false,
+			/* R27：处置清单的**对账**结论（拿计划与今天的磁盘事实比）。
+			   与 sim 同一条纪律：**不进 localStorage** —— 一份过期的「已经删干净」会替人背书下一次动手。 */
+			verify: null,
+			verifyBusy: false,
 			/* R17：变化条默认收起（它是"接手时看一眼"的信息，不该长期占版面）。 */
 			showChanges: false,
 			/* R21：更早窗口的时间线（与当前变化窗口分开折叠，不抢版面） */
@@ -1900,6 +1904,51 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R27：对账（执行并复核）的结果块 ──
+		   回答的是「照这份计划动完手之后，盘上到底是什么样」：已不在盘上的 / 还在的 /
+		   **白删**（还会被装回来或入口指空）/ 计划过期（今天的事实不再支持当初的判断）。
+		   ★ 结论与「为什么」必须同时出现：一个红字不解释原因，等于让人重来一遍。
+		   ★ 这里一个动作按钮都不给 —— 对账只回答事实，处置仍是人自己去做。 */
+		const VERIFY_LABEL = { noplan: "计划没内容", intact: "还没动", clean: "已删干净", fake: "白删", partial: "删了一部分" };
+		const VERIFY_REASON_TEXT = {
+			bundle: "还在 dsh.profile.bundles 里（启动会去找它）",
+			config: "还有未关掉的配置条目写着它",
+			pinned: "profile/package.json 还声明着它（pnpm install 会装回来）",
+			"declared-outside": "组外还有已装的包声明它",
+			nowLoaded: "今天它已经会被加载了",
+			nowDeclared: "今天组外有包声明它",
+		};
+		function VerifyBlock(props) {
+			const verify = props.verify;
+			if (!verify) return null;
+			const counts = verify.counts || {};
+			const verdict = String(verify.verdict || "");
+			const fakeGone = Array.isArray(verify.fakeGone) ? verify.fakeGone : [];
+			const drift = Array.isArray(verify.drift) ? verify.drift : [];
+			const names = (list, limit) => (list.length === 0 ? "无" : list.slice(0, limit).map((row) => row.dirName).join("、") + (list.length > limit ? " 等 " + list.length + " 个" : ""));
+			const why = (row) => [...(row.reasons || []), ...(row.drift || [])].map((kind) => VERIFY_REASON_TEXT[kind] || kind).join("；");
+			const calm = verdict === "clean" || verdict === "intact";
+			return h(
+				"div",
+				{ className: "dpc-sim dpc-verify" + (verdict === "fake" ? " is-bad" : calm ? " is-ok" : " is-warn") },
+				h(
+					"div",
+					{ className: "dpc-sim-head" },
+					h("span", { className: "dpc-sim-mark" }, verdict === "fake" ? "!" : calm ? "✓" : "·"),
+					h("span", { className: "dpc-sim-title" }, "对账（不动盘）"),
+					h("span", { className: "dpc-muted" }, "｜计划 " + (verify.ageMs > 0 ? Math.floor(verify.ageMs / 86400000) + " 天前" : "本次会话") + " · 成员 " + (counts.total || 0) + " 个"),
+					h("span", { className: "dpc-sim-verdict" }, VERIFY_LABEL[verdict] || verdict),
+					h("span", { className: "dpc-sim-ok dpc-muted" }, "｜已回收 " + fmtBytes(counts.reclaimedBytes || 0) + " · 还能回收 " + fmtBytes(counts.remainingBytes || 0)),
+				),
+				h("div", { className: "dpc-sim-row" }, "已不在盘上 " + (counts.gone || 0) + " 个 ／ 还在 " + (counts.still || 0) + " 个"),
+				h("div", { className: "dpc-sim-row" + (fakeGone.length > 0 ? " dpc-bad" : "") }, "白删（会被装回来 / 入口指空）：" + names(fakeGone, 6)),
+				fakeGone.length > 0 ? h("div", { className: "dpc-sim-row dpc-bad dpc-mono" }, fakeGone.slice(0, 4).map((row) => row.dirName + "：" + why(row)).join("；")) : null,
+				h("div", { className: "dpc-sim-row" + (drift.length > 0 ? " dpc-sim-warn" : "") }, "计划过期：" + names(drift, 6)),
+				drift.length > 0 ? h("div", { className: "dpc-sim-row dpc-sim-warn dpc-mono" }, drift.slice(0, 4).map((row) => row.dirName + "：" + why(row) + (row.state && row.state !== "dormant" ? "（" + row.state + "）" : "")).join("；")) : null,
+				h("div", { className: "dpc-sim-foot dpc-muted" }, "判定口径：目录在不在只 stat 计划里点名的那几个；「还会不会指空」是声明层面（bundles / 未关掉的配置条目 / profile 依赖键），运行时按路径 require() 看不见。对账不改任何东西。"),
+			);
+		}
+
 		function UninstallCard(props) {
 			const plan = props.plan;
 			if (!plan) return null;
@@ -1952,12 +2001,15 @@ window.__ModuleLoader__.load({
 				),
 				/* R16：预演 —— 删之前先问一句「会不会有东西指空」 */
 				props.sim ? h(SimBlock, { sim: props.sim }) : null,
+				/* R27：对账 —— 动完手之后回来问一句「盘上到底成了什么样」 */
+				props.verify ? h(VerifyBlock, { verify: props.verify }) : null,
 				h(
 					"div",
 					{ className: "dpc-row" },
 					h("button", { className: "dpc-btn dpc-btn-sm" + (props.confirm ? " is-on" : ""), onClick: props.onWrite, disabled: props.busy }, props.busy ? "写入中…" : props.confirm ? "确认写入（不会删任何目录）" : "写入 reports/"),
 					props.confirm ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancelConfirm, disabled: props.busy }, "取消") : null,
 					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onSimulate, disabled: props.busy || props.simBusy, title: "在内存里把这些包从依赖图上摘掉、重算加载态：只算，不动盘、不删任何目录" }, props.simBusy ? "预演中…" : "预演（不动盘）"),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onVerify, disabled: props.busy || props.verifyBusy, title: "拿这份计划与今天的磁盘/声明事实对账：哪些目录真的没了、哪些白删（会被装回来或入口指空）、哪些计划已经过期。只算，不动盘、不写文件" }, props.verifyBusy ? "核对中…" : "对账（不动盘）"),
 					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onRerun, disabled: props.busy }, "重新算"),
 					plan.savedTo ? h("span", { className: "dpc-muted dpc-mono" }, plan.savedTo) : null,
 				),
@@ -2626,6 +2678,19 @@ window.__ModuleLoader__.load({
 				set({ sim: result, notice: null });
 			}
 
+			/* R27：对账 —— 拿这份计划与**今天**的磁盘/声明事实比，只算不写盘。
+			   ★ 结论同样只放前端 state：刷新后必须是「还没对账」。 */
+			async function runVerify() {
+				set({ verifyBusy: true });
+				const result = await post("/uninstall", { action: "verify" });
+				set({ verifyBusy: false });
+				if (!result || result.ok === false) {
+					set({ notice: (result && result.error) || "对账失败：先算一次处置清单，或先落一份计划", verify: null });
+					return;
+				}
+				set({ verify: result, notice: null });
+			}
+
 			async function runClassify() {
 				await post("/classify", {});
 				await refresh();
@@ -2812,6 +2877,9 @@ window.__ModuleLoader__.load({
 							sim: state.sim,
 							simBusy: state.simBusy,
 							onSimulate: runSimulate,
+							verify: state.verify,
+							verifyBusy: state.verifyBusy,
+							onVerify: runVerify,
 							onWrite: writeUninstallReport,
 							onCancelConfirm: () => set({ uninstallConfirm: false }),
 							onRerun: runUninstall,
@@ -3361,6 +3429,9 @@ window.__ModuleLoader__.load({
   display:flex;flex-direction:column;gap:3px;font-size:11.5px;line-height:1.6}
 .dpc-sim.is-ok{border-color:rgba(22,163,74,.35);background:rgba(22,163,74,.05)}
 .dpc-sim.is-bad{border-color:rgba(235,64,52,.35);background:rgba(235,64,52,.05)}
+.dpc-sim.is-warn{border-color:rgba(180,83,9,.30);background:rgba(217,119,6,.06)}
+.dpc-sim.is-warn .dpc-sim-mark{color:#b45309}
+.dpc-sim.is-warn .dpc-sim-verdict{background:rgba(217,119,6,.14);color:#8a5a06}
 .dpc-sim-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .dpc-sim-mark{font-weight:700}
 .dpc-sim.is-ok .dpc-sim-mark{color:#16a34a}
