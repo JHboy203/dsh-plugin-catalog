@@ -84,6 +84,13 @@ const GOOD = {
 	ok("H8 空输入不抛（verdict=warn，九项仍齐全）", report.verdict === "warn" && report.checks.length === 9 && typeof renderHandoff(report) === "string", JSON.stringify({ verdict: report.verdict }));
 }
 
+/* ── 9. ship 报告解析不出数字 → warn（文件在 ≠ 体检过） ── */
+{
+	const report = buildHandoff({ ...GOOD, ship: { ...GOOD.ship, passed: 0, failed: 0 } });
+	const check = report.checks.find((item) => item.id === "ship");
+	ok("H9 ship 报告 0/0（解析失败）→ warn，不冒充通过", report.verdict === "warn" && check.status === "warn" && check.detail.includes("没解析出"), check.detail);
+}
+
 const failed = results.filter((item) => !item.pass);
 if (process.argv.includes("--json")) {
 	console.log(JSON.stringify({ passed: results.length - failed.length, failed: failed.length, results }, null, 1));

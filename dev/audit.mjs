@@ -925,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.26.0 / r26.0", /"version": "0\.26\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r26.0"'));
+ok("版本号与构建戳同步抬到 0.26.1 / r26.1", /"version": "0\.26\.1"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r26.1"'));
 
 
 ok(

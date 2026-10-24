@@ -149,7 +149,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   disk already has 0.18.0 — reload the plugin or restart DSH". Why this matters: the build label reads the **disk**
   (package.json + newest file mtime), so it can show 0.18.0 while the host still runs 0.17.0 — and the new tool or
   route simply does not exist. Two rounds (R16/R17) were misjudged as "already live" because of it. The same round
-  also folded the standalone probes into `dev/ship.mjs` (`probes`, now eight probes and 137 invariants), so the one handoff command is
+  also folded the standalone probes into `dev/ship.mjs` (`probes`, now eight probes and 138 invariants), so the one handoff command is
   now **three suites + probes + copy sync**.
 - **What changed since last time (R17)**: a **changes bar** appears at the top of the panel (only when something
   actually changed): "since 10-24 11:27 · 3 changes · 1 added · 2 upgraded", click to expand. History lives in `history.json`:
@@ -494,7 +494,7 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
-node dev/run-probes.mjs       # **the eight probes in one command** (ship's 5th item, 137 checks, about 2 s):
+node dev/run-probes.mjs       # **the eight probes in one command** (ship's 5th item, 138 checks, about 2 s):
                               # understands both closing formats (`passed N / failed M` and "N invariants hold");
                               # under the sandbox it says "run this in the host" instead of looking like broken probes
 node dev/ship-checks.mjs      # the **single source** of the preflight list: ship runs it, POST /preflight{dry} reports it
