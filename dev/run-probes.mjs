@@ -1,5 +1,5 @@
 /**
- * dev/run-probes.mjs — 把七个**独立探针**串成一条（R18；R20 加副本判据；R22 加配置层）。
+ * dev/run-probes.mjs — 把八个**独立探针**串成一条（R18；R20 加副本判据；R22 加配置层；R26 加交接单）。
  *
  * ★ 为什么要有它：探针一直是「有人记得就跑一下」——交接文件里写着五条命令，
  *   而 `dev/ship.mjs` 只跑三层自检（audit / render-check / hosttest），
@@ -31,6 +31,7 @@ const PROBES = [
 	{ id: "history", label: "变化追踪", file: "dev/probe-history.mjs" },
 	{ id: "staging", label: "副本判据", file: "dev/probe-staging.mjs" },
 	{ id: "composition", label: "配置层", file: "dev/probe-composition.mjs" },
+	{ id: "handoff", label: "交接单", file: "dev/probe-handoff.mjs" },
 ];
 
 /** 探针收尾行形如 `probe-tags: passed 12 / failed 0`。 */

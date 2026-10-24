@@ -179,9 +179,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 11 个工具", registeredTools.length, 11);
+eq("注册了 12 个工具", registeredTools.length, 12);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_handoff", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -295,6 +295,21 @@ ok("catalog_list 的文本里带来源中文标签", /官方|自写|第三方|�
 const healthTool = await callTool("catalog_health", {});
 ok("catalog_health 文本含构建与路径", healthTool.text.includes("构建") && healthTool.text.includes("数据目录"));
 ok("catalog_health 文本提示工具注册数", healthTool.text.includes("注册 8"));
+/* R26：交接单工具（只读模式；写盘要显式 write:true） */
+const handoffTool = await callTool("catalog_handoff", {});
+ok(
+	"catalog_handoff 返回九项核对 + 结论 + 下一步（默认不写盘）",
+	handoffTool.ok === true &&
+		["ok", "warn", "bad"].includes(handoffTool.verdict) &&
+		Array.isArray(handoffTool.checks) &&
+		handoffTool.checks.length === 9 &&
+		typeof handoffTool.path === "string" &&
+		handoffTool.path === "" &&
+		handoffTool.text.includes("结论") &&
+		handoffTool.checks.some((check) => check.id === "version") &&
+		handoffTool.checks.some((check) => check.id === "ship"),
+	JSON.stringify({ verdict: handoffTool.verdict, checks: handoffTool.checks?.length, path: handoffTool.path }),
+);
 /* R18：运行中版本 vs 磁盘版本。自检进程读的就是磁盘代码，两者必须一致 ——
    这条同时在守护「LOADED_VERSION 有没有读到 package.json」：读不到会变成空串，stale 也会变 false，
    所以这里显式要求它等于磁盘版本，而不是只要求 stale=false。 */

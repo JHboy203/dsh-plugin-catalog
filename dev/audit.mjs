@@ -77,7 +77,7 @@ const stubService = new Proxy(
 );
 const tools = buildCatalogTools({ service: stubService });
 ok("工具数量 ≥ 6", tools.length >= 6, "实际 " + tools.length);
-const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync"];
+const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync", "catalog_handoff"];
 for (const name of requiredNames) {
 	ok("存在工具 " + name, tools.some((tool) => tool.name === name));
 }
@@ -925,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.25.0 / r25.0", /"version": "0\.25\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r25.0"'));
+ok("版本号与构建戳同步抬到 0.26.0 / r26.0", /"version": "0\.26\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r26.0"'));
 
 
 ok(
@@ -1099,7 +1099,7 @@ ok("health 带 timeline 摘要（total / windows），工具输出有「历史�
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
 ok("探针收进发版体检（第 5 项 probes，不再是「有人记得就跑」）", shipChecksSource.includes('id: "probes"') && shipChecksSource.includes('script: "dev/run-probes.mjs"'));
 ok("面板 dry 与 ship 同一份清单（此前硬编码四项，收进探针后 dry 仍只报四项）", indexSource.includes("checks: shipCheckIds()") && indexSource.includes('from "./dev/ship-checks.mjs"'));
-ok("探针串覆盖七个（loadstate / uninstall / simulate / tags / history / staging / composition）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging", "probe-composition"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
+ok("探针串覆盖八个（loadstate / uninstall / simulate / tags / history / staging / composition / handoff）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging", "probe-composition", "probe-handoff"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
 ok("探针串兼容两种收尾格式（passed/failed 行 与 「N 条不变式全部成立」）", probesRunner.includes("function parseCounts") && probesRunner.includes("function parseInvariants") && probesRunner.includes("parseCounts(text) ||"));
 ok("沙箱里跑探针串会明说「要在宿主里跑」，不会被误判成探针坏了", probesRunner.includes("EPERM") && probesRunner.includes("host_selfcheck"));
 ok("运行中版本被定格（LOADED_VERSION）并与磁盘比（isStaleBuild）", serviceSource.includes("const LOADED_VERSION = (() =>") && serviceSource.includes("function isStaleBuild(") && serviceSource.includes("loaded: { version: LOADED_VERSION"));
@@ -1202,6 +1202,13 @@ ok("下钻：compareComposition 返回 stateChanged / bundlesAdded，且单边�
 ok("面板 / 报告同一份明细：client compositionText 与 describeChange 都点名 id", clientSource.includes("item.stateChanged") && clientSource.includes("bundles +") && historySourceAll.includes("compositionDetailText(item)") && historySourceAll.includes("DISABLED_KIND_LABELS"));
 ok("快照升级补一条带明细的（老快照没有 decls 时只补一次）", serviceSource.includes("const enrich = Boolean(last && snapshot.composition?.decls && !last.composition?.decls)") && serviceSource.includes("&& !enrich"));
 ok("probe-history 覆盖 H33–H37（decls 排序 / 点名翻转 / 点名 bundle / 单边缺 / 截断）", ["H33", "H34", "H35", "H36", "H37"].every((id) => historyProbeSource.includes(id + " ")));
+
+/* ⑪ R26：交接单（catalog_handoff） */
+const handoffSource = readFileSync(new URL("../lib/handoff.mjs", import.meta.url), "utf8");
+const handoffProbeSource = readFileSync(new URL("./probe-handoff.mjs", import.meta.url), "utf8");
+ok("交接单是纯函数（buildHandoff / renderHandoff，九项核对 + verdict + 下一步）", handoffSource.includes("export function buildHandoff") && handoffSource.includes("export function renderHandoff") && handoffSource.includes("HANDOFF_VERSION") && handoffSource.includes("checks.length") === false && handoffSource.includes('"version"') && handoffSource.includes('"ship"'));
+ok("service 汇总既有结论（ship 报告 / git / drift / history / 最新导出），不新扫目录", serviceSource.includes("async handoffReport(") && serviceSource.includes("const PLUGIN_ROOT") && serviceSource.includes("^ship-") && serviceSource.includes("divergenceVsUpstream") && serviceSource.includes("buildHandoff({"));
+ok("工具 catalog_handoff 默认只读、write:true 才落 reports/；hosttest 锁九项", toolsSource.includes('name: "catalog_handoff"') && toolsSource.includes("handoffReport({ write: args.write === true })") && hosttestSource.includes("catalog_handoff 返回九项核对") && handoffProbeSource.includes("H1 ") && handoffProbeSource.includes("H8 "));
 
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));
