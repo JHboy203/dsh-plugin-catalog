@@ -384,7 +384,7 @@ node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 242 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，四项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 第 4 项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 243 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
                               # 七条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读

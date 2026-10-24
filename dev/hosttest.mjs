@@ -980,6 +980,11 @@ ok(
 	simulateAll?.ok === true && typeof simulateAll?.verdict === "string" && typeof simulateAll?.before?.counts === "object" && Array.isArray(simulateAll?.breaking) && Array.isArray(simulateAll?.demoted),
 	JSON.stringify(simulateAll && { ok: simulateAll.ok, verdict: simulateAll.verdict, error: simulateAll.error }),
 );
+ok(
+	"预演的文案把结论与三行风险都写出来（不只回一个 ok）",
+	/删除预演（只算不删）/.test(String(simulateAll?.text || "")) && /结论：/.test(String(simulateAll?.text || "")) && /现在会被加载/.test(String(simulateAll?.text || "")) && /删完会指空的入口/.test(String(simulateAll?.text || "")) && /仍声明它们的包/.test(String(simulateAll?.text || "")) && /加载态/.test(String(simulateAll?.text || "")) && /可回收/.test(String(simulateAll?.text || "")),
+	String(simulateAll?.text || "").slice(0, 200),
+);
 const planMemberCount = (uninstallPlan?.groups || []).reduce((sum, group) => sum + (Number(group.count) || 0), 0);
 ok(
 	"预演的名单就是清单里的那些包（不多不少，且已装的才算）",
