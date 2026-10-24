@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r16.0";
+		const BUILD = "r17.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -146,6 +146,8 @@ window.__ModuleLoader__.load({
 			   刷新后必须是「还没预演」，不能拿一份过期的"安全"结论去背书一次删除。 */
 			sim: null,
 			simBusy: false,
+			/* R17：变化条默认收起（它是"接手时看一眼"的信息，不该长期占版面）。 */
+			showChanges: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -1866,6 +1868,55 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R17：变化条（自上次目录快照以来变了什么） ──
+		   只在**真有变化**时出现：第一条快照（first）与 0 处变化都不占版面 ——
+		   "还没有历史"和"没变化"是两件事，界面上都不能画成一条空横幅。 */
+		function ChangesBar(props) {
+			const changes = props.changes;
+			if (!changes || changes.first) return null;
+			const counts = changes.counts || {};
+			if (!(Number(counts.total) > 0)) return null;
+			const groups = [
+				["added", "新增", changes.added, (item) => "+ " + item.name + (item.version ? " " + item.version : "")],
+				["removed", "消失", changes.removed, (item) => "− " + item.name],
+				["version", "升版", changes.versionChanged, (item) => item.name + " " + (item.from || "?") + " → " + (item.to || "?")],
+				["source", "来源变", changes.sourceChanged, (item) => item.name + " " + (item.from || "?") + " → " + (item.to || "?")],
+				["loadState", "加载态变", changes.loadStateChanged, (item) => item.name + " " + (item.from || "未判") + " → " + (item.to || "未判")],
+				["edited", "被编辑", changes.edited, (item) => item.name + "（" + item.from + " → " + item.to + "）"],
+			].filter(([, , list]) => Array.isArray(list) && list.length > 0);
+			return h(
+				"div",
+				{ className: "dpc-changes" + (props.open ? " is-open" : "") },
+				h(
+					"button",
+					{
+						className: "dpc-changes-head",
+						onClick: props.onToggle,
+						title: "自上次目录快照以来：新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑。点一下摊开明细；判据是声明层面（Skill 正文改动看不见）",
+					},
+					h("span", { className: "dpc-changes-mark" }, props.open ? "▾" : "▸"),
+					h("span", { className: "dpc-changes-title" }, "自 " + fmtDateTime(changes.baselineAt) + " 以来"),
+					h("span", { className: "dpc-changes-count" }, (counts.total || 0) + " 处变化"),
+					groups.map(([key, label, list]) => h("span", { key: key, className: "dpc-changes-chip" }, label + " " + list.length + (Number(counts[key]) > list.length ? "+" : ""))),
+				),
+				props.open
+					? h(
+							"div",
+							{ className: "dpc-changes-list" },
+							groups.map(([key, label, list, text]) =>
+								h(
+									"div",
+									{ key: key, className: "dpc-changes-row" },
+									h("span", { className: "dpc-changes-tag" }, label),
+									h("span", { className: "dpc-mono" }, list.map(text).join("、") + (Number(counts[key]) > list.length ? "　等 " + counts[key] + " 条" : "")),
+								),
+							),
+							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源与有没有描述（正文改动看不见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。"),
+						)
+					: null,
+			);
+		}
+
 		/* ── 面板 ── */
 
 		function Panel() {
@@ -2300,6 +2351,8 @@ window.__ModuleLoader__.load({
 							"后台任务：" + job.kind + " · " + (job.progress.done || 0) + "/" + (job.progress.total || "?") + (job.progress.paused ? "（已暂停）" : "") + "　界面可以继续用，算完自动刷新",
 						)
 					: null,
+				/* R17：自上次快照以来变了什么（真有变化才占版面） */
+				h(ChangesBar, { changes: data && data.changes, open: state.showChanges, onToggle: () => set({ showChanges: !state.showChanges }) }),
 				/* 提示 */
 				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
@@ -2872,6 +2925,17 @@ window.__ModuleLoader__.load({
 .dpc-sim-row{color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-sim-warn{color:#b45309}
 .dpc-sim-foot{margin-top:3px;font-size:11px;line-height:1.55}
+/* R17：变化条 —— 一行摘要 + 点开明细；只在真有变化时出现 */
+.dpc-changes{margin:0 0 6px;border-radius:10px;border:1px solid rgba(57,100,254,.22);background:rgba(57,100,254,.05)}
+.dpc-changes-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap;width:100%;text-align:left;background:none;border:0;padding:6px 9px;cursor:pointer;font:inherit;color:inherit}
+.dpc-changes-mark{color:var(--dpc-klein);font-weight:700}
+.dpc-changes-title{font-size:11.5px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.dpc-changes-count{font-size:12px;font-weight:600}
+.dpc-changes-chip{font-size:10.5px;padding:0 5px;border-radius:5px;background:rgba(57,100,254,.12);color:#2f5fd0;white-space:nowrap}
+.dpc-changes-list{border-top:1px dashed rgba(57,100,254,.25);padding:6px 9px;display:flex;flex-direction:column;gap:3px}
+.dpc-changes-row{display:flex;gap:7px;font-size:11.5px;line-height:1.6;align-items:baseline}
+.dpc-changes-tag{flex:0 0 auto;font-size:10px;padding:0 5px;border-radius:5px;background:var(--dpc-fill-hover);color:var(--dsw-alias-label-secondary,#4b5563)}
+.dpc-changes-foot{font-size:10.5px;line-height:1.55;margin-top:2px}
 /* R11：「同步 staging」——公告条里的入口 + 写盘前的二次确认 */
 .dpc-sync-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
 .dpc-sync-confirm{display:flex;flex-direction:column;gap:6px;font-size:12px;padding:9px 11px;border-radius:10px;

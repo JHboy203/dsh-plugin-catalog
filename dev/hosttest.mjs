@@ -636,6 +636,12 @@ ok(
 	fullExportText.includes("加载路径：入口 **") && fullExportText.includes("不在任何入口上") && fullExportText.includes("份组合文件"),
 	fullExportText.split("\n").filter((line) => line.startsWith("- 加载路径")).join(" | ").slice(0, 240),
 );
+/* R17：变化一节紧跟概览 —— 刚装好第一次只有一条快照，必须如实说"还没有可比的历史" */
+ok(
+	"全量快照带「变化」一节，且第一条快照时如实写清没有可比历史",
+	(fullExportText.includes("## 变化（第一条快照）") && fullExportText.includes("这是**第一条**快照")) || fullExportText.includes("## 变化（基线 "),
+	fullExportText.split("\n").filter((line) => line.startsWith("## 变化") || line.startsWith("- 期间：")).join(" | ").slice(0, 240),
+);
 const dormantEntries = allPlugins.filter((entry) => entry.loadState === "dormant");
 if (dormantEntries.length > 0) {
 	ok(
@@ -1027,6 +1033,38 @@ ok(
 	"面板路由 action=simulate：直接回结果（不起后台任务、不写盘）",
 	simulateRoute.json?.ok === true && typeof simulateRoute.json?.verdict === "string" && simulateRoute.json?.job === undefined,
 	JSON.stringify(simulateRoute.json && { ok: simulateRoute.json.ok, verdict: simulateRoute.json.verdict, job: simulateRoute.json.job }),
+);
+
+/* ── R17：变化追踪（自上次目录快照以来变了什么） ──
+   判据落在磁盘上的 history.json：启动要落一条、重建不能重复落、/state 报得出来。 */
+const historyPath = join(dataDir, "history.json");
+const bootHistory = existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] };
+ok(
+	"变化追踪：第一次目录构建就落了一条快照（12 位指纹 + 条目表 + at）",
+	Array.isArray(bootHistory.snapshots) && bootHistory.snapshots.length >= 1 && /^[0-9a-f]{12}$/.test(String(bootHistory.snapshots[0].fingerprint || "")) && Object.keys(bootHistory.snapshots[0].entries || {}).length > 0 && Number(bootHistory.snapshots[0].at) > 0,
+	JSON.stringify({ snapshots: bootHistory.snapshots?.length, fingerprint: bootHistory.snapshots?.[0]?.fingerprint, entries: Object.keys(bootHistory.snapshots?.[0]?.entries || {}).length }),
+);
+const stateChanges = (await callRoute("/state")).json?.changes;
+ok(
+	"/state.changes：第一条快照时 first=true 且 0 处变化（不能把「还没有历史」说成「没变化」）",
+	stateChanges && (stateChanges.first === true ? stateChanges.counts?.total === 0 : Number.isInteger(stateChanges.counts?.total)),
+	JSON.stringify(stateChanges && { first: stateChanges.first, total: stateChanges.counts?.total, snapshots: stateChanges.snapshots }),
+);
+/* 同一件事绝不能重复追加：两次重建如果都写一条，同一份指纹就会在文件里出现两次。
+   ★ 这里**故意不跑重建**（一次全量重建 30 秒，会把 30 秒的自检拖成 97 秒）——
+     追加判据本身由 probe-history 的 H2/H4/H15（指纹稳定性 + 无变化 diff 为空）与
+     audit 的静态断言覆盖；这里只查落盘结果里有没有重复指纹。 */
+const historyAfter = existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] };
+const fingerprints = historyAfter.snapshots.map((item) => item.fingerprint);
+ok(
+	"历史里没有重复指纹（指纹没变就不追加，同一条不会被记两次）",
+	new Set(fingerprints).size === fingerprints.length && fingerprints.length >= 1,
+	`${fingerprints.length} 条 / ${new Set(fingerprints).size} 个不同指纹`,
+);
+ok(
+	"历史只留最近 20 条（无上限的增长会把数据目录堆成垃圾场）",
+	historyAfter.snapshots.length <= 20,
+	String(historyAfter.snapshots.length),
 );
 
 /* ── 越权请求被拒 ── */

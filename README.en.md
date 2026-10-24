@@ -139,6 +139,21 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   ★ A self-proof: **simulating the whole plan must come out safe**. The criterion says dormant packages sit on no entry
   and no load chain, so removing them all cannot dangle an entry or hit a loaded declarer. That is asserted in hosttest;
   if it ever goes red, the plan picked a wrong package rather than the simulator being broken.
+- **What changed since last time (R17)**: a **changes bar** appears at the top of the panel (only when something
+  actually changed): "since 10-24 11:27 · 3 changes · 1 added · 2 upgraded", click to expand. History lives in `history.json`:
+
+  | Compares | Notes |
+  |---|---|
+  | plugin `version / source / loadState` | upgrade, source edited by hand, load state flipping between dormant and bundle |
+  | skill `source / has a description` | skills carry no version; **body edits are invisible** (that needs a content hash over 58 files) |
+  | not compared | tool count (comes from stats), size (lazy snapshot), git dirty files (always moving) — they would make the bar noisy every day |
+
+  Three hard rules:
+  1. **No new entry unless the fingerprint changed**: writing one per "rescan" keeps refreshing the baseline,
+     so "since 11:27" would never be more than a few minutes old and the real window would be invisible;
+  2. keep the latest **20** entries; a corrupt JSON file counts as empty history (the panel must not fail to open);
+  3. **the first snapshot is 0 changes**, not "133 additions" — "no history yet" and "nothing changed" are different
+     things and neither may render as an empty banner (hosttest caught `first=true` with 133 changes for real).
 - **The premise of that plan is falsifiable (R14)**: "removing dormant packages cannot break what is loaded" is an invariant, not a feeling —
   **I7: no loaded package declares a dependency on a dormant package**. `node dev/probe-loadstate.mjs` checks it every run, and
   `node dev/probe-uninstall.mjs` checks the plan itself (I8 coverage and no overlap / I9 size accounting / I10 pinned-key safety /
@@ -377,15 +392,15 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache** (433 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (193 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions)** (443 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes)** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (196 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (243 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, four checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's 4th check / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section)** / export write / copy-sync verdicts / skill_sync plan and confirm gate (248 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
                               # derives the four states, then reconciles with cache/catalog.json; seven invariants
                               # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
@@ -397,6 +412,9 @@ node dev/probe-simulate.mjs   # self-check of the removal simulation: 14 checks 
                               # transitive gets flagged / bundle and config entries left dangling / dangling declarers / drop back to dormant /
                               # removing edges never lights anything up / unknown names and dedupe / package count conserved /
                               # deleting one of two same-named directories does not count as deleting the package); any violation exits 1
+node dev/probe-history.mjs    # self-check of change tracking: 15 checks (fingerprint stable and order-independent / added-removed
+                              # reverses / version and source changes / total deduped across categories / skill description / prune keeps the newest N /
+                              # corrupt history becomes empty / the first snapshot reports zero changes); any violation exits 1
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

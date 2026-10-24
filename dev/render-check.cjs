@@ -870,6 +870,53 @@ ok("预演结果块：没预演过就不出现（刷新后不许拿旧「安全�
 	T.store.sim = savedSim;
 	return !text.includes("删除预演（只算不删）") && text.includes("处置清单（只生成、不执行）");
 })());
+/* ── R17：变化条（自上次快照以来变了什么） ── */
+const changesFixture = {
+	at: 1761300000000,
+	baselineAt: 1761200000000,
+	first: false,
+	total: 133,
+	unchanged: 130,
+	counts: { added: 1, removed: 0, version: 2, source: 0, loadState: 0, edited: 0, total: 3 },
+	added: [{ id: "plugin:new", name: "new-pkg", kind: "plugin", version: "1.0.0" }],
+	removed: [],
+	versionChanged: [
+		{ id: "plugin:a", name: "alpha", kind: "plugin", from: "1.0.0", to: "1.1.0" },
+		{ id: "plugin:b", name: "beta", kind: "plugin", from: "2.0.0", to: "2.1.0" },
+	],
+	sourceChanged: [],
+	loadStateChanged: [],
+	edited: [],
+};
+ok("变化条：有变化时出现，写明「N 处变化」与分类 chip（默认收起，不画明细）", (() => {
+	const saved = T.store.data;
+	const savedOpen = T.store.showChanges;
+	T.store.data = { ...data, changes: changesFixture };
+	T.store.showChanges = false;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showChanges = savedOpen;
+	return text.includes("3 处变化") && text.includes("新增 1") && text.includes("升版 2") && !text.includes("alpha 1.0.0 → 1.1.0");
+})());
+ok("变化条：点开才列明细（升版写成 from → to）", (() => {
+	const saved = T.store.data;
+	const savedOpen = T.store.showChanges;
+	T.store.data = { ...data, changes: changesFixture };
+	T.store.showChanges = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showChanges = savedOpen;
+	return text.includes("alpha 1.0.0 → 1.1.0") && text.includes("beta 2.0.0 → 2.1.0") && text.includes("+ new-pkg 1.0.0");
+})());
+ok("变化条：第一条快照 / 0 处变化都不占版面（「还没有历史」不等于「没变化」）", (() => {
+	const saved = T.store.data;
+	T.store.data = { ...data, changes: { ...changesFixture, first: true, counts: { ...changesFixture.counts, total: 0 } } };
+	const firstText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = { ...data, changes: { ...changesFixture, counts: { ...changesFixture.counts, total: 0 } } };
+	const zeroText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	return !firstText.includes("处变化") && !zeroText.includes("处变化");
+})());
 ok("工具条有「处置清单」按钮，title 写明只生成不执行、写入要再确认", (() => {
 	const tree = expand(render(T.Panel, {}));
 	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));

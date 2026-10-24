@@ -921,7 +921,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.16.0 / r16.0", /"version": "0\.16\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r16.0"'));
+ok("版本号与构建戳同步抬到 0.17.0 / r17.0", /"version": "0\.17\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r17.0"'));
 
 
 ok(
@@ -1027,6 +1027,20 @@ ok("面板：SimBlock 摊开三类风险 + 加载态前后对比", clientSource.
 ok("面板：预演按钮不含「删除」字样（卡里唯一的写动作仍是两次点击的写入）", clientSource.includes("预演（不动盘）") && !/预演删除/.test(clientSource));
 ok("probe-simulate 覆盖 S1–S14 且破一条就非零退出", ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "S14"].every((id) => simProbeSource.includes(id + " ")) && simProbeSource.includes("process.exit(1)"));
 ok("预演按**目录**算摘除（同名两份只删一份不算删掉那个包）", uninstallSource.includes("dirsByPkg") && uninstallSource.includes("removedDirs") && simProbeSource.includes("S13"));
+
+/* ⑧ R17：变化追踪（自上次快照以来变了什么） */
+const historySource = readFileSync(new URL("../lib/history.mjs", import.meta.url), "utf8");
+const historyProbeSource = readFileSync(new URL("./probe-history.mjs", import.meta.url), "utf8");
+ok("history.mjs 是纯函数模块（不 import 任何 fs —— 落盘只在 service）", !/from "node:fs/.test(historySource) && /export function snapshotOf/.test(historySource) && /export function diffSnapshots/.test(historySource));
+ok("指纹是 12 位（sha1 前 12 位），且与时间无关", historySource.includes("sha1") && historySource.includes("slice(0, 12)") && historyProbeSource.includes("H2"));
+ok("指纹没变就不追加快照（否则基线被刷新，「自 X 以来」永远只剩几分钟）", serviceSource.includes("last.fingerprint === snapshot.fingerprint") && serviceSource.includes("return { recorded: false, changes: this.changes }"));
+ok("启动路径也记一条（init 里，而不是只在重建时）", /if \(this\.catalog\) await this\.recordSnapshot\(\)\.catch\(\(\) => \{\}\);/.test(serviceSource));
+ok("快照只留最近 20 条", historySource.includes("MAX_SNAPSHOTS = 20") && historySource.includes("export function pruneSnapshots"));
+ok("变化摘要进 /state、health 与导出报告（三处同一份，不各算一遍）", serviceSource.includes("changes: this.changesSummary()") && serviceSource.includes("changes: this.changes") && serviceSource.includes('lines.push("## 变化"'));
+ok("health 文案在「第一条快照」时如实说没有可比历史", toolsSource.includes("还没有可比的历史") && toolsSource.includes("变化：自 "));
+ok("面板变化条：first / 0 处都不占版面，点开才列明细", clientSource.includes("function ChangesBar(props)") && clientSource.includes("if (!changes || changes.first) return null;") && clientSource.includes("dpc-changes-chip"));
+ok("probe-history 覆盖 H1–H15 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
+ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
 
 /* ⑦ 文档 */
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
