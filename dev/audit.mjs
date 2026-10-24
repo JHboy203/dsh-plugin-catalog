@@ -1084,6 +1084,14 @@ ok("时间线的名字只带 cap 条、counts 保留真实数字（省略号不�
 ok("/state 带 timeline（total + items），导出报告也有「历史」一节", serviceSource.includes("async historyTimeline()") && serviceSource.includes("timeline: await this.historyTimeline()") && serviceSource.includes('lines.push("### 历史（最近 "') && serviceSource.includes("timeline.items.slice(0, 8)"));
 ok("面板：历史折叠入口 + 每个窗口一行（被编辑标「正文已改」），空时间线不占版面", clientSource.includes("showHistory: false") && clientSource.includes("timeline: data && data.timeline") && clientSource.includes("onToggleHistory") && clientSource.includes('"历史（" + timeline.length') && clientSource.includes("timeline.length > 0"));
 ok("hosttest 覆盖 /state.timeline（total / items / 每行 counts 与分类数组）", hosttestSource.includes("/state.timeline") && hosttestSource.includes("stateTimeline.items.length <="));
+/* R21 交接收口：把「每轮收尾都临时写一遍」的真机核验固化成 dev/live-check.mjs */
+const liveCheckSource = readFileSync(new URL("./live-check.mjs", import.meta.url), "utf8");
+ok(
+	"dev/live-check.mjs：只读核验（版本一致 / 时间线 / drift 备份 / 还原计划 / 写盘闸）",
+	liveCheckSource.includes('"/health"') && liveCheckSource.includes('"/state"') && liveCheckSource.includes('action: "restore"') && liveCheckSource.includes("confirm") && liveCheckSource.includes("process.exit(1)"),
+);
+ok("live-check 绝不写盘（源码里不出现 confirm:true —— 只发被拒的那条请求）", !/confirm:\s*true/.test(liveCheckSource) && liveCheckSource.includes("apply: true"));
+ok("health 带 timeline 摘要（total / windows），工具输出有「历史：」一行", serviceSource.includes("timeline: { total: timeline.total, windows: timeline.items.length }") && toolsSource.includes("历史：共 "));
 
 /* ⑧ R18：把「跑哪几条命令才算验完」与「宿主里跑的是新代码吗」都固化 */
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");

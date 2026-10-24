@@ -1158,6 +1158,12 @@ ok(
 );
 const healthHashes = (await callRoute("/health")).json?.skillHashes;
 ok("正文指纹覆盖率：/health 报出 hashed = total（0/N 意味着正文改动完全看不见）", Boolean(healthHashes) && healthHashes.total > 0 && healthHashes.hashed === healthHashes.total, JSON.stringify(healthHashes));
+const healthTimeline = (await callRoute("/health")).json?.timeline;
+ok(
+	"/health.timeline：只给 total / windows 摘要（明细在 /state.timeline，别把快照塞进 health）",
+	Boolean(healthTimeline) && Number(healthTimeline.total) >= 1 && Number.isInteger(Number(healthTimeline.windows)) && healthTimeline.items === undefined,
+	JSON.stringify(healthTimeline),
+);
 const ackRejected = await callRoute("/ack", "POST", {});
 ok(
 	"标记已看过：不带 confirm 直接被拒（400，且不写基线文件）",
