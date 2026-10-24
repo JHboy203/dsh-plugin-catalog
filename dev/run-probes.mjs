@@ -1,10 +1,10 @@
 /**
- * dev/run-probes.mjs — 把五个**独立探针**串成一条（R18）。
+ * dev/run-probes.mjs — 把六个**独立探针**串成一条（R18；R20 加副本判据）。
  *
  * ★ 为什么要有它：探针一直是「有人记得就跑一下」——交接文件里写着五条命令，
  *   而 `dev/ship.mjs` 只跑三层自检（audit / render-check / hosttest），
  *   于是**不变式探针从来没进过发版体检**。R16/R17 两轮都是靠人手动补跑才发现回归的。
- *   这条脚本把它们收进 ship 的第 5 项：一条命令 = 三层自检 + 五个探针 + 副本同步。
+ *   这条脚本把它们收进 ship 的第 5 项：一条命令 = 三层自检 + 六个探针 + 副本同步。
  *
  * ★ 为什么用子进程而不是 import：探针脚本失败时 `process.exit(1)`，
  *   import 进来会把整条巡检一起带走。而且它们各自「不碰真数据」的承诺，
@@ -29,6 +29,7 @@ const PROBES = [
 	{ id: "simulate", label: "删除预演", file: "dev/probe-simulate.mjs" },
 	{ id: "tags", label: "批量打标", file: "dev/probe-tags.mjs" },
 	{ id: "history", label: "变化追踪", file: "dev/probe-history.mjs" },
+	{ id: "staging", label: "副本判据", file: "dev/probe-staging.mjs" },
 ];
 
 /** 探针收尾行形如 `probe-tags: passed 12 / failed 0`。 */

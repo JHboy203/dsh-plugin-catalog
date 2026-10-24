@@ -644,6 +644,49 @@ T.store.syncPlan = null;
 T.store.detail = { ok: true, item: (staleData.entries || []).find((entry) => entry.id === "skill:vex-ops"), tools: [], sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] }, descendants: 0, statsMeta: {}, statsLimited: true, readme: null };
 const skillModalText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
 ok("Skill 浮窗给出「同步这一份 → staging」", skillModalText.includes("同步这一份 → staging") && skillModalText.includes("单向 live → staging"));
+ok("还没有历史备份时说明清楚（第一次同步才会生成 .bak）", skillModalText.includes("staging 里还没有历史备份") && !skillModalText.includes("历史备份 1 份"));
+
+/* R20：浮窗里的「历史备份」与「还原到 <stamp>」入口（staging 与 live 一致时也必须在） */
+T.store.data = {
+	...data,
+	drift: {
+		"skill:vex-ops": {
+			staged: true,
+			verdict: "same",
+			workspaceDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops",
+			loadedDir: "D:\\w\\.dsh\\skills\\vex-ops",
+			backups: { count: 3, latest: { name: "SKILL.md.bak-20261024-120000", stamp: "20261024-120000", size: 2048, mtimeMs: 1 } },
+		},
+	},
+};
+T.store.open = { id: "skill:vex-ops", page: 1, pageSize: 20 };
+T.store.syncPlan = null;
+T.store.restorePlan = null;
+T.store.detail = { ok: true, item: (T.store.data.entries || []).find((entry) => entry.id === "skill:vex-ops"), tools: [], sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] }, descendants: 0, statsMeta: {}, statsLimited: true, readme: null };
+const backupModalText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok(
+	"浮窗显示「历史备份 N 份 · 最近 <stamp>」与「还原到 <stamp>」（两份一致时也能撤销）",
+	backupModalText.includes("历史备份 3 份") && backupModalText.includes("20261024-120000") && backupModalText.includes("还原到 20261024-120000"),
+	backupModalText.slice(0, 260),
+);
+const restorePlanFixture = {
+	ok: true,
+	count: 1,
+	direction: "backup → staging",
+	items: [{ id: "skill:vex-ops", name: "vex-ops", stagedDir: "D:\\w\\.gh-upload\\my-dsh-skills\\vex-ops", backup: "SKILL.md.bak-20261024-120000", backupStamp: "20261024-120000", backupBytes: 2048, currentBytes: 2100, verdict: "same" }],
+	skipped: [],
+};
+T.store.restorePlan = restorePlanFixture;
+const restoreText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok(
+	"还原确认条：方向 / 只动 staging / 覆盖前另存 / 两个动作齐全",
+	restoreText.includes("覆盖成备份版本") && restoreText.includes("backup → staging") && restoreText.includes("不动 DSH 正在加载的 SKILL.md") && restoreText.includes("确认还原（1 个）") && restoreText.includes("取消"),
+	restoreText.slice(0, 260),
+);
+T.store.restorePlan = null;
+T.store.data = staleData;
+T.store.open = { id: "skill:vex-ops", page: 1, pageSize: 20 };
+T.store.detail = { ok: true, item: (staleData.entries || []).find((entry) => entry.id === "skill:vex-ops"), tools: [], sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] }, descendants: 0, statsMeta: {}, statsLimited: true, readme: null };
 ok(
 	"副本一致 / junction 时不给同步按钮（别让人以为有东西要同步）",
 	(() => {

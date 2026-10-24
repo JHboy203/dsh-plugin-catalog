@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r19.0";
+		const BUILD = "r20.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -138,6 +138,10 @@ window.__ModuleLoader__.load({
 			     不能拿一份过期的计划去覆盖文件。 */
 			syncPlan: null,
 			syncBusy: false,
+			/* R20：「还原 staging 备份」的二次确认。与 syncPlan 同一条纪律：
+			   服务端先出还原计划（只读），人看着确认条点一次才写盘；计划不进 localStorage。 */
+			restorePlan: null,
+			restoreBusy: false,
 			/* R14：「处置清单」的写入确认（两步：先出清单，再点一次才写 reports/）。
 			   ★ 与服务端一致的纪律：清单**永远不执行删除**，写盘必须显式确认。 */
 			uninstallBusy: false,
@@ -337,13 +341,57 @@ window.__ModuleLoader__.load({
 				const result = await post("/skillsync", { ids, apply: true, confirm: true });
 				set({ syncBusy: false, syncPlan: null });
 				if (result && result.ok) {
-					set({ notice: "已把 " + ((result.synced || []).length) + " 个 Skill 的 SKILL.md 同步到 staging（备份 " + ((result.backups || []).length) + " 份 .bak-" + (result.stamp || "") + "，回滚就是改回来）" });
+					set({ notice: "已把 " + ((result.synced || []).length) + " 个 Skill 的 SKILL.md 同步到 staging（备份 " + ((result.backups || []).length) + " 份 .bak-" + (result.stamp || "") + "；要撤销就到条目浮窗点「还原到 " + (result.stamp || "") + "」）" });
 				} else {
 					const failedNames = result && Array.isArray(result.failed) ? result.failed.map((item) => item.name).join("、") : "";
 					set({ notice: "同步失败：" + String((result && result.error) || "未知错误") + (failedNames ? "（" + failedNames + "）" : "") });
 				}
 			} catch (error) {
 				set({ syncBusy: false, syncPlan: null, notice: "同步失败：" + String((error && error.message) || error) });
+			}
+			await refresh();
+		}
+
+		/* ── R20：「还原 staging 备份」三步（出计划 → 二次确认 → 写盘）──
+		   ★ 与同步对称：方向 `backup → staging`，只动上传用的那份，永远不碰 DSH 加载的文件。
+		   ★ 走服务端 `/skillsync {action:"restore"}`，与 `catalog_skill_sync action=restore`
+		     是同一个 service 方法；apply 必须带 confirm:true，否则服务端直接拒。 */
+		async function planStageRestore(id) {
+			set({ restoreBusy: true, restorePlan: null });
+			try {
+				const result = await post("/skillsync", { action: "restore", ids: [id] });
+				if (!result || result.ok !== true) {
+					set({ restoreBusy: false, notice: "取还原计划失败：" + String((result && result.error) || "未知错误") });
+					return;
+				}
+				if (!Number(result.count)) {
+					const why = Array.isArray(result.skipped) && result.skipped[0] ? result.skipped[0].reason : "没有可还原的备份";
+					set({ restoreBusy: false, restorePlan: null, notice: "没有可还原的备份：" + why });
+					return;
+				}
+				set({ restoreBusy: false, restorePlan: result, syncPlan: null, notice: null });
+			} catch (error) {
+				set({ restoreBusy: false, notice: "取还原计划失败：" + String((error && error.message) || error) });
+			}
+		}
+
+		async function applyStageRestore() {
+			const plan = store.restorePlan;
+			if (!plan) return;
+			const ids = (plan.items || []).map((item) => item.id);
+			set({ restoreBusy: true });
+			try {
+				const result = await post("/skillsync", { action: "restore", ids, apply: true, confirm: true });
+				set({ restoreBusy: false, restorePlan: null });
+				if (result && result.ok) {
+					const unchanged = Array.isArray(result.unchanged) ? result.unchanged.length : 0;
+					set({ notice: "已把 " + ((result.restored || []).length) + " 个 Skill 的 staging 还原到备份版本（还原前那份已另存 .bak-" + (result.stamp || "") + "；DSH 加载的文件没动）" + (unchanged ? "；" + unchanged + " 个与备份一致，未改" : "") });
+				} else {
+					const failedNames = result && Array.isArray(result.failed) ? result.failed.map((item) => item.name).join("、") : "";
+					set({ notice: "还原失败：" + String((result && result.error) || "未知错误") + (failedNames ? "（" + failedNames + "）" : "") });
+				}
+			} catch (error) {
+				set({ restoreBusy: false, restorePlan: null, notice: "还原失败：" + String((error && error.message) || error) });
 			}
 			await refresh();
 		}
@@ -1467,7 +1515,8 @@ window.__ModuleLoader__.load({
 													: label
 														? prefix + "：" + label + " —— " + driftDetail(drift).replace(/\n/g, "；")
 														: prefix + "：两份一致";
-										/* R11：Skill 的两种"旧了"可以就地同步（只往前跑，不往回退） */
+										/* R11：Skill 的两种"旧了"可以就地同步（live → staging）。
+										   R20：反方向的「撤销」也在这里 —— 把 staging 还原到最近一份历史备份。 */
 										const canSync = isStageStale(drift);
 										/* 浮窗里的确认条**只显示只针对这一条**的计划：
 										   从面板批量出的计划（可能 10 个）显示在任何单个浮窗里都会误导。 */
@@ -1475,11 +1524,26 @@ window.__ModuleLoader__.load({
 											state.syncPlan && Array.isArray(state.syncPlan.items) && state.syncPlan.items.length === 1 && state.syncPlan.items[0] && state.syncPlan.items[0].id === item.id
 												? state.syncPlan
 												: null;
+										const ownRestorePlan =
+											state.restorePlan && Array.isArray(state.restorePlan.items) && state.restorePlan.items.length === 1 && state.restorePlan.items[0] && state.restorePlan.items[0].id === item.id
+												? state.restorePlan
+												: null;
+										const latestBackup = drift.backups && drift.backups.latest ? drift.backups.latest : null;
 										return h(
 											"div",
 											{ className: "dpc-block" },
 											h("div", { className: "dpc-block-title" }, "副本同步"),
 											h("div", { className: "dpc-muted" }, body),
+											drift.backups && drift.backups.count
+												? h(
+														"div",
+														{ className: "dpc-row" },
+														h("span", { className: "dpc-muted" }, "历史备份 " + drift.backups.count + " 份 · 最近 " + (latestBackup ? latestBackup.stamp : "—") + (latestBackup ? "（" + fmtBytes(latestBackup.size) + "）" : "")),
+														latestBackup
+															? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => planStageRestore(item.id), disabled: state.restoreBusy || state.syncBusy }, state.restoreBusy ? "出计划…" : "还原到 " + latestBackup.stamp)
+															: null,
+													)
+												: h("div", { className: "dpc-muted" }, "staging 里还没有历史备份（第一次同步时会把旧的那份存成 .bak-<时间戳>）"),
 											canSync
 												? h(
 														"div",
@@ -1489,6 +1553,7 @@ window.__ModuleLoader__.load({
 													)
 												: null,
 											ownPlan ? h(SyncConfirm, { compact: true, plan: ownPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) }) : null,
+											ownRestorePlan ? h(RestoreConfirm, { plan: ownRestorePlan, busy: state.restoreBusy, onApply: applyStageRestore, onCancel: () => set({ restorePlan: null }) }) : null,
 										);
 									})(),
 									/* 仓库与操作 */
@@ -1752,6 +1817,32 @@ window.__ModuleLoader__.load({
 					"div",
 					{ className: "dpc-row" },
 					h("button", { className: "dpc-btn dpc-btn-sm", onClick: props.onApply, disabled: props.busy }, props.busy ? "同步中…" : "确认同步（" + items.length + " 个）"),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancel, disabled: props.busy }, "取消"),
+				),
+			);
+		}
+
+		/* ── R20：「还原 staging 备份」的二次确认条 ──
+		   与 SyncConfirm 对称：写盘前让人看见「覆盖哪些、覆盖成哪份、备份落在哪」。
+		   ★ 只出现在 Skill 浮窗里（一次一个），因为这个动作是"撤销某一份"，不是批量发布。 */
+		function RestoreConfirm(props) {
+			const plan = props.plan;
+			if (!plan) return null;
+			const items = Array.isArray(plan.items) ? plan.items : [];
+			return h(
+				"div",
+				{ className: "dpc-sync-confirm is-compact", role: "group", "aria-label": "还原 staging 确认" },
+				h("div", { className: "dpc-sync-title" }, "将把 " + items.length + " 个 Skill 的 staging 覆盖成备份版本（" + (plan.direction || "backup → staging") + "）"),
+				h("div", { className: "dpc-muted" }, "只动 staging（上传用的那份），不动 DSH 正在加载的 SKILL.md；覆盖前会把 staging 当前这份另存成 SKILL.md.bak-<时间戳>，所以还原本身也能再撤销。"),
+				h(
+					"div",
+					{ className: "dpc-sync-names" },
+					items.slice(0, 5).map((item) => h("code", { key: item.id, className: "dpc-sync-name" }, item.name + " ← " + (item.backupStamp || item.backup))),
+				),
+				h(
+					"div",
+					{ className: "dpc-row" },
+					h("button", { className: "dpc-btn dpc-btn-sm", onClick: props.onApply, disabled: props.busy }, props.busy ? "还原中…" : "确认还原（" + items.length + " 个）"),
 					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancel, disabled: props.busy }, "取消"),
 				),
 			);
@@ -3151,6 +3242,7 @@ window.__ModuleLoader__.load({
 			applyStageSync,
 			PreflightCard,
 			SyncConfirm,
+			RestoreConfirm,
 			/* R14：处置清单卡（只生成不执行） */
 			UninstallCard,
 			toolHits,

@@ -79,16 +79,19 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   - 浮窗「依赖关系」块给出三件事：直接声明在哪、被谁依赖（全名）、它自己声明依赖了谁（就是体积 Top 的来源）。
   - **「无人依赖」只是候选**：嵌套只展开一层，更深的声明可能漏读 —— 文案一律带"用 `npm ls` / `pnpm why` 确认"，绝不写成"可以删"。
 - **副本同步**：面板顶部公告 + 卡片标签告诉你**「你改的那份，真的是加载的那份吗」**。
-  插件比 4 个关键文件（`package.json` / `index.js` / `client.js` / `cordis.patch.yml`）的 size + mtime，Skill 比 `SKILL.md`；
+  插件比 4 个关键文件（`package.json` / `index.js` / `client.js` / `cordis.patch.yml`）的 size + mtime，Skill 比 `SKILL.md` 的 **size + mtime + 正文哈希**（R20）；
   junction 安装直接说「只有一份，改源码立即生效」；发现不同步则标「副本不同步 / 副本较旧 / 工作区较旧」，
   Skill 的 staging 副本标「staging 不同步」——**发布推的是 staging 那份，它旧了就等于发了个旧版**。
-  扫描 60 秒缓存一次，重建目录会作废；只比长度和时间、不读内容，71 个包也不到 100 ms
+  扫描 60 秒缓存一次，重建目录会作废；Skill 正文各读一遍算 sha1（17 对 ≈ 680 KB，实测 < 10 ms）——
+  **同字数改一个字也认得出**（R20 之前只比长度，这种改动会被静默判成"一致"）
 - **就地处置（R11）**：Skill 的 staging 旧了**不用离开面板**——公告条上就有「同步 staging（N）」。
   点它先拿到一份**计划**（会覆盖哪几个 `SKILL.md`、方向、备份落在哪），再点「确认同步」才写盘：
-  单向 `live → staging`，覆盖前把 staging 那份备份成 `SKILL.md.bak-<时间戳>`（回滚就是改回来），
-  **不会动 DSH 正在加载的那份**。浮窗里也有「同步这一份 → staging」。
-  写盘闸在**服务端**（必须 `confirm:true`），所以误点一下最多出一份计划、不会改文件；
+  单向 `live → staging`，覆盖前把 staging 那份备份成 `SKILL.md.bak-<时间戳>`，**不会动 DSH 正在加载的那份**。
+  浮窗里也有「同步这一份 → staging」。写盘闸在**服务端**（必须 `confirm:true`），所以误点一下最多出一份计划、不会改文件；
   staging 反而更新（`staging 较新`）时**不给**这个按钮 —— 那会把线上正在用的那份覆盖回旧版
+- **写错了能撤销（R20）**：条目浮窗里显示「历史备份 N 份 · 最近 `<时间戳>`」，点「还原到 `<时间戳>`」先出一份
+  **还原计划**（方向 `backup → staging`、覆盖谁、备份落在哪），再点「确认还原」才写盘；覆盖前把 staging 当前那份
+  另存成新 `.bak`，**还原本身也能再撤销**。只动 staging，永远不碰 DSH 加载的那份；工具侧是 `catalog_skill_sync action=restore`
 - **会不会被加载（R12）**：`enabled`（在不在 `dsh.profile.bundles`）**不是**加载判据 ——
   `cordis.yml` / `cordis.patch.yml` 的顶层条目按 `name:` 能直接挂包，依赖链也会把包带起来。
   面板按入口算四态：`bundles` 直接启用 / 配置条目挂载 / 随某个入口（依赖链）加载 /
@@ -145,7 +148,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   新代码才生效」。为什么不加就不行：`build` 标签读的是**磁盘**（package.json + 最新文件 mtime），
   所以显示 0.18.0 时宿主里跑的可能是 0.17.0，新工具、新路由**根本不存在** ——
   R16/R17 两轮都因此误判过一次「已经生效了」。同一轮里还把五个独立探针收进了 `dev/ship.mjs`
-  （`probes` 项，60 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
+  （`probes` 项，76 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
 - **这两天变了什么（R17）**：面板顶部多一条**变化条**（只在真有变化时出现）：
   「自 10-24 11:27 以来 · 3 处变化 · 新增 1 · 升版 2」，点开列明细。历史落在 `history.json`：
 
@@ -202,7 +205,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_publish` | 上传备份：`plan` → `apply`（需 `planId` + `confirm`，可带 `ackRepos`）→ `public`（独立门禁） |
 | `catalog_export` | **导出 Markdown 快照**到 `<数据目录>/reports/`：清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现 |
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、**Skill 正文哈希覆盖率**、**「已看过」确认窗口**、AI 通道、asar 模式、**副本是否同步** |
-| `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>` |
+| `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>`；`restore` 是反向撤销（把 staging 还原到最近备份，同样先出计划、`confirm:true` 才写，只动 staging） |
 | `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`。**三个动作都不执行删除**（命令给人复制） |
 
 ## 数据与隐私
@@ -390,7 +393,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **五个独立探针**（加载路径 / 处置清单 / 删除预演 / 批量打标 / 变化追踪，共 60 条，约 2 秒） | 算失败 |
+| `probes` | **六个独立探针**（加载路径 / 处置清单 / 删除预演 / 批量打标 / 变化追踪 / 副本判据，共 76 条，约 2 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -402,7 +405,8 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 中途改 Skill 时 staging 落后是常态（可能正在写、可能还没发布）。把它算失败会让这条命令
 在最该用的时候变成噪音，与「git 脏只报不拦」同一条口径。它仍然值得看一眼：
 R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发现的，现在交接前一条命令就能看见；
-面板上同样能看见，并且**能就地同步**（公告条上的「同步 staging」）。
+面板上同样能看见，并且**能就地同步**（公告条上的「同步 staging」）；同步后发现不对，
+浮窗里的「还原到 `<时间戳>`」可以把它撤销（R20）。
 
 它会拦下三类「发出去了但其实没上」：自检有红、`package.json` 版本与 `client.js` 的 `BUILD` 对不上、
 （只报告不拦）工作区有未提交改动 / 本地 HEAD 与 `origin/main` 不一致。
@@ -410,21 +414,21 @@ R6 那次「12 个 Skill 发出去的都是旧版」就是靠人翻对话才发�
 分项跑：
 
 ```bash
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线）/ 发版体检清单单源 + 运行中版本与磁盘版本**（464 项，沙箱可跑）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/导出/空态（200 项，无需 DSH）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 发版体检清单单源 + 运行中版本与磁盘版本**（480 项，沙箱可跑）
+node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/**历史备份行与还原确认条**/导出/空态（203 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 运行中版本与磁盘版本** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 258 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 + 备份列表 + 运行中版本与磁盘版本** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 269 项；普通 node 多 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
                               # 七条不变式（计数守恒 / bundle 口径 / via 指得回入口 / dormant 与入口无交集 /
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **五个探针串成一条**（发版体检的第 5 项，共 60 条，约 2 秒）：
+node dev/run-probes.mjs       # **六个探针串成一条**（发版体检的第 5 项，共 76 条，约 2 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
 node dev/ship-checks.mjs      # 发版体检的**清单单一来源**：ship 真跑它、面板 POST /preflight{dry} 报它
@@ -435,6 +439,9 @@ node dev/probe-simulate.mjs   # 删除预演自检：14 条（空删除不改态
 node dev/probe-history.mjs    # 变化追踪自检：23 条（指纹稳定且与顺序无关 / 新增消失能倒过来 / 版本与来源变 /
                               # 同一条多处变化 total 去重 / Skill 描述有无 / 正文哈希（改一字就变 + 升级迁移不算编辑）/
                               # 裁剪留最近 N / 坏历史当空 / 第一条快照 0 处变化 / 确认基线 normalizeAck），破一条退出码 1
+node dev/probe-staging.mjs    # 副本判据与还原自检：16 条（正文哈希稳定 / 同字数改一字必须 differs / 哈希优先于 mtime /
+                              # 读不到哈希退回 size+mtime / 备份名排序与 latest / 还原 + pre-restore 备份 / 一致时 skipped /
+                              # 路径穿越与非备份名被拒 / 端到端同字数漏判），破一条退出码 1
 node dev/probe-gitops.mjs  # 在临时仓真跑 init/commit/push 失败/ignore（23 项，不碰真实仓、不联网）
 node dev/probe-asar.mjs    # 官方插件能不能从 app.asar 读出来（Electron 的 asar 是"目录"）
 node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率

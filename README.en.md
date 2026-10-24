@@ -76,16 +76,21 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   - **"Nobody depends on it" is only a candidate**: nesting is expanded one level, so deeper declarations may be missed —
     the wording always says "confirm with `npm ls` / `pnpm why`", never "safe to delete".
 - **Copy sync**: a banner plus per-card badges answer **"is the copy I edit the copy that is loaded?"**
-  For plugins it compares four key files (`package.json` / `index.js` / `client.js` / `cordis.patch.yml`) by size + mtime; for Skills it compares `SKILL.md`.
+  For plugins it compares four key files (`package.json` / `index.js` / `client.js` / `cordis.patch.yml`) by size + mtime; for Skills it compares `SKILL.md` by **size + mtime + body hash** (R20).
   A junction-installed plugin simply says "one copy only — edit the source and it takes effect". When copies disagree the badge reads "副本不同步 / 副本较旧 / 工作区较旧",
   and a Skill's staged copy reads "staging 不同步" — **publishing pushes the staged copy, so a stale stage means you ship an old version**.
-  The scan is cached for 60 s and invalidated by a catalog rebuild; it compares lengths and timestamps only, never file contents, so 71 packages cost well under 100 ms
+  The scan is cached for 60 s and invalidated by a catalog rebuild; each Skill body is hashed once (17 pairs ≈ 680 KB, measured < 10 ms), so
+  **a same-length one-character edit is caught too** (before R20 only lengths were compared and that edit was silently reported as identical)
 - **Fixing it in place (R11)**: when a Skill's staging copy is stale you never leave the panel — the banner carries **"Sync staging (N)"**.
   Clicking it only fetches a **plan** (which `SKILL.md` files would be overwritten, in which direction, where the backups land); a second click on "Confirm sync" writes:
-  one-way `live → staging`, overwriting only after backing the staged file up as `SKILL.md.bak-<timestamp>` (rollback = copy it back),
+  one-way `live → staging`, overwriting only after backing the staged file up as `SKILL.md.bak-<timestamp>`,
   and **never touching the copy DSH is loading**. The popup also offers "Sync this one → staging".
   The write gate lives **server-side** (requires `confirm:true`), so a stray click can at most produce a plan.
   When staging is *newer* (`staging 较新`) there is no button at all — that direction would overwrite the live copy with an older one
+- **Undo a wrong sync (R20)**: the entry popup shows "N historical backups · latest `<timestamp>`", and "Restore to `<timestamp>`" first asks the server for a
+  **restore plan** (direction `backup → staging`, which files, where the safety copy lands); a second click on "Confirm restore" writes. The current staged file is
+  backed up again as a fresh `.bak`, so **the restore itself can be undone too**. It only ever touches staging, never the copy DSH loads;
+  the tool equivalent is `catalog_skill_sync action=restore`
 - **Whether it is loaded at all (R12)**: `enabled` (membership in `dsh.profile.bundles`) is **not** a load criterion —
   top-level entries in `cordis.yml` / `cordis.patch.yml` mount packages by `name:`, and dependency chains pull packages in as well.
   The panel derives four states from the real entry points: bundle / config entry / reached through a dependency chain / **not loaded** (none of the three).
@@ -144,7 +149,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   disk already has 0.18.0 — reload the plugin or restart DSH". Why this matters: the build label reads the **disk**
   (package.json + newest file mtime), so it can show 0.18.0 while the host still runs 0.17.0 — and the new tool or
   route simply does not exist. Two rounds (R16/R17) were misjudged as "already live" because of it. The same round
-  also folded the five standalone probes into `dev/ship.mjs` (`probes`, 60 invariants), so the one handoff command is
+  also folded the six standalone probes into `dev/ship.mjs` (`probes`, 76 invariants), so the one handoff command is
   now **three suites + probes + copy sync**.
 - **What changed since last time (R17)**: a **changes bar** appears at the top of the panel (only when something
   actually changed): "since 10-24 11:27 · 3 changes · 1 added · 2 upgraded", click to expand. History lives in `history.json`:
@@ -205,7 +210,7 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 | `catalog_publish` | Upload backup: `plan` → `apply` (requires `planId` + `confirm`, may include `ackRepos`) → `public` (separate gate) |
 | `catalog_export` | **Export a Markdown snapshot** to `<数据目录>/reports/`: inventory, source distribution, call Top, repos and git status, to-be-tagged sources, attribution coverage, weekly findings |
 | `catalog_health` | Self-check: which version is running, path resolution, stats coverage, attribution coverage, **skill body-hash coverage**, **the "mark as seen" acknowledgement window**, AI channel, asar mode, **whether copies are in sync** |
-| `catalog_skill_sync` | A Skill has **two copies**: `plan` lists those whose staging copy is stale (publishing pushes staging, so a stale stage ships an old version); `apply` + `confirm:true` copies **live → staging only**, backing up each overwritten file as `SKILL.md.bak-<timestamp>` first |
+| `catalog_skill_sync` | A Skill has **two copies**: `plan` lists those whose staging copy is stale (publishing pushes staging, so a stale stage ships an old version); `apply` + `confirm:true` copies **live → staging only**, backing up each overwritten file as `SKILL.md.bak-<timestamp>` first; `restore` is the reverse undo (restores staging from the newest backup, also plan-first and `confirm:true` to write, staging only) |
 | `catalog_uninstall` | **Removal plan for "never loaded" entries**: `plan` groups them by weakly connected component and reports reclaimable bytes, the category (entity / pinned by profile deps / link / second copy of the same project) and the steps; `simulate` removes those directories in memory, recomputes the load states and reports whether anything would be left dangling or still declaring them (pass `packages` to name package or directory names); `write` + `confirm:true` saves it as `reports/uninstall-*.md|.json`. **None of the three actions deletes anything** (the commands are for a human to copy) |
 
 ## Data and privacy
@@ -380,7 +385,7 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + five probes + copy sync + version consistency + git, ~45 s):
+**Before shipping or handing off, run just this one** (three checks + six probes + copy sync + version consistency + git, ~45 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
@@ -393,14 +398,15 @@ Five checks:
 | `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
 | `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
 | `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
-| `probes` | **Five standalone probes** (load paths / removal plan / removal simulation / bulk tagging / change tracking, 60 invariants, ~2 s) | counts as failure |
+| `probes` | **Six standalone probes** (load paths / removal plan / removal simulation / bulk tagging / change tracking / copy verdicts, 76 invariants, ~2 s) | counts as failure |
 | `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
 
 Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal
 (you may be writing it, or may not have published it yet). Counting it as failure would turn the command into noise exactly
 when it is most useful, matching the "dirty git is reported, not blocking" rule. It is still worth a look:
 the R6 incident ("12 Skills were publishing old versions") was found only by reading back a conversation; now one command
-before handoff shows it, the panel shows it too, and **the panel can fix it in place** ("Sync staging" on the banner).
+before handoff shows it, the panel shows it too, and **the panel can fix it in place** ("Sync staging" on the banner); after a bad sync,
+"Restore to `<timestamp>`" in the popup undoes it (R20).
 
 It catches three kinds of "shipped but not actually there": a red check, `package.json` version not matching
 `client.js`'s `BUILD`, and (reported, not blocking) uncommitted changes or a local HEAD that differs from `origin/main`.
@@ -408,15 +414,15 @@ It catches three kinds of "shipped but not actually there": a red check, `packag
 Run the pieces individually:
 
 ```bash
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions / body hashes and the upgrade migration / acknowledgement baseline) / the single source of the preflight list + loaded vs disk version** (464 checks, runs in the sandbox)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes / the acknowledged window / the "body edited" wording)** + **a "not reloaded yet" marker when the loaded version differs from the disk version** / selection batches / copy sync / **the three sync steps and its confirmation** / export / empty states (200 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions / body hashes and the upgrade migration / acknowledgement baseline) / copy verdicts (body hashes / same-length misses / fallback / backup names and path checks / restore only writes staging) / the single source of the preflight list + loaded vs disk version** (480 checks, runs in the sandbox)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes / the acknowledged window / the "body edited" wording)** + **a "not reloaded yet" marker when the loaded version differs from the disk version** / selection batches / copy sync / **the three sync steps and its confirmation** / **the backup row and the restore confirmation** / export / empty states (203 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, five checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's copy-sync item / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section) + body hashes in the snapshot + the acknowledgement window (no confirm is rejected / baseline written / cleared to zero / health reports it) + the loaded version versus the disk version** / export write / copy-sync verdicts / skill_sync plan and confirm gate (258 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, five checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's copy-sync item / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section) + body hashes in the snapshot + the acknowledgement window (no confirm is rejected / baseline written / cleared to zero / health reports it) + copy hash verdicts / the restore plan and confirm gate / a real restore + pre-restore backup + the backup list + the loaded version versus the disk version** / export write / copy-sync verdicts / skill_sync plan and confirm gate (269 checks under the host; 6 extra SKIPs in plain node — the sandbox forbids spawning with pipes and app.asar cannot be read)
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
                               # derives the four states, then reconciles with cache/catalog.json; seven invariants
                               # (count conservation / bundle accounting / via resolves / dormant ∩ entries = empty /
@@ -424,7 +430,7 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
-node dev/run-probes.mjs       # **the five probes in one command** (ship's 5th item, 60 checks, about 2 s):
+node dev/run-probes.mjs       # **the six probes in one command** (ship's 5th item, 76 checks, about 2 s):
                               # understands both closing formats (`passed N / failed M` and "N invariants hold");
                               # under the sandbox it says "run this in the host" instead of looking like broken probes
 node dev/ship-checks.mjs      # the **single source** of the preflight list: ship runs it, POST /preflight{dry} reports it
@@ -438,6 +444,10 @@ node dev/probe-history.mjs    # self-check of change tracking: 23 checks (finger
                               # body hashes (one-character edit; the upgrade migration is not an edit) / prune keeps the newest N /
                               # corrupt history becomes empty / the first snapshot reports zero changes / acknowledgement baseline);
                               # any violation exits 1
+node dev/probe-staging.mjs    # copy verdicts and restore, 16 checks (body hash stability / same-length one-character edit must differ /
+                              # hash wins over mtime / missing hash falls back to size+mtime / backup ordering and latest / restore plus
+                              # the pre-restore backup / identical backup is skipped / path traversal and non-backup names are rejected /
+                              # the same-length miss end to end); any violation exits 1
 node dev/probe-gitops.mjs  # real init/commit/push-failure/ignore runs in a temporary repo (23 checks, never touches a real repo, no network)
 node dev/probe-asar.mjs    # whether official plugins can be read out of app.asar (Electron's asar is a "directory")
 node dev/measure-attrib.mjs  # measures attribution coverage against the real tool schemas

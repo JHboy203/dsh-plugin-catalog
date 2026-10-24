@@ -560,7 +560,7 @@ ok("漂移结果有 60 秒缓存，且重建目录会作废", serviceSource.incl
 ok("R16：写盘计划跳过缓存（刚改完 Skill 就点同步，不能因 60 秒缓存报「两份一致」）", serviceSource.includes("const drift = await this.driftOf({ fresh: true });"));
 ok("state 里带 drift 映射", /drift: await this\.driftOf\(\)/.test(serviceSource) && /\.dpc-drift\{/.test(cssSource));
 ok("卡片上的漂移标签走纯函数（可断言）", /function driftLabel\(drift\)/.test(clientSource) && /function driftDetail\(drift\)/.test(clientSource));
-ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /skillVerdict\(await skillStat\(liveDir\), await skillStat\(staged\)\)/.test(serviceSource) && /staged: true/.test(serviceSource));
+ok("Skill 也查 staging 副本（发布上去的那份可能是旧的）", /skillsStageDirOf\(this\.settings, this\.workspace\)/.test(serviceSource) && /const loadedStat = await skillStat\(liveDir\)/.test(serviceSource) && /skillVerdict\(loadedStat, stagedStat\)/.test(serviceSource) && /staged: true/.test(serviceSource));
 ok("Skill 的真实目录来自 catalog 的 dir 字段（root 只是 skills 根，拼错会静默比错路径）", /const liveDir = skill\.dir \|\| skill\.root;/.test(serviceSource) && /dir: join\(root, entry\.name\)/.test(readFileSync(new URL("../lib/catalog.mjs", import.meta.url), "utf8")));
 ok("staged 的标签与插件分开（staging 不同步 / staging 较旧）", /staged \? "staging 不同步" : "副本不同步"/.test(clientSource));
 
@@ -923,7 +923,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.19.0 / r19.0", /"version": "0\.19\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r19.0"'));
+ok("版本号与构建戳同步抬到 0.20.0 / r20.0", /"version": "0\.20\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r20.0"'));
 
 
 ok(
@@ -1059,11 +1059,30 @@ ok("导出报告区分「自上次快照」与「自上次确认」，并删掉�
 ok("面板：确认过的窗口优先（sinceAck），带「标记已看过」按钮，正文改动写成「正文已改」", clientSource.includes("props.sinceAck") && clientSource.includes("标记已看过") && clientSource.includes('api("/ack"') && clientSource.includes("正文已改"));
 ok("hosttest 覆盖确认闭环：无 confirm 被拒 / 写基线 / 清零 / health 报得出", hosttestSource.includes('callRoute("/ack"') && hosttestSource.includes("history-ack.json") && hosttestSource.includes("sinceAck") && hosttestSource.includes("skillHashes"));
 
+/* ⑧ R20：副本判据升级为正文哈希 + staging 备份可还原 */
+const stagingProbeSource = readFileSync(new URL("./probe-staging.mjs", import.meta.url), "utf8");
+ok("副本判据按正文哈希（sha1 前 12 位；SKILL.md 本来就要读，不额外开文件）", stagingSource.includes("export function hashSkillText") && stagingSource.includes('createHash("sha1")') && stagingSource.includes('digest("hex").slice(0, 12)') && stagingSource.includes('hash = hashSkillText(await readFile(file, "utf8"))'));
+ok("哈希优先：内容相同直接 same（mtime 差异不再制造 newer-* 噪音）", /if \(loadedHash && stagedHash && loadedHash === stagedHash\) return \{ verdict: "same"/.test(stagingSource));
+ok("同字数不同正文 + 时间差 ≤ 60 秒 → differs（R20 修掉的漏判）", /if \(Math\.abs\(delta\) <= SKILL_MTIME_TOLERANCE_MS\) return \{ verdict: "differs"/.test(stagingSource));
+ok("读不到哈希时退回 size + mtime（宁可漏判也不误报）", stagingSource.includes("至少一边没有哈希") && /if \(Math\.abs\(delta\) <= SKILL_MTIME_TOLERANCE_MS\) return \{ verdict: "same"/.test(stagingSource));
+ok("备份名格式唯一，还原拒绝路径穿越", stagingSource.includes("export const BACKUP_FILE_RE") && stagingSource.includes("basename(backup) !== backup") && stagingSource.includes("不允许路径"));
+ok("还原只写 stagedDir（不碰 DSH 加载的那份），覆盖前先备份当前那份", stagingSource.includes("export async function restoreSkillBackup") && stagingSource.includes("const target = join(stagedDir, SKILL_FILE)") && stagingSource.includes("preRestore = await uniqueBackupTarget(stagedDir, stamp)") && !/export async function restoreSkillBackup[\s\S]{0,2400}?loadedDir/.test(stagingSource));
+ok("备份与当前内容一致 → skipped（不制造无意义备份）", /if \(currentText !== null && hashSkillText\(currentText\) === hashSkillText\(backupText\)\) \{\s*return \{ ok: true, skipped: true/.test(stagingSource));
+ok("staging 扫描把备份份数与哈希一并带给面板（drift 数据源）", serviceSource.includes("loadedHash: loadedStat ? loadedStat.hash : null") && serviceSource.includes("backups: { count: backups.count, latest:") && serviceSource.includes("await listSkillBackups(staged)"));
+ok("还原计划只列与当前内容不同的备份，方向写清楚", serviceSource.includes("async restoreStagedSkillPlan(") && serviceSource.includes('direction: "backup → staging"') && serviceSource.includes("最新备份与 staging 当前内容一致"));
+ok("还原写盘同样要 confirm:true（服务端拒，不靠按钮自觉）", /async restoreStagedSkills[\s\S]{0,900}options\.confirm !== true/.test(serviceSource) && serviceSource.includes("还原必须带 confirm:true"));
+ok("/skillsync 支持 action=restore（不传 action 仍是同步，向后兼容）", indexSource.includes('String(body.action || "sync") === "restore"') && indexSource.includes("catalog.restoreStagedSkillPlan") && indexSource.includes("catalog.restoreStagedSkills"));
+ok("工具 action 枚举含 restore，计划文案可读", /enum: \["plan", "apply", "restore"\]/.test(toolsSource) && toolsSource.includes("还原计划：") && toolsSource.includes("backup → staging"));
+ok("面板：历史备份行 + 还原入口 + 二次确认条（两份一致时也能撤销）", clientSource.includes('"历史备份 " + drift.backups.count') && clientSource.includes('"还原到 " + latestBackup.stamp') && clientSource.includes("function RestoreConfirm") && clientSource.includes("确认还原（"));
+ok("同步完成后的提示指向还原入口（写盘动作自带撤销说明）", clientSource.includes("要撤销就到条目浮窗点"));
+ok("probe-staging 覆盖 P1–P16 且破一条非零退出", ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16"].every((id) => stagingProbeSource.includes(id + " ")) && stagingProbeSource.includes("process.exit(1)"));
+ok("hosttest 覆盖还原：计划方向 / 无 confirm 被拒 / 真还原 + skipped / 备份列表", hosttestSource.includes('action: "restore"') && hosttestSource.includes("restoreSkillBackup") && hosttestSource.includes("listSkillBackups"));
+
 /* ⑧ R18：把「跑哪几条命令才算验完」与「宿主里跑的是新代码吗」都固化 */
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
 ok("探针收进发版体检（第 5 项 probes，不再是「有人记得就跑」）", shipChecksSource.includes('id: "probes"') && shipChecksSource.includes('script: "dev/run-probes.mjs"'));
 ok("面板 dry 与 ship 同一份清单（此前硬编码四项，收进探针后 dry 仍只报四项）", indexSource.includes("checks: shipCheckIds()") && indexSource.includes('from "./dev/ship-checks.mjs"'));
-ok("探针串覆盖五个（loadstate / uninstall / simulate / tags / history）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
+ok("探针串覆盖六个（loadstate / uninstall / simulate / tags / history / staging）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
 ok("探针串兼容两种收尾格式（passed/failed 行 与 「N 条不变式全部成立」）", probesRunner.includes("function parseCounts") && probesRunner.includes("function parseInvariants") && probesRunner.includes("parseCounts(text) ||"));
 ok("沙箱里跑探针串会明说「要在宿主里跑」，不会被误判成探针坏了", probesRunner.includes("EPERM") && probesRunner.includes("host_selfcheck"));
 ok("运行中版本被定格（LOADED_VERSION）并与磁盘比（isStaleBuild）", serviceSource.includes("const LOADED_VERSION = (() =>") && serviceSource.includes("function isStaleBuild(") && serviceSource.includes("loaded: { version: LOADED_VERSION"));

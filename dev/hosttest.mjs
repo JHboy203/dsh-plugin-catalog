@@ -781,6 +781,51 @@ ok(
 const afterCopy = await scanSkillStaging({ roots: [liveRoot], stageDir: stageRoot });
 ok("同步完再扫：stale 归零（面板刷新后公告条会消失）", afterCopy.stale.length === 0 && afterCopy.same === 2, JSON.stringify({ stale: afterCopy.stale.length, same: afterCopy.same }));
 
+/* ─────────── R20：判据升级为正文哈希 + staging 备份可还原 ─────────── */
+const { hashSkillText, listSkillBackups, restoreSkillBackup } = await import("../lib/staging.mjs");
+{
+	const sameSize = (text, mtimeMs) => ({ size: Buffer.byteLength(text, "utf8"), mtimeMs, hash: hashSkillText(text) });
+	eq(
+		"skillVerdict：同字数改一个字（时间差 5 秒）→ differs（R20 的核心修正）",
+		skillVerdict(sameSize("AAAA-1111", 1000), sameSize("BBBB-1111", 6000)).verdict,
+		"differs",
+	);
+	eq(
+		"skillVerdict：内容相同、mtime 差一小时 → same（哈希优先于时间）",
+		skillVerdict(sameSize("SAME", 1000), sameSize("SAME", 1000 + 3600000)).verdict,
+		"same",
+	);
+}
+const skillDriftEntries = skillDrift.map((id) => drift[id]);
+ok(
+	"drift 的 Skill 条目带备份计数与哈希（面板「历史备份 N 份」的数据源）",
+	skillDriftEntries.every((entry) => entry && typeof entry.backups === "object" && typeof entry.backups.count === "number" && (entry.backups.count === 0 || /^SKILL\.md\.bak-/.test(String(entry.backups.latest && entry.backups.latest.name)))) &&
+		skillDriftEntries.every((entry) => typeof entry.loadedHash === "string" || entry.loadedHash === null),
+	JSON.stringify(skillDriftEntries.slice(0, 3).map((entry) => ({ count: entry.backups && entry.backups.count, latest: entry.backups && entry.backups.latest && entry.backups.latest.name }))),
+);
+const routeRestorePlan = await callRoute("/skillsync", "POST", { action: "restore" });
+ok(
+	"/skillsync action=restore 计划：只读、方向 backup → staging",
+	routeRestorePlan.status === 200 && routeRestorePlan.json?.ok === true && routeRestorePlan.json?.applied !== true && typeof routeRestorePlan.json?.count === "number" && routeRestorePlan.json?.direction === "backup → staging",
+	JSON.stringify(routeRestorePlan.json && { ok: routeRestorePlan.json.ok, count: routeRestorePlan.json.count, applied: routeRestorePlan.json.applied, direction: routeRestorePlan.json.direction }),
+);
+const routeRestoreNoConfirm = await callRoute("/skillsync", "POST", { action: "restore", ids: skillDrift.slice(0, 1), apply: true });
+ok("还原的写盘闸：apply 不带 confirm 直接被拒（绝不静默覆盖 staging）", routeRestoreNoConfirm.json?.ok === false && /confirm/.test(String(routeRestoreNoConfirm.json?.error || "")), JSON.stringify(routeRestoreNoConfirm.json?.error));
+const restoreToolPlan = await callTool("catalog_skill_sync", { action: "restore" });
+ok("catalog_skill_sync action=restore 出还原计划（不写盘）", restoreToolPlan?.ok === true && /还原计划/.test(String(restoreToolPlan?.text || "")) && restoreToolPlan?.applied !== true, String(restoreToolPlan?.count));
+const backupName = copied.backup.split(/[\\/]/).pop();
+const restoredTemp = await restoreSkillBackup({ stagedDir: join(stageRoot, "alpha"), backup: backupName, stamp: "20261024-160000" });
+const restoredAgain = await restoreSkillBackup({ stagedDir: join(stageRoot, "alpha"), backup: backupName, stamp: "20261024-160001" });
+const restorePre = restoredTemp.preRestore ? readFileSync(join(stageRoot, "alpha", restoredTemp.preRestore), "utf8") : "";
+ok(
+	"restoreSkillBackup：还原后 staging 回到备份内容、当前那份另存 pre-restore",
+	restoredTemp.skipped === false && restoredTemp.preRestore === "SKILL.md.bak-20261024-160000" && readFileSync(join(stageRoot, "alpha", "SKILL.md"), "utf8").includes("旧") && restorePre.includes("新内容"),
+	JSON.stringify({ pre: restoredTemp.preRestore, skipped: restoredTemp.skipped }),
+);
+ok("restoreSkillBackup：备份与当前一致时不再制造备份（skipped）", restoredAgain.skipped === true && restoredAgain.preRestore === "");
+const backupList = await listSkillBackups(join(stageRoot, "alpha"));
+ok("listSkillBackups：列出历史备份（新的在前，含 pre-restore 那份）", backupList.count >= 2 && backupList.items[0].name === "SKILL.md.bak-20261024-160000", JSON.stringify(backupList.items.map((item) => item.name)));
+
 /* 体检第 4 项：真跑一次 ship（只跑 staging 这一项，秒级，不写工作区）
    ★ 沙箱里 spawn 带管道会 EPERM（Windows 沙箱不给建命名管道），这不是代码缺陷 —— 记 SKIP，
      并在宿主里（`host_selfcheck` / 面板「自检」）会跑到真的那条路。 */

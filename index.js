@@ -316,6 +316,11 @@ export async function apply(ctx) {
 				if (path === "/skillsync" && method === "POST") {
 					const body = await readJsonBody(req);
 					const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+					/* R20：action=restore 走「备份 → staging」的还原（同一个写盘闸：apply + confirm）。 */
+					if (String(body.action || "sync") === "restore") {
+						if (body.apply !== true) return json(res, 200, await catalog.restoreStagedSkillPlan(ids));
+						return json(res, 200, await catalog.restoreStagedSkills({ ids, apply: true, confirm: body.confirm === true }));
+					}
 					if (body.apply !== true) return json(res, 200, await catalog.syncStagedSkills({ ids }));
 					return json(res, 200, await catalog.syncStagedSkills({ ids, apply: true, confirm: body.confirm === true }));
 				}
