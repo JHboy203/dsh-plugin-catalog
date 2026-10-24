@@ -92,6 +92,13 @@ ok(
 	(timeline.items || []).every((row) => Number(row.at) > 0 && row.counts && typeof row.counts.total === "number" && Array.isArray(row.edited)),
 	String((timeline.items || []).length + " rows"),
 );
+/* R23：配置层（声明层）也进变化计数 —— 只有条目信号不够，改 disabled / 加 bundle 时条目一个都不变 */
+const liveChanges = state.json?.changes || null;
+ok(
+	"state.changes: composition bucket present (R23; null before the second snapshot)",
+	liveChanges === null || (Number.isInteger(liveChanges.counts?.composition) && liveChanges.counts.composition >= 0),
+	JSON.stringify(liveChanges && { total: liveChanges.counts?.total, composition: liveChanges.counts?.composition }),
+);
 /* R22 /state.composition：紧凑视图（计数守恒 + 清单带来源），面板浮层读的就是它 */
 const composition = state.json?.composition || null;
 ok(

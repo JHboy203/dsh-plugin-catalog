@@ -11,6 +11,7 @@
  */
 
 import { compareEntries, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
+import { signatureOf } from "../lib/composition.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -267,6 +268,62 @@ const AT = 1760000000000;
 	const edited = snapshotOf(catalogOf({ gammaHash: "cccc11112222" }), null, AT + 2000);
 	const rows = timelineOf([base, same, edited]);
 	ok("H27 时间线：指纹相同的窗口不产出（不会多出一行 0 处变化）", rows.length === 1 && rows[0].counts.edited === 1, JSON.stringify(rows.map((row) => row.counts)));
+}
+
+/* ── R23：配置层（声明层）进历史 ── */
+
+/** 合成组合文件：两行条目（parser 只认列 0 的 `- id:` 与 2 空格缩进字段）。 */
+const CORDIS_MAIN = ["- id: alpha", "  name: alpha-pkg", "- id: beta", "  name: beta-pkg"].join("\n");
+const CORDIS_MAIN_REORDERED = ["- id: beta", "  name: beta-pkg", "- id: alpha", "  name: alpha-pkg"].join("\n");
+const CORDIS_OFF = ["- id: alpha", "  name: alpha-pkg", "  disabled: true", "- id: beta", "  name: beta-pkg"].join("\n");
+const signature = (text, bundles = ["b-one", "b-two"], file = "cordis.yml") => signatureOf({ files: [{ file, text }], bundles });
+
+/* ── H28 配置层指纹稳定：同一份声明、条目顺序与 bundles 顺序都不影响 ── */
+{
+	const a = signature(CORDIS_MAIN, ["b-one", "b-two"]);
+	const b = signature(CORDIS_MAIN_REORDERED, ["b-two", "b-one"]);
+	ok("H28 配置层指纹稳定：条目顺序 / bundles 顺序不影响", a.fingerprint === b.fingerprint && a.counts.entries === 2 && a.counts.bundles === 2 && a.counts.on === 2, a.fingerprint + " / " + b.fingerprint + " " + JSON.stringify(a.counts));
+}
+
+/* ── H29 disabled 翻转 → 配置层报 1 处（目录条目一个都没变，v2 会报 0 处） ── */
+{
+	const before = snapshotOf(catalogOf(), {}, AT, signature(CORDIS_MAIN));
+	const after = snapshotOf(catalogOf(), {}, AT + 1, signature(CORDIS_OFF));
+	const diff = diffSnapshots(before, after);
+	const row = diff.compositionChanged[0] || {};
+	ok(
+		"H29 改 disabled → 配置层 1 处（目录条目没变、total 不能是 0）",
+		diff.counts.total === 1 && diff.counts.composition === 1 && diff.added.length === 0 && diff.removed.length === 0 && diff.unchanged === 3 && (row.changed || []).some((item) => item.field === "off" && item.from === 0 && item.to === 1),
+		JSON.stringify({ counts: diff.counts, changed: row.changed }),
+	);
+}
+
+/* ── H30 单边缺composition → 不判变化（R19 迁移规则同型：升级后第一次重建不能报警） ── */
+{
+	const old = snapshotOf(catalogOf(), {}, AT);
+	const next = snapshotOf(catalogOf(), {}, AT + 1, signature(CORDIS_MAIN));
+	const forward = diffSnapshots(old, next);
+	const backward = diffSnapshots(next, old);
+	ok(
+		"H30 单边缺配置层签名 → 不算变化（两个方向都是 0 处）",
+		forward.counts.total === 0 && forward.counts.composition === 0 && backward.counts.total === 0 && backward.counts.composition === 0 && forward.unchanged === 3,
+		JSON.stringify({ forward: forward.counts, backward: backward.counts }),
+	);
+}
+
+/* ── H31 bundles 增删也进指纹与计数（只加一个 bundle 就该看见） ── */
+{
+	const before = signature(CORDIS_MAIN, ["b-one"]);
+	const after = signature(CORDIS_MAIN, ["b-one", "b-two"]);
+	const diff = diffSnapshots(snapshotOf(catalogOf(), {}, AT, before), snapshotOf(catalogOf(), {}, AT + 1, after));
+	ok("H31 加一个 bundle → 指纹变、报「bundles 1 → 2」", before.fingerprint !== after.fingerprint && diff.counts.composition === 1 && describeChange(diff.compositionChanged[0], "composition").includes("bundles 1 → 2"), describeChange(diff.compositionChanged[0], "composition"));
+}
+
+/* ── H32 配置层签名折进快照指纹（否则 recordSnapshot 认为没变、根本不追加） ── */
+{
+	const plain = snapshotOf(catalogOf(), {}, AT);
+	const withComposition = snapshotOf(catalogOf(), {}, AT, signature(CORDIS_MAIN));
+	ok("H32 快照指纹包含配置层签名（只改声明也会追加一条）", plain.fingerprint !== withComposition.fingerprint && plain.fingerprint === fingerprintOf(plain) && withComposition.fingerprint === fingerprintOf(withComposition), plain.fingerprint + " / " + withComposition.fingerprint);
 }
 
 const failed = results.filter((item) => !item.pass);

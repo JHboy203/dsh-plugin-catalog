@@ -1067,6 +1067,79 @@ ok("变化条 R21：没有更早窗口时不画历史入口（只有基线 = 没
 	return !text.includes("历史（");
 })());
 
+/* ── R23：配置层（声明层）的变化进变化条 ── */
+const compositionChangesFixture = {
+	id: "composition",
+	name: "配置层",
+	kind: "composition",
+	fingerprintFrom: "aaaaaaaaaaaa",
+	fingerprintTo: "bbbbbbbbbbbb",
+	changed: [
+		{ field: "off", from: 25, to: 24 },
+		{ field: "bundles", from: 50, to: 51 },
+	],
+	entries: 246,
+};
+const compositionOnlyChanges = {
+	at: 1761500000000,
+	baselineAt: 1761450000000,
+	first: false,
+	total: 133,
+	unchanged: 133,
+	counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 },
+	added: [],
+	removed: [],
+	versionChanged: [],
+	sourceChanged: [],
+	loadStateChanged: [],
+	edited: [],
+	compositionChanged: [compositionChangesFixture],
+};
+ok("变化条 R23：只有配置层变化时也占版面（chip「配置层 1」，不显示明细）", (() => {
+	const saved = T.store.data;
+	const savedOpen = T.store.showChanges;
+	T.store.data = { ...data, changes: compositionOnlyChanges };
+	T.store.showChanges = false;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showChanges = savedOpen;
+	return text.includes("1 处变化") && text.includes("配置层 1") && !text.includes("关掉 25 → 24");
+})());
+ok("变化条 R23：点开写「关掉 25 → 24，bundles 50 → 51」（配置层不是某个条目，不冒充名字）", (() => {
+	const saved = T.store.data;
+	const savedOpen = T.store.showChanges;
+	T.store.data = { ...data, changes: compositionOnlyChanges };
+	T.store.showChanges = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showChanges = savedOpen;
+	return text.includes("关掉 25 → 24，bundles 50 → 51") && !/undefined|null/.test(text);
+})());
+ok("变化条 R23：历史窗口里配置层直接给计数差；只换条目（计数没变）兜底写「条目变了」", (() => {
+	const saved = T.store.data;
+	const savedHistory = T.store.showHistory;
+	const savedOpen = T.store.showChanges;
+	T.store.data = {
+		...data,
+		changes: compositionOnlyChanges,
+		timeline: {
+			total: 2,
+			items: [
+				{ at: 1761500000000, baselineAt: 1761450000000, total: 133, counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 }, added: [], removed: [], versionChanged: [], sourceChanged: [], loadStateChanged: [], edited: [], compositionChanged: [compositionChangesFixture] },
+				{ at: 1761400000000, baselineAt: 1761340000000, total: 133, counts: { added: 0, removed: 0, version: 0, source: 0, loadState: 0, edited: 0, composition: 1, total: 1 }, added: [], removed: [], versionChanged: [], sourceChanged: [], loadStateChanged: [], edited: [], compositionChanged: [{ ...compositionChangesFixture, changed: [] }] },
+			],
+		},
+	};
+	T.store.showHistory = true;
+	T.store.showChanges = true;
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved;
+	T.store.showHistory = savedHistory;
+	T.store.showChanges = savedOpen;
+	return text.includes("配置层 1（关掉 25 → 24，bundles 50 → 51）") && text.includes("配置层 1（条目变了（生效 246））");
+})());
+
+
 /* R22：配置层（声明层）浮层 —— 头部入口、四类清单、缺口公告的占位规则 */
 const compositionFixture = {
 	version: 1,

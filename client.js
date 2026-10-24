@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r22.1";
+		const BUILD = "r23.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -2144,6 +2144,14 @@ window.__ModuleLoader__.load({
 			if (!changes || changes.first) return null;
 			const counts = changes.counts || {};
 			if (!(Number(counts.total) > 0)) return null;
+			/* R23：配置层（声明层）的变化不是"某个条目"，单独压一句话 —— 改 disabled / 加 bundle 时
+			   目录条目一个都没变，这一行是它第一次能被看见的地方。 */
+			const compositionText = (item) => {
+				const labels = { entries: "生效条目", on: "启用", off: "关掉", conditional: "条件启用", patched: "被 patch 覆盖", bundles: "bundles", files: "组合文件" };
+				const changed = Array.isArray(item.changed) ? item.changed : [];
+				if (changed.length === 0) return "条目变了（生效 " + (Number(item.entries) || 0) + "）";
+				return changed.map((change) => (labels[change.field] || change.field) + " " + change.from + " → " + change.to).join("，");
+			};
 			const groups = [
 				["added", "新增", changes.added, (item) => "+ " + item.name + (item.version ? " " + item.version : "")],
 				["removed", "消失", changes.removed, (item) => "− " + item.name],
@@ -2151,6 +2159,7 @@ window.__ModuleLoader__.load({
 				["source", "来源变", changes.sourceChanged, (item) => item.name + " " + (item.from || "?") + " → " + (item.to || "?")],
 				["loadState", "加载态变", changes.loadStateChanged, (item) => item.name + " " + (item.from || "未判") + " → " + (item.to || "未判")],
 				["edited", "被编辑", changes.edited, (item) => (item.reason === "content" ? item.name + " 正文已改（" + (item.from || "?") + " → " + (item.to || "?") + "）" : item.name + "（" + item.from + " → " + item.to + "）")],
+				["composition", "配置层", changes.compositionChanged, compositionText],
 			].filter(([, , list]) => Array.isArray(list) && list.length > 0);
 			/* R21：更早窗口的时间线。只写"谁变了"，不铺开哈希 —— 时间线是索引，明细在当前窗口里 */
 			const timeline = props.timeline && Array.isArray(props.timeline.items) ? props.timeline.items : [];
@@ -2170,6 +2179,9 @@ window.__ModuleLoader__.load({
 					const names = (Array.isArray(list) ? list : []).map((item) => (kind === "edited" && item.reason === "content" ? item.name + " 正文已改" : item.name || item.id)).filter(Boolean);
 					bits.push(label + " " + count + (names.length > 0 ? "（" + names.join("、") + (names.length < count ? "…" : "") + "）" : ""));
 				}
+				/* R23：配置层的变化没有"名字"可列，直接给计数差 */
+				const compositions = Array.isArray(row.compositionChanged) ? row.compositionChanged : [];
+				if (compositions.length > 0) bits.push("配置层 " + compositions.length + "（" + compositionText(compositions[0]) + "）");
 				return bits.join("；");
 			};
 			/* 把当前目录冻结成基线（服务端要求 confirm:true；只写数据目录里的 history-ack.json） */
@@ -2197,7 +2209,7 @@ window.__ModuleLoader__.load({
 						{
 							className: "dpc-changes-head",
 							onClick: props.onToggle,
-							title: "自上次目录快照以来：新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑。点一下摊开明细；判据是声明层面（Skill 比正文内容哈希，改一个字也看得见）",
+							title: "自上次目录快照以来：新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑 / 配置层。点一下摊开明细；判据是声明层面（Skill 比正文内容哈希，改一个字也看得见；配置层比 disabled / bundles / 条目声明）",
 						},
 						h("span", { className: "dpc-changes-mark" }, props.open ? "▾" : "▸"),
 						h("span", { className: "dpc-changes-title" }, acked ? "自你 " + fmtDateTime(changes.ackAt || changes.baselineAt) + " 确认以来" : "自 " + fmtDateTime(changes.baselineAt) + " 以来"),
@@ -2216,7 +2228,7 @@ window.__ModuleLoader__.load({
 								{
 									className: "dpc-changes-history-toggle" + (props.historyOpen ? " is-open" : ""),
 									onClick: props.onToggleHistory,
-									title: "回看更早的目录变化窗口：每行是两个相邻快照之间的新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑（正文改了会标出来）。最多保留 20 条快照，基线本身不算一个窗口。",
+									title: "回看更早的目录变化窗口：每行是两个相邻快照之间的新增 / 消失 / 升版 / 来源变 / 加载态变 / 被编辑 / 配置层（正文改了会标出来）。最多保留 20 条快照，基线本身不算一个窗口。",
 								},
 								(props.historyOpen ? "▾ " : "▸ ") + "历史（" + timeline.length + " 个窗口 / 共 " + (Number(props.timeline.total) || timeline.length + 1) + " 条快照）",
 							),
@@ -2249,7 +2261,7 @@ window.__ModuleLoader__.load({
 									h("span", { className: "dpc-mono" }, list.map(text).join("、") + (Number(counts[key]) > list.length ? "　等 " + counts[key] + " 条" : "")),
 								),
 							),
-							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源 / 有没有描述 / **正文内容哈希**（改一个字也看得见）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条；更早的窗口点「历史」回看。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。点「标记已看过」可把确认窗口清零。"),
+							h("div", { className: "dpc-changes-foot dpc-muted" }, "判据：插件比版本 / 来源 / 加载态，Skill 比来源 / 有没有描述 / **正文内容哈希**（改一个字也看得见），配置层比**声明签名**（disabled 翻转 / bundles 增删 / 条目增删）；工具数、体积、git 脏文件不算变化。只在指纹变化时追加一条，最多留 20 条；更早的窗口点「历史」回看。这次记于 " + (changes.at ? fmtDateTime(changes.at) : "?") + "。点「标记已看过」可把确认窗口清零。"),
 						)
 					: null,
 			);

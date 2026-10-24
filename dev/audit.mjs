@@ -25,8 +25,9 @@ import { buildAggregate, descendantsOf, STATS_VERSION } from "../lib/stats.mjs";
 import { eachFrame, parseEvents, findFrameCuts } from "../lib/frames.mjs";
 import { parseFrontmatter } from "../lib/catalog.mjs";
 import { LOAD_STATES, parseComposition, resolveLoadPaths, isLoadedState, isDormantState, loadStateLabel } from "../lib/loadstate.mjs";
-import { COMPOSITION_KINDS, DISABLE_KINDS, ENTRY_RESOLUTIONS, auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseDisabled, summarizeComposition } from "../lib/composition.mjs";
+import { COMPOSITION_KINDS, DISABLE_KINDS, ENTRY_RESOLUTIONS, auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseDisabled, signatureOf, summarizeComposition } from "../lib/composition.mjs";
 import { PROVENANCE, buildUninstallPlan, renderUninstallPlan, summarizeUninstallPlan } from "../lib/uninstall.mjs";
+import { compareComposition, describeChange, diffSnapshots, snapshotOf } from "../lib/history.mjs";
 import { computeStats } from "../lib/stats.mjs";
 
 let passed = 0;
@@ -924,7 +925,7 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
-ok("版本号与构建戳同步抬到 0.22.1 / r22.1", /"version": "0\.22\.1"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r22.1"'));
+ok("版本号与构建戳同步抬到 0.23.0 / r23.0", /"version": "0\.23\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r23.0"'));
 
 
 ok(
@@ -1042,12 +1043,12 @@ ok("快照只留最近 20 条", historySource.includes("MAX_SNAPSHOTS = 20") && 
 ok("变化摘要进 /state、health 与导出报告（三处同一份，不各算一遍）", serviceSource.includes("changes: this.changesSummary()") && serviceSource.includes("changes: this.changes") && serviceSource.includes('lines.push("## 变化"'));
 ok("health 文案在「第一条快照」时如实说没有可比历史", toolsSource.includes("还没有可比的历史") && toolsSource.includes("变化：自 "));
 ok("面板变化条：first / 0 处都不占版面，点开才列明细", clientSource.includes("function ChangesBar(props)") && clientSource.includes("if (!changes || changes.first) return null;") && clientSource.includes("dpc-changes-chip"));
-ok("probe-history 覆盖 H1–H27 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19", "H20", "H21", "H22", "H23", "H24", "H25", "H26", "H27"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
+ok("probe-history 覆盖 H1–H32 且破一条就非零退出", ["H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9", "H10", "H11", "H12", "H13", "H14", "H15", "H16", "H17", "H18", "H19", "H20", "H21", "H22", "H23", "H24", "H25", "H26", "H27", "H28", "H29", "H30", "H31", "H32"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("process.exit(1)"));
 ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
 
 /* ⑧ R19：变化追踪收口 —— Skill 正文哈希 + 「已看过」确认窗口 */
 ok("catalog 在读 SKILL.md 时顺手算正文哈希（不额外读文件），并抬了 CATALOG_VERSION", catalogSource.includes('createHash("sha1")') && catalogSource.includes("contentHash") && /export const CATALOG_VERSION = 9;/.test(catalogSource));
-ok("history 信号含 content（仅 Skill），v2 加了升级迁移规则（旧快照没哈希不算编辑）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 2;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
+ok("history 信号含 content（仅 Skill），v3 加了升级迁移规则（旧快照没哈希 / 没配置层签名都不算变化）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 3;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
 ok("compareEntries 是 diff 与 sameSignal 的唯一判据（两处各写一份判据迟早会差）", historySource.includes("return !compareEntries(a, b).any;") && /const \{ changed, any \} = compareEntries\(old, entry\)/.test(historySource));
 ok("正文改动单列成 edited（reason=content），且与描述改动互斥（只报一行）", historySource.includes('reason: "content"') && historySource.includes("else if (changed.description)") && historySource.includes("正文已改"));
 ok("「已看过」基线单独存 history-ack.json（不改写 history.json），写回走原子写", serviceSource.includes('return join(this.dir, "history-ack.json")') && serviceSource.includes("await writeJson(this.ackFile(), ack)"));
@@ -1151,8 +1152,42 @@ const compositionProbeSource = readFileSync(new URL("./probe-composition.mjs", i
 ok("probe-composition 覆盖 C1–C14 且破一条非零退出", ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"].every((id) => compositionProbeSource.includes(id + " ")) && compositionProbeSource.includes("process.exit(1)"));
 ok("hosttest 覆盖 /state.composition（形状 / 计数守恒 / 每类都带 file+line）", hosttestSource.includes("/state.composition"));
 
+/* ⑨ R23：配置层变化进历史 —— 改 disabled / 加 bundle 时目录条目一个都没变，
+   v2 只比条目信号，这类改动完全看不见。这一轮锁五件事：
+     ① 签名只解析声明（不扫包、不读 asar），指纹取 id/name/disabledKind + bundles；
+     ② 签名折进快照指纹 —— 否则 recordSnapshot 认为没变、根本不追加快照；
+     ③ diff 单列 composition 一类，并占 1 处 total（否则变化条不显示）；
+     ④ 单边缺签名不判（与 R19 正文哈希同一条迁移规则）；
+     ⑤ 面板 / health / 导出三处都写人话。 */
+const sigA = signatureOf({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }], bundles: ["dsh-a"] });
+const sigSame = signatureOf({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }], bundles: ["dsh-a"] });
+const sigOff = signatureOf({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a\n  disabled: true" }], bundles: ["dsh-a"] });
+const sigBundle = signatureOf({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }], bundles: ["dsh-a", "dsh-b"] });
+const sigReordered = signatureOf({ files: [{ file: "cordis.yml", text: "- id: b\n  name: dsh-b\n- id: a\n  name: dsh-a" }], bundles: ["dsh-b", "dsh-a"] });
+const sigBundleReordered = signatureOf({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a\n- id: b\n  name: dsh-b" }], bundles: ["dsh-a", "dsh-b"] });
+ok("配置层签名只解析声明（composition.mjs 里 signatureOf 不扫包 / 不读 asar）", compositionSource.includes("export function signatureOf") && !/export function signatureOf[\s\S]{0,1600}?(scanInstalledPackages|asarNames)/.test(compositionSource));
+ok("签名稳定：同一声明的条目顺序 / bundles 顺序都不影响指纹", sigA.fingerprint === sigSame.fingerprint && sigReordered.fingerprint === sigBundleReordered.fingerprint && sigA.counts.entries === 1 && sigA.counts.bundles === 1);
+ok("disabled 翻转 / 加 bundle 都改指纹（声明变了就必须看得见）", sigA.fingerprint !== sigOff.fingerprint && sigA.fingerprint !== sigBundle.fingerprint && sigOff.counts.off === 1 && sigBundle.counts.bundles === 2);
+const snapPlain = snapshotOf({ plugins: [], skills: [] }, null, 1);
+const snapWith = snapshotOf({ plugins: [], skills: [] }, null, 1, sigA);
+const snapOff = snapshotOf({ plugins: [], skills: [] }, null, 2, sigOff);
+ok("配置层签名进快照并存 {fingerprint, counts}（指纹也折进快照指纹）", snapWith.composition && snapWith.composition.fingerprint === sigA.fingerprint && snapWith.fingerprint !== snapPlain.fingerprint && snapPlain.composition === undefined);
+ok("diff 单列 composition 并占 1 处 total（目录条目 0 条时 total 仍是 1）", (() => {
+	const diff = diffSnapshots(snapWith, snapOff);
+	return diff.counts.composition === 1 && diff.counts.total === 1 && diff.unchanged === 0 && diff.added.length === 0 && diff.compositionChanged[0].changed.some((item) => item.field === "off" && item.from === 0 && item.to === 1);
+})());
+ok("单边缺配置层签名 → 不判变化（升级后第一次重建不能报警）", compareComposition(snapPlain, snapWith) === null && compareComposition(snapWith, snapPlain) === null && diffSnapshots(snapPlain, snapWith).counts.total === 0);
+ok("配置层措辞走 describeChange（不出现 undefined / null）", !/undefined|null/.test(describeChange(diffSnapshots(snapWith, snapOff).compositionChanged[0], "composition")) && describeChange(diffSnapshots(snapWith, snapOff).compositionChanged[0], "composition").includes("关掉 0 → 1"));
+ok("service：签名只读两份组合文件 + bundles（不调 compositionAudit），recordSnapshot / 基线都带上", serviceSource.includes("async compositionSignature()") && /compositionSignature[\s\S]{0,700}profileComposition\(\)/.test(serviceSource) && !/async compositionSignature\(\)[\s\S]{0,800}await this\.compositionAudit\(/.test(serviceSource) && /snapshotOf\(this\.catalog, this\.overrides, at, composition\)/.test(serviceSource) && serviceSource.includes("await this.compositionSignature()"));
+ok("ack 基线也带配置层签名（否则「自上次确认以来」永远看不见配置层）", serviceSource.includes("async ackSnapshotAt(") && /async ackSnapshotAt\([\s\S]{0,260}compositionSignature\(\)/.test(serviceSource) && serviceSource.includes("await this.ackSnapshotAt("));
+ok("normalizeAck 保留 composition（否则读回基线就丢了）", historySource.includes("compositionSignalOf(stored.composition)") && historySource.includes("baseline.composition = composition"));
+ok("面板：配置层单列一组（chip + 明细 + 时间线一句），不是塞进被编辑", clientSource.includes('["composition", "配置层", changes.compositionChanged, compositionText]') && clientSource.includes("const compositionText = (item)") && clientSource.includes('bits.push("配置层 "'));
+ok("health / 导出 / 面板脚注都写配置层（三处同一口径）", toolsSource.includes("配置层 ${health.changes.counts.composition || 0}") && serviceSource.includes('["配置层", changes.compositionChanged, "composition"]') && clientSource.includes("配置层比**声明签名**"));
+ok("probe-history 覆盖 H28–H32（配置层指纹 / 上报 / 单边缺跳过）", ["H28", "H29", "H30", "H31", "H32"].every((id) => historyProbeSource.includes(id + " ")) && historyProbeSource.includes("signatureOf"));
+
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));
+ok("双语 README 都写了 R23 配置层签名（声明层变化进历史）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)"));
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
 /* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
 

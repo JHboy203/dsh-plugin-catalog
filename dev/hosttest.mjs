@@ -1138,6 +1138,19 @@ ok(
 	(stateTimeline?.items || []).every((row) => Number(row.at) > 0 && row.counts && typeof row.counts.total === "number" && Array.isArray(row.edited) && Array.isArray(row.added) && Array.isArray(row.versionChanged)),
 	JSON.stringify((stateTimeline?.items || []).slice(0, 2)),
 );
+/* R23：配置层签名进历史 —— 只改 disabled / 只加 bundle 时目录条目一个都不变，
+   v2 的快照根本不会追加。这里查磁盘上的快照真的带上了签名与声明计数。 */
+const bootComposition = bootHistory.snapshots?.[0]?.composition;
+ok(
+	"历史快照带配置层签名（12 位指纹 + 声明计数），磁盘上就能看出改过 disabled / bundles",
+	Boolean(bootComposition) && /^[0-9a-f]{12}$/.test(String(bootComposition.fingerprint || "")) && Number.isInteger(bootComposition.counts?.entries) && Number.isInteger(bootComposition.counts?.bundles) && Number.isInteger(bootComposition.counts?.off),
+	JSON.stringify(bootComposition && { fingerprint: bootComposition.fingerprint, counts: bootComposition.counts }),
+);
+ok(
+	"/state.changes.counts 带 composition 桶（v2 只有六桶，配置层变化会静默消失）",
+	stateChanges && Number.isInteger(stateChanges.counts?.composition) && stateChanges.counts.composition >= 0,
+	JSON.stringify(stateChanges?.counts),
+);
 
 /* ── R22：配置层（声明层）──
    这一轮把「两份组合文件里到底挂了什么」从一行 errors 变成可查的清单。
@@ -1255,6 +1268,11 @@ ok(
 	"已看过基线落 history-ack.json（冻结整份快照，不是只存一个时间戳）",
 	Boolean(ackFile) && Number(ackFile.at) > 0 && ackFile.snapshot && Object.keys(ackFile.snapshot.entries || {}).length > 0 && /^[0-9a-f]{12}$/.test(String(ackFile.snapshot.fingerprint || "")),
 	JSON.stringify(ackFile && { at: ackFile.at, entries: Object.keys(ackFile.snapshot.entries || {}).length, fingerprint: ackFile.snapshot.fingerprint }),
+);
+ok(
+	"确认基线也冻结配置层签名（否则「自上次确认以来」永远看不见配置层变化）",
+	Boolean(ackFile?.snapshot?.composition) && /^[0-9a-f]{12}$/.test(String(ackFile.snapshot.composition.fingerprint || "")),
+	JSON.stringify(ackFile?.snapshot?.composition),
 );
 const stateAfterAck = (await callRoute("/state")).json?.sinceAck;
 ok(
