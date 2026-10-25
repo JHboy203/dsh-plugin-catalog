@@ -15,7 +15,7 @@
  * 用法：`node dev/probe-mcp.mjs [--json]`；破任一断言退出码 1。
  */
 
-import { attributeMcpCalls, buildMcpReport, classifyMcpServer, compactMcp, extractMcp, MCP_CLIENT_PACKAGE, MCP_RESOURCES_PACKAGE, MCP_TEMPLATE, mcpTargetText, parseMcpToolName, renderMcpSection, safeUrlText, scanMcpBlock, summarizeMcp } from "../lib/mcp.mjs";
+import { attributeMcpCalls, buildMcpReport, classifyMcpServer, compactMcp, extractMcp, MCP_CLIENT_PACKAGE, MCP_RESOURCES_PACKAGE, MCP_TEMPLATE, mcpTargetText, parseMcpToolName, renderDisablePatch, renderMcpSection, safeUrlText, scanMcpBlock, summarizeMcp } from "../lib/mcp.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -224,6 +224,22 @@ const CORDIS = [
 	ok("M11d safeUrlText 对非 URL 不抛、并截断", safeUrlText("not a url but long enough to be truncated " + "x".repeat(100)).length <= 81, String(safeUrlText("not a url").length));
 	ok("M11e mcpTargetText 对空配置给一句人话", mcpTargetText({}) === "（没写 command / url）", mcpTargetText({}));
 	ok("M11f classifyMcpServer 对空对象也不抛", classifyMcpServer({}).source === "third", JSON.stringify(classifyMcpServer({})));
+}
+
+/* ── M12 — 停用片段（R31）：只出文本、按 id、幂等 ── */
+{
+	const report = buildMcpReport({ files: [{ file: "cordis.yml", text: CORDIS }], installed: new Map(), asarNames: new Set([MCP_CLIENT_PACKAGE]), at: 1 });
+	const server = report.servers[0];
+	const snippet = renderDisablePatch(server);
+	ok("M12 片段按条目 id 覆盖（不带 name/config，免得把旧 config 钉死）", snippet.ok === true && snippet.text.includes("- id: " + server.entryId) && !snippet.text.includes("name:") && !snippet.text.includes("config:"), snippet.text.replace(/\n/g, " ⏎ "));
+	ok("M12b 片段里有 disabled: true 且说了要重启（Desktop 不 watch patch 层）", snippet.text.includes("disabled: true") && /重启 DSH/.test(snippet.text));
+	ok("M12c 位置 file:line 带回来（人去哪改是明确的）", snippet.at === String(server.file) + ":" + String(server.line), snippet.at);
+	ok("M12d 没有条目 id 时明确拒绝（不瞎给一段无效 YAML）", renderDisablePatch({ serverName: "x" }).ok === false && renderDisablePatch(null).ok === false);
+	ok("M12e 声明在 patch 文件里的条目：片段改成「在原文里加一行」而不是再追加一条", (() => {
+		const patched = renderDisablePatch({ entryId: "mcp-x", serverName: "x", file: "C:/p/cordis.patch.yml", line: 12, state: "on" });
+		return patched.ok === true && patched.inPatch === true && /patch 文件里/.test(patched.text);
+	})());
+	ok("M12f 已经关掉的那台：片段前会先说一句「现在就是关的」（幂等，不吓人）", renderDisablePatch({ entryId: "mcp-x", serverName: "x", file: "cordis.yml", line: 3, state: "off", disabledRaw: "true" }).text.includes("现在已经是关掉的"));
 }
 
 const failed = results.filter((result) => !result.pass);

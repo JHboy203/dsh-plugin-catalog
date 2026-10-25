@@ -1334,6 +1334,21 @@ if (!docTruth.skillPresent) {
 	ok("README 工具表逐个点名了每个 catalog_* 工具（加工具不忘写文档）", tools.every((tool) => readmeZh.includes(tool.name)));
 }
 
+/* ⑦d R31：MCP **停用**片段 —— 加有模板、停没有，是个真实的缺口。
+ *   四条边界：视图在、片段只出文本（不写盘）、按 id 覆盖（不带 name/config）、声明在 patch 里的另说。 */
+const mcpTool = tools.find((tool) => tool.name === "catalog_mcp");
+const mcpSource = readFileSync(new URL("../lib/mcp.mjs", import.meta.url), "utf8");
+const mcpToolView = mcpTool?.parameters?.properties?.view?.enum || mcpTool?.inputSchema?.properties?.view?.enum || [];
+ok("catalog_mcp 有 disable 视图（加有模板，停也得有出口）", Array.isArray(mcpToolView) && mcpToolView.includes("disable"), JSON.stringify(mcpToolView));
+ok("停用片段是纯函数、挂在 mcp.mjs 上（不在工具里临时拼字符串）", /export function renderDisablePatch\(/.test(mcpSource) && /renderDisablePatch/.test(toolsSource));
+ok("disable 分支**只出文本**：没有 writeFile / appendFile（本插件的写盘一律不由工具发起）", (() => {
+	const at = toolsSource.indexOf('view === "disable"');
+	if (at < 0) return false;
+	const branch = toolsSource.slice(at, at + 1400);
+	return !/writeFile|appendFile|mkdirSync|renameSync/.test(branch) && branch.includes("只出文本");
+})());
+ok("probe-mcp 钉了 M12（片段形状 / 幂等 / patch 内条目另说）", readFileSync(new URL("./probe-mcp.mjs", import.meta.url), "utf8").includes("M12"));
+
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
 
