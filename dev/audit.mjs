@@ -1349,6 +1349,12 @@ ok("disable 分支**只出文本**：没有 writeFile / appendFile（本插件�
 })());
 ok("probe-mcp 钉了 M12（片段形状 / 幂等 / patch 内条目另说）", readFileSync(new URL("./probe-mcp.mjs", import.meta.url), "utf8").includes("M12"));
 
+/* ⑦e R31：传输压缩不能悄悄退化 —— 代码在不在 + 量它的脚本在不在。
+ *   数字本身不在这里断言（`/state` 会随条目数长大），但「压缩这条路还在」必须钉死：
+ *   删掉 gzip 分支不会让任何测试变红，只会让每 20 秒的轮询重新变成 357 KB。 */
+ok("/state 的按需 gzip 还在（content-encoding + 阈值 + vary 三样都写着）", indexSource.includes('"content-encoding": "gzip"') && indexSource.includes("raw.length >= 1024") && indexSource.includes('vary: "Accept-Encoding"') && /from "node:zlib"/.test(indexSource));
+ok("量传输代价的脚本在（换会话以后不用重写 curl）", existsSync(new URL("./measure-state.mjs", import.meta.url)));
+
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
 

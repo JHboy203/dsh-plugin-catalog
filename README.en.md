@@ -393,6 +393,12 @@ Security review **does not run automatically** — the panel shows a "Security r
 
 ## Known limitations (stated honestly, not exaggerated)
 
+0. **Installing / upgrading / uninstalling plugins and skills is deliberately out of scope**: use
+   `dsh-plugin-installer` (`install_hub_search_plugins` / `install_hub_submit_request` / `install_hub_status`)
+   or the official `plugin_manager`. This plugin only inventories, judges, plans disposal, reconciles and exports.
+   A `catalog_import` was considered and **deliberately dropped**: two install paths would each write their own
+   snapshot and rollback, and when something breaks nobody can prove which one did it. The relationship is
+   "it installs, I verify" — after an install, come back and check `loadState`, `catalog_list` and `catalog_mcp`.
 1. **Private repos do not get platform-level security scanning**: GitHub's Secret Scanning / Dependabot / Push Protection require paid GHAS.
    So "known vulnerable dependency" relies only on local rules and model common sense, **less accurate than platform-level scanning**.
 2. **Skill call statistics only go as far as "count + last call time"**, and cannot be broken down by session — this is a mechanism limitation, noted in the UI.

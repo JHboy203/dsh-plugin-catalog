@@ -388,6 +388,11 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
 
 ## 已知限制（如实说明，不夸大）
 
+0. **安装 / 升级 / 卸载插件与 Skill 不归本插件管（刻意如此）**：装东西走 `dsh-plugin-installer`
+   （`install_hub_search_plugins` / `install_hub_submit_request` / `install_hub_status`）或官方 `plugin_manager`。
+   本插件只做**清点、判据、处置清单、对账、导出**。★ 曾计划过一个 `catalog_import`，评估后**主动不做**：
+   两套安装路径会各写各的快照与回滚，出问题时谁也没法证明是哪一套写的。两边的关系是"它装、我核"——
+   装完回面板看 `loadState` 是否 loaded、进了 `catalog_mcp` / `catalog_list` 没有。
 1. **私有仓拿不到平台级安全扫描**：GitHub 的 Secret Scanning / Dependabot / Push Protection 需要付费 GHAS。
    所以「依赖已知高危」只能靠本地规则与模型常识，**准确度低于平台级扫描**。
 2. **Skill 的调用统计只能到「次数 + 最近一次时间」**，无法细分到会话 —— 这是机制限制，界面上有标注。
@@ -523,7 +528,7 @@ node dev/deliver.mjs --base http://127.0.0.1:<GUI端口>
                             #   判据三条：ship 全绿 / 运行中与磁盘一致 / 没有悬空项（未提交 / 未推送 / staging 旧了 / 该重启）。
                             #   退出码 0 = 可以换会话；报告 `.cache/deliver-<时间戳>.md`；--skip-ship 省 40 秒。
                             #   ★ 不提交、不推送、不同步 —— 写盘动作一律由人显式发起。
-node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（581 项，沙箱可跑；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
+node dev/audit.mjs         # 自洽：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（605 项，沙箱可跑；R31 起多 20 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
 node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **对账结果块（结论与逐条原因同时出现 / 计划龄 / 白删与计划过期两张名单 / 卡内仍然没有删除按钮 / 没对账过就不出现）**+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞 / 更早窗口的历史时间线）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/**历史备份行与还原确认条（R28：更早的备份可选，点一份就换目标）**/**配置层入口与浮层（概览 / 静态查不到 / 条件启用 / 关掉的 / 缺口公告只在 bad 时出现 / **R24 可点行跳卡片 + 在不在 bundles 的交叉引用** / **R25 变化明细点名到具体 id**）**/导出/空态（223 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
@@ -572,6 +577,9 @@ node dev/measure-attrib.mjs  # 用真实工具 schema 量归属覆盖率
 node dev/probe-publish.mjs   # 只读预演上传计划（不建仓、不提交、不推送）
 node dev/probe-export.mjs    # 用真实数据导出一份 Markdown 快照到 reports/
 node dev/probe-init.mjs      # 量启动成本（init/state/entryDetail 的毫秒数）
+node dev/measure-state.mjs --base http://127.0.0.1:<端口>  # 量 `/state` 的**线上**字节（R31：357 KB → 85 KB，≈4.2×；
+                             # 判据三条：都 200 / 真回了 content-encoding: gzip / ≤ 原始 60%。必须用 node:http，
+                             # fetch 会自动解压 —— 那样量到的永远是解压后的长度）
 node dev/warm-cache.mjs      # 预热真实数据目录，让第一次打开就有数据
 node dev/rm.mjs              # 救火：删工作区里的文件/目录（工具沙箱不让 unlink；经 host_selfcheck 执行）
 node dev/ship.mjs            # 发版体检（上面那条）；--json 供面板 /preflight 调用
