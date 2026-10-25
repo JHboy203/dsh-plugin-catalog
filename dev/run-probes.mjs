@@ -19,24 +19,12 @@ import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+/* R31：清单搬到 dev/probe-list.mjs —— audit 要数它（文档里的「十一个 / 231 条」得与真实一致），
+   这里只负责**跑**。import 数据文件不会起子进程，所以两边都安全。 */
+import { PROBES } from "./probe-list.mjs";
 
 const run = promisify(execFile);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/** 顺序即交接文件里的顺序；label 用中文，pass/fail 计数来自各探针自己的收尾行。 */
-const PROBES = [
-	{ id: "loadstate", label: "加载路径", file: "dev/probe-loadstate.mjs" },
-	{ id: "uninstall", label: "处置清单", file: "dev/probe-uninstall.mjs" },
-	{ id: "simulate", label: "删除预演", file: "dev/probe-simulate.mjs" },
-	{ id: "verify", label: "处置对账", file: "dev/probe-verify.mjs" },
-	{ id: "tags", label: "批量打标", file: "dev/probe-tags.mjs" },
-	{ id: "history", label: "变化追踪", file: "dev/probe-history.mjs" },
-	{ id: "staging", label: "副本判据", file: "dev/probe-staging.mjs" },
-	{ id: "composition", label: "配置层", file: "dev/probe-composition.mjs" },
-	{ id: "handoff", label: "交接单", file: "dev/probe-handoff.mjs" },
-	{ id: "csv", label: "CSV 导出", file: "dev/probe-csv.mjs" },
-	{ id: "mcp", label: "MCP 判据", file: "dev/probe-mcp.mjs" },
-];
 
 /** 探针收尾行形如 `probe-tags: passed 12 / failed 0`。 */
 function parseCounts(text) {

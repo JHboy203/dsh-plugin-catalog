@@ -9,10 +9,14 @@
  * 退出码：0 全过 / 1 有失败。
  */
 
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync, statSync, readFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync, statSync, readFileSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
+
+/* R31：文档对账要数的两个真值 —— 探针清单（单一来源）与交接单项数（纯函数真跑） */
+import { PROBES, PROBE_COUNT, LEGACY_PROBES } from "./probe-list.mjs";
+import { buildHandoff } from "../lib/handoff.mjs";
 
 import { DEFAULTS, FROZEN_DEFAULTS, normalizeSettings, SETTINGS_VERSION } from "../lib/settings.mjs";
 import { BUILTIN_TAGS, addCustomTag, listTags, removeCustomTag, setEntryTags, tagsOfEntry, tagPrompt, loadTagsStore, saveTagsStore } from "../lib/tags.mjs";
@@ -1037,6 +1041,8 @@ ok("预演按**目录**算摘除（同名两份只删一份不算删掉那个包
 
 /* ⑦b R27：执行并复核（对账）—— 拿计划与今天的磁盘事实比，只算不写盘 */
 const verifyProbeSource = readFileSync(new URL("./probe-verify.mjs", import.meta.url), "utf8");
+/* R31：探针清单搬到 dev/probe-list.mjs（audit 要数它、run-probes 要跑它 —— 单一来源） */
+const probeListSource = readFileSync(new URL("./probe-list.mjs", import.meta.url), "utf8");
 const runProbesSource = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
 ok("对账是纯函数：计划进结论出，函数体不碰磁盘（目录在不在由调用方注入 presence）", (() => {
 	const at = uninstallSource.indexOf("export function verifyUninstallPlan(plan, input = {})");
@@ -1092,7 +1098,7 @@ ok("对账的措辞只在 uninstall.mjs 一处定义（面板/工具/报告共�
 ok("报告渲染把「白删 / 计划过期 / 逐成员 / 边界」四节都写出来", uninstallSource.includes("export function renderVerifyReport") && uninstallSource.includes("删了等于白删（最要紧）") && uninstallSource.includes("## 逐成员"));
 ok("面板：VerifyBlock 结论与原因同时出现，且按钮不含「删除」字样", clientSource.includes("function VerifyBlock(props)") && clientSource.includes("对账（不动盘）") && clientSource.includes("白删（会被装回来 / 入口指空）：") && clientSource.includes("对账不改任何东西"));
 ok("probe-verify 覆盖 V1–V15 且破一条就非零退出", ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14", "V15"].every((id) => verifyProbeSource.includes(id + " ")) && verifyProbeSource.includes("process.exit(1)"));
-ok("对账探针进了发版体检（run-probes 注册了 probe-verify）", runProbesSource.includes('id: "verify"') && runProbesSource.includes("dev/probe-verify.mjs"));
+ok("对账探针进了发版体检（probe-list 注册了 probe-verify）", probeListSource.includes('id: "verify"') && probeListSource.includes("dev/probe-verify.mjs") && runProbesSource.includes('from "./probe-list.mjs"'));
 
 /* ⑧ R17：变化追踪（自上次快照以来变了什么） */
 const historySource = readFileSync(new URL("../lib/history.mjs", import.meta.url), "utf8");
@@ -1161,7 +1167,11 @@ ok("health 带 timeline 摘要（total / windows），工具输出有「历史�
 const probesRunner = readFileSync(new URL("./run-probes.mjs", import.meta.url), "utf8");
 ok("探针收进发版体检（第 5 项 probes，不再是「有人记得就跑」）", shipChecksSource.includes('id: "probes"') && shipChecksSource.includes('script: "dev/run-probes.mjs"'));
 ok("面板 dry 与 ship 同一份清单（此前硬编码四项，收进探针后 dry 仍只报四项）", indexSource.includes("checks: shipCheckIds()") && indexSource.includes('from "./dev/ship-checks.mjs"'));
-ok("探针串覆盖八个（loadstate / uninstall / simulate / tags / history / staging / composition / handoff）", ["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-tags", "probe-history", "probe-staging", "probe-composition", "probe-handoff"].every((name) => probesRunner.includes("dev/" + name + ".mjs")));
+ok(
+	"探针清单覆盖全部十一个（loadstate / uninstall / simulate / verify / tags / history / staging / composition / handoff / csv / mcp）",
+	["probe-loadstate", "probe-uninstall", "probe-simulate", "probe-verify", "probe-tags", "probe-history", "probe-staging", "probe-composition", "probe-handoff", "probe-csv", "probe-mcp"].every((name) => probeListSource.includes("dev/" + name + ".mjs")),
+);
+ok("探针清单只有一份来源（run-probes 不再自带数组）", runProbesSource.includes('from "./probe-list.mjs"') && !runProbesSource.includes("probe-loadstate.mjs"));
 ok("探针串兼容两种收尾格式（passed/failed 行 与 「N 条不变式全部成立」）", probesRunner.includes("function parseCounts") && probesRunner.includes("function parseInvariants") && probesRunner.includes("parseCounts(text) ||"));
 ok("沙箱里跑探针串会明说「要在宿主里跑」，不会被误判成探针坏了", probesRunner.includes("EPERM") && probesRunner.includes("host_selfcheck"));
 ok("运行中版本被定格（LOADED_VERSION）并与磁盘比（isStaleBuild）", serviceSource.includes("const LOADED_VERSION = (() =>") && serviceSource.includes("function isStaleBuild(") && serviceSource.includes("loaded: { version: LOADED_VERSION"));
@@ -1277,6 +1287,52 @@ ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.inc
 ok("双语 README 都写了 R23 配置层签名 / R24 点回卡片 / R25 下钻（声明层变化、导航与明细）", readmeZh.includes("只改配置也要看得见（R23）") && readmeEn.includes("Declaration-only edits become visible (R23)") && readmeZh.includes("从配置层点回卡片（R24）") && readmeEn.includes("From the composition popup back to the card (R24)") && readmeZh.includes("配置层变化下钻到具体条目（R25）") && readmeEn.includes("Drill down to the exact declaration (R25)"));
 ok("双语 README 都写了 catalog_uninstall 与 dev/probe-uninstall.mjs", readmeZh.includes("catalog_uninstall") && readmeEn.includes("catalog_uninstall") && readmeZh.includes("dev/probe-uninstall.mjs") && readmeEn.includes("dev/probe-uninstall.mjs"));
 /* 版本号那一条在 R12/R13 段落里已经有一条（同一条断言不写两遍，否则红了两行说的是同一件事） */
+
+/* ⑦c R31：**文档数字与真值对账** —— 这一轮踩到的漂移全都长一个样：
+ *     加了第 13 个工具，文档还写 12；探针从 177 涨到 231，SKILL 还写 177；
+ *     交接单从九项变十项，SKILL 还写"九项"；live-check 从 14 涨到 15，手册还写 14。
+ *     共同点：**没人会去改文档里的数字**，所以让机器去数。
+ *
+ * ★ 口径只有一条：文档里承担"现状"的那句话必须能被解析成数字，
+ *   然后与**此刻的代码**比 —— 比的是真值，不是"上一次 ship 的报告"（那会自我循环）。
+ * ★ 历史段落里的小数字（R22 的 116 条之类）不参与对账，这里只认现状句。
+ */
+const docTruth = (() => {
+	/* dev/../.. = DSH-Plugin；再上一级才是工作区（Skill 装在 <ws>/.dsh/skills） */
+	const skillUrl = new URL("../../../.dsh/skills/dsh-plugin-catalog/SKILL.md", import.meta.url);
+	const skillText = existsSync(skillUrl) ? readFileSync(skillUrl, "utf8") : "";
+	const liveCheckSource = readFileSync(new URL("./live-check.mjs", import.meta.url), "utf8");
+	const handoffUrl = new URL("../★交接文件·插件目录面板.md", import.meta.url);
+	const handoffText = existsSync(handoffUrl) ? readFileSync(handoffUrl, "utf8") : "";
+	/** 只数"真的会执行"的断言行（缩进的 ok( 才是判据，注释里的不算）。 */
+	const liveChecks = (liveCheckSource.match(/^\s*ok\(/gm) || []).length;
+	/* 交接单的项数不是常量，是从 buildHandoff 真跑出来的 —— 文档写的必须是这个数 */
+	const handoffChecks = buildHandoff({}).checks.length;
+	const docProbeFiles = new Set((skillText.match(/dev\/probe-[a-z]+\.mjs/g) || []).map((item) => item));
+	return { skillText, liveCheckSource, handoffText, liveChecks, handoffChecks, docProbeFiles, skillPresent: Boolean(skillText) };
+})();
+
+if (!docTruth.skillPresent) {
+	ok("SKILL.md 不在本机（跳过文档对账；这是插件仓库，Skill 副本属于工作区）", true);
+} else {
+	ok(`文档工具数 == 实际工具数（${tools.length}）：SKILL 写「13 个 catalog_* 工具」这类现状句`, docTruth.skillText.includes(`与 ${tools.length} 个 \`catalog_*\` 工具`));
+	ok(`SKILL 探针数 == 清单真值（${PROBE_COUNT} 个）`, docTruth.skillText.includes(`合计 ${PROBE_COUNT} 个探针`));
+	ok(`README 探针数 == 清单真值（${PROBE_COUNT} 个）`, readmeZh.includes(`**${PROBE_COUNT} 个独立探针**`) && readmeZh.includes(`**${PROBE_COUNT} 个探针串成一条**`));
+	ok("SKILL 给每个在链探针都留了一行（链上有、手册没写 = 没人跑它）", PROBES.every((item) => docTruth.skillText.includes(item.file)));
+	ok("探针清单每条 file 在磁盘上都存在（清单写错路径 = 发版体检静默少跑一条）", PROBES.every((item) => existsSync(new URL("../" + item.file, import.meta.url))));
+	ok("旧一代探针也都还认得出来（登记过的路径必须存在，否则清单在骗人）", LEGACY_PROBES.every((item) => existsSync(new URL("../" + item.file, import.meta.url))));
+	ok("dev/ 顶层没有「没挂链也没登记」的探针（新写的探针必须进 PROBES 或 LEGACY_PROBES）", (() => {
+		const known = new Set([...PROBES, ...LEGACY_PROBES].map((item) => item.file.replace("dev/", "")));
+		const onDisk = readdirSync(new URL(".", import.meta.url)).filter((name) => /^probe-.+\.mjs$/.test(name) && name !== "probe-list.mjs");
+		return onDisk.every((name) => known.has(name));
+	})());
+	ok(`live-check 断言条数 == 文档写的条数（真值 ${docTruth.liveChecks}）`, docTruth.skillText.includes(`（≈0.7 秒，${docTruth.liveChecks} 条）`));
+	ok(`交接单项数 == 文档写的（真值 ${docTruth.handoffChecks} 项）`, docTruth.skillText.includes(`${docTruth.handoffChecks} 项核对`));
+	/* 三处都写「共 231 条」这类聚合数：以 README 为基准，其余两处必须同数 —— 只改一处是最常见的半更新 */
+	const statedTotal = (/共\s*(\d+)\s*条/.exec(readmeZh) || [])[1];
+	ok("README / SKILL / 交接文件 写的探针断言总数一致（半更新会被抓到）", Boolean(statedTotal) && docTruth.skillText.includes(`${statedTotal} 条`) && (!docTruth.handoffText || docTruth.handoffText.includes(`${statedTotal} 条`)));
+	ok("README 工具表逐个点名了每个 catalog_* 工具（加工具不忘写文档）", tools.every((tool) => readmeZh.includes(tool.name)));
+}
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });

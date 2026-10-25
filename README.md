@@ -226,7 +226,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   「关掉 25 → 24，@deepseek-ai/dsh-hmr 关掉→启用，bundles +dsh-extra」；明细最多 4 条，多的写「…等 N 条」
   （完整名单在快照里，`HISTORY_VERSION` 不变）。
 - **交接单（R26）**：换会话前最容易漏看的不是数据，而是**几份既有结论的交叉核对** —— 运行中到底是哪一版、
-  最新 ship 有没有失败、工作区脏不脏、staging 旧不旧。`catalog_handoff` 把九项压成一张单子：
+  最新 ship 有没有失败、工作区脏不脏、staging 旧不旧。`catalog_handoff` 把 10 项压成一张单子：
   版本（磁盘 vs 运行中，含「重启 DSH」而不是含糊的 stale）、工具数、配置层缺口、变化与确认、历史快照、
   staging、最新 ship、git 头部/脏文件/未推送、最新目录快照；`write:true` 才落 `reports/handoff-<时间戳>.md`。
   判断在 `lib/handoff.mjs`（纯函数，`dev/probe-handoff.mjs` 9 条合成数据探针），默认只读。
@@ -246,10 +246,14 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   （运行期注入的虚拟模块看不见 —— 本机 `dsh-plugin-desktop` 就是这种）。
   只有 `bundles` 里点名却找不到才会占顶部公告位并说「宿主启用它们时会失败」。
   同一份数据还进 `catalog_health`（一行）、`catalog_composition` 工具、导出报告的「配置层（声明）」一节。
-另有一个 `catalog_handoff`（R26）：把「换会话之前」要对的九项压成一张交接单。
+另有一个 `catalog_handoff`（R26）：把「换会话之前」要对的 10 项压成一张交接单。
   判据在 `lib/composition.mjs`（纯函数、不碰磁盘），`dev/probe-composition.mjs` 用合成文本钉 **C1–C14**。
 - **快捷键**：`/` 聚焦搜索、`Esc` 清空搜索（浮窗里 `Esc` 关闭浮窗）
 - **缓存自愈**：统计缓存超过 10 分钟且没有任务在跑时，面板自己起一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒），不用记着点「刷新统计」；有任务在跑、或本挂载已经刷过，就不再触发 —— 否则会和 20 秒轮询叠成「一直在刷新」
+- **传输压缩（R31）**：`/state` 实测 **304 KB**（139 条条目）、面板每 20 秒拉一次，所以路由按需 gzip ——
+  请求头带 `accept-encoding: gzip` 且正文 ≥ 1 KB 才压，否则原样（浏览器/Electron 的 `fetch` 自动解压，
+  **零客户端改动**）。刻意读 `res.req` 而不是改 20 个调用点的签名：压缩是传输层的事，不漏进业务代码。
+  用 `curl -H 'Accept-Encoding: gzip' -s -o /dev/null -w '%{size_download}'` 与不带该头各量一次即可对照。
 - **分页**：列表底部「共 N 条 · 第 X / Y 页」+ 上一页/下一页/首页/末页，**每页 12 / 24 / 48 / 96 / 全部**；搜索、筛选、排序任一变化自动回第 1 页
 - **外观**：深/浅主题共用一套本地色板（由 `label-primary` 混出，深色下不再是刺眼白框）；卡片悬停时边缘发一圈**克莱因蓝 `#002FA7`** 的光，键盘 `:focus-visible` 同样有蓝环
 - **浮窗**（点卡片，屏幕居中，点外部或 Esc 关闭）：
@@ -493,7 +497,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **十一个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据**，共 231 条，约 3 秒） | 算失败 |
+| `probes` | **11 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据**，共 231 条，约 3 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -536,7 +540,7 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **十一个探针串成一条**（发版体检的第 5 项，共 231 条，约 2 秒）：
+node dev/run-probes.mjs       # **11 个探针串成一条**（发版体检的第 5 项，共 231 条，约 2 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
 node dev/ship-checks.mjs      # 发版体检的**清单单一来源**：ship 真跑它、面板 POST /preflight{dry} 报它
@@ -575,6 +579,14 @@ node dev/ship.mjs            # 发版体检（上面那条）；--json 供面板
 
 ★ `dev/ship.mjs` 在**普通 node** 里跑时，hosttest 的 asar 断言会标 `SKIP`（读不到 `app.asar`），
 所以数字比面板点「自检」少一条；两者都如实打出来，不静默。
+
+**「在链」与「旧一代」两类探针（R31 起明确区分）**：上面这一串是**发版体检链上**的 11 个
+（清单只有一份：`dev/probe-list.mjs` 的 `PROBES`）；`dev/` 里另有一批 R1–R9 的探索脚本
+（`probe-asar` / `probe-export` / `probe-gitops` / `probe-init` / `probe-publish` / `probe-catalog` /
+`probe-dupe` / `probe-multifile` / `probe-stats`），它们**不在链上**、多数只是打印而非断言，
+其中两条在沙箱里天然是红的（`probe-asar` 读不到 asar → `mode none`；`probe-gitops` 的 git 子进程
+→ `spawn EPERM`）。它们登记在 `dev/probe-list.mjs` 的 `LEGACY_PROBES` 里，各自写了"被谁接管"；
+audit 会核对 `dev/` 顶层的每个 `probe-*.mjs` 都在这两张表之一 —— 新写的探针忘了挂链，红的是 audit。
 
 `dev/preview.mjs` 为什么存在：无头自检只能验结构/文案，验不了**版式**（浮窗是否居中、
 卡片网格会不会被挤成一列、窄卡片里徽章是否溢出）。它把组件树序列化成 HTML 并注入同一份 CSS，

@@ -15,6 +15,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { CatalogService } from "./lib/service.mjs";
 import { buildCatalogTools } from "./lib/tools.mjs";
 import { buildStamp, hostVersions, profileDir, dataDir as dataDirOf, workspaceRoot } from "./lib/hostinfo.js";
@@ -41,6 +42,22 @@ function service(ctx, key) {
 	}
 }
 
+/**
+ * 写一个 JSON 响应。
+ *
+ * R31：**按需 gzip**。`/state` 实测 304 KB（139 条条目），面板空闲时每 20 秒拉一次 ——
+ * 这不是"能跑就行"的量，尤其当条目再涨一倍。浏览器/Electron 的 fetch 会自动解压，
+ * 所以这是**零客户端改动**的止血：请求头里带 `accept-encoding: gzip` 就压，否则原样。
+ *
+ * ★ 两个刻意的边界：
+ *   ① 小于 1 KB 不压 —— gzip 头 + CPU 比省下的字节贵；
+ *   ② 读 `res.req`（Node ≥15.7 的官方属性）而不是改 20 个调用点的签名 ——
+ *      调用点只关心"把这段 JSON 写回去"，压缩是传输层的事，不该漏到业务代码里。
+ *
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} code
+ * @param {unknown} payload
+ */
 function json(res, code, payload) {
 	let body;
 	try {
@@ -49,11 +66,27 @@ function json(res, code, payload) {
 		body = JSON.stringify({ ok: false, error: "serialize-failed: " + String(error?.message ?? error) });
 		code = 500;
 	}
+	const acceptsGzip = /(^|,)\s*gzip\s*(;|,|$)/i.test(String(res.req?.headers?.["accept-encoding"] || ""));
+	const raw = Buffer.from(body, "utf8");
+	if (acceptsGzip && raw.length >= 1024) {
+		const packed = gzipSync(raw);
+		res.writeHead(code, {
+			"content-type": "application/json; charset=utf-8",
+			"content-encoding": "gzip",
+			"content-length": packed.length,
+			vary: "Accept-Encoding",
+			"cache-control": "no-store",
+		});
+		res.end(packed);
+		return;
+	}
 	res.writeHead(code, {
 		"content-type": "application/json; charset=utf-8",
+		"content-length": raw.length,
+		vary: "Accept-Encoding",
 		"cache-control": "no-store",
 	});
-	res.end(body);
+	res.end(raw);
 }
 
 function isLoopback(req) {
