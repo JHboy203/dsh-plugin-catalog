@@ -43,20 +43,21 @@ function service(ctx, key) {
 }
 
 /**
- * 写一个 JSON 响应。
+ * 写一个 JSON 响应，并把**这次真的发了多少字节**回给调用方。
  *
- * R31：**按需 gzip**。`/state` 实测 304 KB（139 条条目），面板空闲时每 20 秒拉一次 ——
- * 这不是"能跑就行"的量，尤其当条目再涨一倍。浏览器/Electron 的 fetch 会自动解压，
- * 所以这是**零客户端改动**的止血：请求头里带 `accept-encoding: gzip` 就压，否则原样。
+ * R31：`/state` 实测 357 KB（139 条条目），面板每 20 秒拉一次 —— 所以按需 gzip：
+ * 请求头带 `accept-encoding: gzip` 且正文 ≥ 1 KB 才压，否则原样。
+ * ★ 两个刻意的边界：① 小于 1 KB 不压（gzip 头 + CPU 比省下的字节贵）；
+ *   ② 读 `res.req` 而不是改 20 个调用点的签名 —— 压缩是传输层的事。
  *
- * ★ 两个刻意的边界：
- *   ① 小于 1 KB 不压 —— gzip 头 + CPU 比省下的字节贵；
- *   ② 读 `res.req`（Node ≥15.7 的官方属性）而不是改 20 个调用点的签名 ——
- *      调用点只关心"把这段 JSON 写回去"，压缩是传输层的事，不该漏到业务代码里。
+ * R31c：返回值 `{ raw, packed }` 让 `/state` 把体积记到 service 上，
+ * 于是 `catalog_health` / `/health` 自己就能报「上次 /state 多大、压完多少」——
+ * 换会话的人不必先知道 curl 怎么敲。
  *
  * @param {import('node:http').ServerResponse} res
  * @param {number} code
  * @param {unknown} payload
+ * @returns {{raw:number, packed:number, gzipped:boolean}}
  */
 function json(res, code, payload) {
 	let body;
@@ -78,7 +79,7 @@ function json(res, code, payload) {
 			"cache-control": "no-store",
 		});
 		res.end(packed);
-		return;
+		return { raw: raw.length, packed: packed.length, gzipped: true };
 	}
 	res.writeHead(code, {
 		"content-type": "application/json; charset=utf-8",
@@ -87,6 +88,7 @@ function json(res, code, payload) {
 		"cache-control": "no-store",
 	});
 	res.end(raw);
+	return { raw: raw.length, packed: raw.length, gzipped: false };
 }
 
 function isLoopback(req) {
@@ -272,7 +274,14 @@ export async function apply(ctx) {
 					/* 打开面板就算一次"每周任务检查"：到期就后台跑，不阻塞这次响应 */
 					const tick = catalog.weeklyTick();
 					const state = await catalog.state();
-					return json(res, 200, { ...state, weeklyTick: tick });
+					/* R31c：把这次真正发出去的字节数记到 service 上（`catalog_health` 与 `/health` 都报它） */
+					const size = json(res, 200, { ...state, weeklyTick: tick });
+					try {
+						catalog.noteTransport(size);
+					} catch {
+						/* 记账失败不该影响响应 */
+					}
+					return;
 				}
 
 				if (path === "/entry" && method === "GET") {

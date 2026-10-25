@@ -1354,6 +1354,12 @@ ok("probe-mcp 钉了 M12（片段形状 / 幂等 / patch 内条目另说）", re
  *   删掉 gzip 分支不会让任何测试变红，只会让每 20 秒的轮询重新变成 357 KB。 */
 ok("/state 的按需 gzip 还在（content-encoding + 阈值 + vary 三样都写着）", indexSource.includes('"content-encoding": "gzip"') && indexSource.includes("raw.length >= 1024") && indexSource.includes('vary: "Accept-Encoding"') && /from "node:zlib"/.test(indexSource));
 ok("量传输代价的脚本在（换会话以后不用重写 curl）", existsSync(new URL("./measure-state.mjs", import.meta.url)));
+/* R31c：把「上次 /state 多大」变成产品自己的能力，而不是某个人的 curl 记忆 */
+ok(
+	"/state 的字节数记在 service 上（json() 回 {raw,packed} → noteTransport → health）",
+	/return \{ raw: raw\.length, packed: packed\.length, gzipped: true \}/.test(indexSource) && /noteTransport\(size\)/.test(indexSource) && /noteTransport\(size\) \{/.test(serviceSource) && serviceSource.includes("transport: this.transport || null"),
+);
+ok("catalog_health 真的把「传输」一行打出来（没量过时说清为什么）", toolsSource.includes("传输：上次 /state ") && toolsSource.includes("这个进程还没发过 /state"));
 
 /* ─────────── 汇总 ─────────── */
 rmSync(tmpRoot, { recursive: true, force: true });
