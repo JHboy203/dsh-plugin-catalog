@@ -2011,6 +2011,139 @@ ok("「应用」按钮在没有改动时是禁用的（不会发一个空请求�
 T.store.tagPick = null;
 resetView();
 
+/* ─────────── R30：MCP 分类 ───────────
+   要点：①它是第三类条目（与插件/Skill 并列），chip 带台数；
+        ②0 台时是**空态 + 可抄模板**，不是一张空表；
+        ③卡片与浮窗按 MCP 的形状画（目标 / 传输 / file:line），不能出现对它有误导的
+          「无人依赖」「不会被加载」这类插件口径的结论。 */
+const MCP_ITEM = {
+	id: "mcp:filesystem",
+	kind: "mcp",
+	name: "filesystem",
+	title: "filesystem",
+	descriptionEn: "",
+	descriptionZh: "第三方 · stdio · npx -y @modelcontextprotocol/server-filesystem D:/docs",
+	serverName: "filesystem",
+	entryId: "mcp-filesystem",
+	transport: "stdio",
+	target: "npx -y @modelcontextprotocol/server-filesystem D:/docs",
+	command: "npx",
+	args: ["-y", "@modelcontextprotocol/server-filesystem", "D:/docs"],
+	url: "",
+	cwd: "",
+	envKeys: ["TOKEN"],
+	headerKeys: [],
+	failOnStartupError: null,
+	mcpState: "on",
+	state: "on",
+	enabled: true,
+	source: "third",
+	sourceWhy: ["由 npx 拉起外部包"],
+	problems: [],
+	file: "D:\\信息库\\AI工作区\\.dsh\\profiles\\desktop\\cordis.yml",
+	line: 12,
+	calls: 7,
+	errors: 1,
+	lastUsed: Date.now() - 60000,
+	sessions: 2,
+	subagentCalls: 0,
+	toolCount: 2,
+	toolNames: ["mcp__filesystem__read_file", "mcp__filesystem__list_dir"],
+	realDir: "",
+	isLink: false,
+	inAsar: false,
+	loadState: "",
+	dependents: [],
+	dependentCount: 0,
+	dependsOn: [],
+	dependsOnCount: 0,
+	orphanHint: false,
+	tags: { purpose: [], context: [], origin: ["src-third"] },
+};
+const MCP_TEMPLATE_FIXTURE = {
+	self: "- id: mcp-my-tool\n  name: '@deepseek-ai/dsh-mcp-client'",
+	third: "- id: mcp-filesystem\n  name: '@deepseek-ai/dsh-mcp-client'",
+	http: "- id: mcp-remote\n  name: '@deepseek-ai/dsh-mcp-client'",
+};
+function mcpStateOf(total) {
+	return {
+		at: Date.now(),
+		client: { package: "@deepseek-ai/dsh-mcp-client", present: true, inAsar: true, declared: total },
+		resources: { package: "@deepseek-ai/dsh-mcp-resources", present: true, inAsar: true, rows: [] },
+		counts: { total, on: total, off: 0, conditional: 0, bySource: { official: 0, third: total, self: 0 }, withProblems: 0, withCalls: total },
+		servers: total > 0 ? [MCP_ITEM] : [],
+		problems: [],
+		orphans: { servers: [], tools: [], calls: 0, errors: 0 },
+		totalCalls: 7,
+		notes: ["每台服务器是 cordis 组合文件里的一条条目"],
+		template: MCP_TEMPLATE_FIXTURE,
+	};
+}
+const mcpData = { ...data, mcp: mcpStateOf(1), totals: { ...data.totals, mcp: 1, calls: 13000 + 7 }, entries: [...data.entries, MCP_ITEM] };
+
+T.store.data = mcpData;
+T.store.kind = "all";
+T.store.source = "any";
+T.store.usage = "any";
+T.store.query = "";
+T.store.pageSize = 0;
+T.store.page = 1;
+T.store.open = null;
+T.store.detail = null;
+const withMcpText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+ok("MCP 是第三颗类型 chip（全部 / 插件 / Skill / MCP）", ["插件", "Skill", "MCP"].every((label) => withMcpText.includes(label)));
+ok("MCP chip 带台数（MCP 1）", /MCP\s*1(?![0-9])/.test(withMcpText), withMcpText.slice(0, 200));
+ok("页脚汇总里有一格 MCP 台数", withMcpText.includes("MCP 1") && withMcpText.includes("插件 70"));
+
+T.store.kind = "mcp";
+const mcpPanel = expand(render(T.Panel, {}));
+const mcpPanelText = textsOf(mcpPanel).join(" | ");
+ok("MCP 视图头部给出三类来源计数与客户端包状态", mcpPanelText.includes("MCP 服务器 1 台") && mcpPanelText.includes("官方 0 · 第三方 1 · 自己配置 0") && mcpPanelText.includes("客户端包"), mcpPanelText.slice(0, 300));
+ok("MCP 卡片按自己的形状画：传输 + 目标 + file:line", mcpPanelText.includes("MCP · stdio") && mcpPanelText.includes("server-filesystem") && mcpPanelText.includes("cordis.yml:12"), mcpPanelText.slice(0, 400));
+ok(
+	"MCP 卡片不出现「无人依赖」「不会被加载」这类插件口径（对它没有意义，还会让人以为能删）",
+	(() => {
+		const card = findAll(mcpPanel, (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-card"))[0];
+		const text = textsOf(card).join(" ");
+		return text.includes("filesystem") && !text.includes("无人依赖") && !text.includes("不会被加载");
+	})(),
+);
+ok(
+	"MCP 卡片走的是 MCP 分支（.dpc-card-mcp），不是普通插件卡",
+	findAll(mcpPanel, (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-card-mcp")).length === 1,
+);
+ok("MCP 卡片能显示调用数与报错（按 mcp__ 前缀归属）", mcpPanelText.includes("7") && mcpPanelText.includes("报错 1"));
+
+/* 0 台：空态 + 三段可抄模板（不是一张空表） */
+T.store.data = { ...mcpData, mcp: mcpStateOf(0), entries: data.entries, totals: { ...data.totals, mcp: 0 } };
+const emptyMcpText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+ok("0 台时 MCP 视图说清「还没有配置」而不是空白", emptyMcpText.includes("本机还没有配置任何 MCP 服务器") && emptyMcpText.includes("重启 DSH"), emptyMcpText.slice(0, 300));
+ok("0 台时给出三段模板（自己配置 / 第三方 / 远程）", emptyMcpText.includes("自己配置（本地脚本 + 本地路径）") && emptyMcpText.includes("第三方（npx 拉外部包）") && emptyMcpText.includes("远程（streamable-http）"));
+ok("0 台时模板可复制（有「复制」按钮）", findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-btn") && textsOf(node).join("").endsWith("复制")).length === 3);
+
+/* 浮窗：MCP 配置块 */
+T.store.data = mcpData;
+T.store.kind = "mcp";
+T.store.open = { id: "mcp:filesystem", page: 1, pageSize: 20 };
+T.store.detail = { ok: true, item: MCP_ITEM, tools: [{ name: "mcp__filesystem__read_file", calls: 5, errors: 1, avgMs: 40, lastUsed: Date.now(), sessions: 1 }], sessions: { items: [], page: 1, pageSize: 20, total: 0, pages: 1, pageSizes: [10, 20] }, descendants: 0, statsMeta: {}, statsLimited: false, readme: null };
+const mcpModalText = textsOf(expand(render(T.EntryModal, {}))).join(" | ");
+ok("MCP 浮窗给的是配置（serverName / 传输 / 目标 / 位置）", mcpModalText.includes("MCP 配置（组合文件里的声明）") && mcpModalText.includes("serverName") && mcpModalText.includes("stdio") && mcpModalText.includes("cordis.yml:12"), mcpModalText.slice(0, 400));
+ok("MCP 浮窗里 env 只给键名（TOKEN），不给值", mcpModalText.includes("TOKEN") && mcpModalText.includes("值不显示"));
+ok("MCP 浮窗仍然列出每个 mcp 工具的调用明细", mcpModalText.includes("mcp__filesystem__read_file"));
+
+/* 纯函数：MCP 的三种文案 */
+ok(
+	"loadLabel / loadCell 对 MCP 给「条目状态」而不是四态",
+	T.loadLabel({ kind: "mcp", mcpState: "off" }) === "已关掉" && T.loadLabel({ kind: "mcp", mcpState: "on" }) === "" && T.loadCell({ kind: "mcp", mcpState: "off" }) === "关掉" && T.loadCell({ kind: "mcp", mcpState: "expression" }) === "条件",
+);
+ok("depLabel 对 MCP 一律空（没有 npm 依赖这回事）", T.depLabel({ kind: "mcp", orphanHint: true, dependents: [], dependentCount: 0 }) === "");
+
+T.store.open = null;
+T.store.detail = null;
+T.store.data = data;
+T.store.kind = "all";
+T.store.pageSize = 24;
+
 /* ── 汇总 ── */
 console.log("");
 console.log("dsh-plugin-catalog / render-check");

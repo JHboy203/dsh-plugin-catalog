@@ -169,7 +169,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   新代码才生效」。为什么不加就不行：`build` 标签读的是**磁盘**（package.json + 最新文件 mtime），
   所以显示 0.18.0 时宿主里跑的可能是 0.17.0，新工具、新路由**根本不存在** ——
   R16/R17 两轮都因此误判过一次「已经生效了」。同一轮里还把独立探针收进了 `dev/ship.mjs`
-  （`probes` 项，现在十个、177 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
+  （`probes` 项，现在十一个、231 条不变式），交接前那条命令从「三层自检」变成**三层 + 探针 + 副本同步**。
 - **这两天变了什么（R17）**：面板顶部多一条**变化条**（只在真有变化时出现）：
   「自 10-24 11:27 以来 · 3 处变化 · 新增 1 · 升版 2」，点开列明细。历史落在 `history.json`：
 
@@ -268,7 +268,8 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 
 | 工具 | 一句话 |
 |---|---|
-| `catalog_list` | 列出所有插件与 Skill（可按来源/类型/关键字过滤） |
+| `catalog_list` | 列出所有插件与 Skill（可按来源/类型/关键字过滤）；**R30 起 `kind=mcp` 只看 MCP 服务器** |
+| `catalog_mcp` | **MCP 服务器**：每台 = 组合文件里一条 `@deepseek-ai/dsh-mcp-client` 条目（serverName / 传输 / 命令或 URL / 开或关 / 文件:行），按**官方 / 第三方 / 自己配置**三分类计数，`mcp__<serverName>__<tool>` 的调用按服务器归属；`view=orphans` 找孤儿调用（指向已删/改名的服务器），`view=problems` 看配置问题，`view=template` 给三段可抄写法。只读，`env`/`headers` 的值从不显示 |
 | `catalog_stats` | 全局概览，或某个条目的分工具明细 + 会话列表 |
 | `catalog_tag` | 列标签 / 打标签（单个 `id`＝整条替换；批量 `ids`＝只加不减）/ **批量去标签**（`action=untag`）/ 新增自定义标签（必须给解释）/ 删标签 / **手工改来源**（`action=source`）/ **手工改工具归属**（`action=tool-owner`） |
 | `catalog_classify` | AI 自动打标签（会读自定义标签的解释） |
@@ -279,6 +280,24 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>`；`restore` 是反向撤销（把 staging 还原到备份，同样先出计划、`confirm:true` 才写，只动 staging）；**R28 起 `restore` 可加 `backup=<stamp>` 点名还原到更早的那一份**（计划里会列出最近 8 份可选，省略才是最近一份） |
 | `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`verify` **反向对账**：拿一份已存在的计划与今天的磁盘/声明事实比 —— 哪些目录真的没了、哪些**白删**（会被装回来 / 入口指空）、哪些计划已经过期（今天它已经会被加载 / 组外已有包声明它），可传 `planPath` 指定 `reports/` 下某一份；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`（`verify` 带 `confirm:true` 则写 `reports/uninstall-verify-*.md`）。**四个动作都不执行删除**（命令给人复制） |
 | `catalog_composition` | **配置层（声明）**：两份组合文件的顶层条目 —— 从哪份文件来、挂的是包/子路径/`file://`/分组/只按 id、包在 profile 还是官方 asar、`disabled: true` 关掉的、`!!js` 条件启用的（原文，不求值）；并核对 `dsh.profile.bundles` 里有没有点名却找不到的包。`view=overview` 给计数与缺口，`entries` / `disabled` / `conditional` 给清单。**不展开 bundle 自带的 patch 层**，只读 |
+
+## MCP 分类（R30）
+
+面板工具条上第三颗类型 chip：`全部 / 插件 / Skill / MCP`。MCP 与插件是**两种不同的东西**，所以它有自己的判据：
+
+| 问题 | 答案从哪来 |
+|---|---|
+| 有哪些 MCP 服务器 | `cordis.yml` / `cordis.patch.yml` 里 `name: '@deepseek-ai/dsh-mcp-client'` 的每条条目（按 `id` 合并，patch 只写 `disabled` 时配置仍取基线） |
+| 它是官方 / 第三方 / 自己配置 | 启发式 + **理由**：命令指向本地文件、配了本地 `cwd`、url 是环回地址 → **自己配置**；命令/参数/url 里出现 `@deepseek-ai/` → **官方**；其余（npx/uvx/docker 拉外部包、公网 url）→ **第三方**。判错了可以在浮窗里改（`catalog_tag action=source`） |
+| 它在跑吗 | 只有三态：**启用 / 关掉（`disabled: true`）/ 条件启用（`!!js`，不求值）**。它**不在** `dsh.profile.bundles` 里，所以四态加载判据对它没有意义 |
+| 它被调用过多少 | 工具名契约 `mcp__<serverName>__<tool>` —— 按前缀归属到服务器，不靠描述指纹。`mcp__` 的调用**不算**宿主核心工具 |
+| 为什么一台都没有 | 本机目前确实没配。此时分类页给**空态 + 三段可抄模板**（自己配置 / 第三方 / 远程），不是一张空表 |
+
+数据来源与边界：
+
+- 声明层（与「配置层」浮层读同一份文本、同一时刻），改完组合文件要 **重启 DSH** 才生效（`cordis.patch.yml` 不热更）。
+- `env` / `headers` 的**值永不下发**到浏览器或报告，只给键名；url 的 userinfo 与 query 隐藏。
+- 「孤儿调用」= 统计里出现过 `mcp__<server>__*`，但组合文件里现在没有这台服务器 —— 删过条目或改了 `serverName`；`catalog_health` / 交接单会把它标成 warn。
 
 ## 数据与隐私
 
@@ -386,6 +405,15 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
    （`dpi-probe-bundle`、`dsh-toolfold`），都被更深的依赖链排除过一轮。
 10. **依赖图不区分 devDependencies**：装进 profile 的包本来就不该有 dev 依赖，这里只按运行时声明判断。
 11. **pnpm 的 `.pnpm` 虚拟仓库不展开**（本机 `nodeLinker: hoisted`，不存在该目录）；换成 isolated 链接模式时，依赖图会退化。
+12. **MCP 的「来源」是启发式**（R30）：本地路径 / 环回 url → 自己配置，`@deepseek-ai/` → 官方，其余 → 第三方。
+    它判的是"这条声明长什么样"，不是"这个服务器的作者是谁"；判错可在浮窗里手工改。
+13. **MCP 读的是声明层，不是运行态**：条目写了 `command` 也可能启动失败（缺依赖、端口占用、token 过期），
+    本面板不连服务器、不握手。真正的连接状态看宿主日志与工具是否出现。
+14. **MCP 的 `disabled` 若是 `!!js` 表达式不求值**：面板只显示原文，到底开没开以宿主为准。
+15. **MCP 的调用归属按第一个 `__` 切 serverName**：`serverName` 与工具名都允许下划线，
+    理论上存在歧义（`mcp__a__b__c`）；本面板与报告用同一个切法，不在别处再猜一次。
+16. **MCP 没有体积 / 依赖 / 加载态**：它是组合文件里的一条声明，不在 `node_modules` 里，
+    所以「量体积」「无人依赖」「不会被加载」这三档对它一律不适用（卡片上也不会出现）。
 
 ## 排错：插件装了、面板也出来了，但没有工具/路由
 
@@ -465,7 +493,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **十个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出**，共 177 条，约 3 秒） | 算失败 |
+| `probes` | **十一个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据**，共 231 条，约 3 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -508,7 +536,7 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **十个探针串成一条**（发版体检的第 5 项，共 177 条，约 2 秒）：
+node dev/run-probes.mjs       # **十一个探针串成一条**（发版体检的第 5 项，共 231 条，约 2 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
 node dev/ship-checks.mjs      # 发版体检的**清单单一来源**：ship 真跑它、面板 POST /preflight{dry} 报它

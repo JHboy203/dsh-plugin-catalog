@@ -122,6 +122,13 @@ ok(
 	JSON.stringify({ count: composition?.bundleNames?.length, declared: composition?.bundles?.declared }),
 );
 const drift = state.json?.drift || {};
+/* R30：MCP —— 真机 /state 必须带得上（0 台时也要给模板，否则面板会是一张空表） */
+const mcpState = state.json?.mcp || null;
+ok(
+	"state.mcp: counts + client + template (0 servers is valid)",
+	Boolean(mcpState) && typeof mcpState.counts?.total === "number" && Array.isArray(mcpState.servers) && Boolean(mcpState.client?.package) && Boolean(mcpState.template?.self),
+	JSON.stringify({ total: mcpState?.counts?.total, servers: mcpState?.servers?.length, hasTemplate: Boolean(mcpState?.template) }),
+);
 const stagedSkills = Object.entries(drift).filter(([, entry]) => entry && entry.staged === true);
 ok(
 	"drift skill entries carry hash + backups (R20 data source)",

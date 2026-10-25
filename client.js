@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r28.0";
+		const BUILD = "r30.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -439,7 +439,8 @@ window.__ModuleLoader__.load({
 		function openEntry(item) {
 			set({ open: { id: item.id, page: 1, pageSize: 20 }, detail: null, size: null, sizeError: null });
 			loadDetail(item.id, 1, 20);
-			loadSize(item.id);
+			/* R30：MCP 服务器没有目录可量（它是组合文件里的声明），别去问 /size */
+			if (item.kind !== "mcp") loadSize(item.id);
 		}
 
 		function closeEntry() {
@@ -627,7 +628,7 @@ window.__ModuleLoader__.load({
 		 * 「被 N 依赖」= 删了会让这些包坏；「无人依赖」= 候选。
 		 */
 		function depLabel(item) {
-			if (!item || item.kind === "skill") return "";
+			if (!item || item.kind === "skill" || item.kind === "mcp") return "";
 			if (Number(item.dependentCount) > 0) return "被 " + item.dependentCount + " 依赖";
 			if (item.orphanHint) return "无人依赖";
 			return "";
@@ -650,9 +651,15 @@ window.__ModuleLoader__.load({
 			return Boolean(item && item.loadState === "config");
 		}
 
-		/** 卡片 chip：只给「不会被加载」与「配置入口」两档，间接加载 152 条不占版面。 */
+		/** 卡片 chip：只给「不会被加载」与「配置入口」两档，间接加载 152 条不占版面。MCP 给的是条目状态。 */
 		function loadLabel(item) {
 			if (!item || item.kind === "skill") return "";
+			/* R30：MCP 不在 bundles 里，四态对它没有意义 —— 它只有"条目开着还是关着" */
+			if (item.kind === "mcp") {
+				if (item.mcpState === "off") return "已关掉";
+				if (item.mcpState === "expression") return "条件启用";
+				return "";
+			}
 			if (item.loadState === "dormant") return "不会被加载";
 			if (item.loadState === "config") return "配置入口";
 			return "";
@@ -661,6 +668,13 @@ window.__ModuleLoader__.load({
 		/** chip 的悬停说明书（四态各一句，别让读者自己去猜 enabled 与 loadState 的区别）。 */
 		function loadTitle(item) {
 			if (!item) return "";
+			if (item.kind === "mcp") {
+				return item.mcpState === "off"
+					? "组合条目里写了 disabled: true —— 这台服务器不会被加载（工具也不会出现）。改回 false 或缺省，然后重启 DSH。"
+					: item.mcpState === "expression"
+						? "这条 disabled 是 `!!js` 表达式，本工具**不求值**（原文在详情里）—— 到底开没开要看宿主日志。"
+						: "条目启用。改完组合文件要重启 DSH（cordis.patch.yml 不热更）。";
+			}
 			if (item.loadState === "dormant") return "不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主不会加载它。删掉不影响当前加载；但如果你打算以后在 cordis.patch.yml 里挂它，就别删。";
 			if (item.loadState === "config") return "不在 dsh.profile.bundles，但被 cordis 配置条目" + (item.loadVia ? " `" + item.loadVia + "`" : "") + " 挂着 —— 它会加载。";
 			if (item.loadState === "transitive") return "不在 bundles，但 " + (item.loadVia || "某个入口") + " 声明依赖它 —— 随它一起加载，删了会连带弄坏。";
@@ -671,6 +685,7 @@ window.__ModuleLoader__.load({
 		/** 详情页「启用」格子的文案。 */
 		function loadCell(item) {
 			if (!item || item.kind === "skill") return "";
+			if (item.kind === "mcp") return item.mcpState === "off" ? "关掉" : item.mcpState === "expression" ? "条件" : "启用";
 			if (item.loadState === "dormant") return "否";
 			if (item.loadState === "config") return "配置(" + (item.loadVia || "条目") + ")";
 			if (item.loadState === "transitive") return "随 " + (item.loadVia || "依赖");
@@ -809,8 +824,166 @@ window.__ModuleLoader__.load({
 
 		/* ── 卡片 ── */
 
+		/* ── R30：MCP 服务器卡片 ──
+		   与插件卡的区别不是装饰，是**语义**：它没有目录、没有依赖、没有 bundles 加载态；
+		   它有的是 serverName / 传输 / 命令或 URL / 条目状态 / 调用（按 mcp__<server>__ 归属）。 */
+		function McpCard(props) {
+			const item = props.item;
+			const all = props.tags || [];
+			const hits = props.hits || [];
+			const picked = Boolean(props.picked);
+			const picking = Boolean(props.picking);
+			const off = item.mcpState === "off";
+			const problems = item.problems || [];
+			return h(
+				"button",
+				{
+					className: "dpc-card dpc-card-mcp" + (off ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
+					onClick: () => (picking ? props.onPick(item.id) : openEntry(item)),
+					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的配置与调用明细",
+				},
+				h(
+					"div",
+					{ className: "dpc-card-head" },
+					picked ? h("span", { className: "dpc-pick-badge", "aria-label": "已选中" }, "✓") : null,
+					h(SourceBadge, { source: item.source, why: item.sourceWhy }),
+					h("span", { className: "dpc-name" }, item.name),
+					h("span", { className: "dpc-kind" }, "MCP · " + (item.transport || "?")),
+					loadLabel(item) ? h("span", { className: "dpc-load" }, loadLabel(item)) : null,
+					problems.length > 0 ? h("span", { className: "dpc-warn", title: problems.map((problem) => problem.message).join("\n") }, "配置 " + problems.length + " 处") : null,
+					hasErrors(item) ? h("span", { className: "dpc-err", title: "报错 " + (item.errors || 0) + " 次 / 调用 " + (item.calls || 0) + " 次（" + Math.round(errorRate(item) * 100) + "%）" }, "报错 " + fmtNumber(item.errors || 0)) : null,
+					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "这个服务器还没有被调用过（工具名 mcp__" + item.name + "__*）" : "总调用次数（按 mcp__" + item.name + "__* 归属）" }, fmtNumber(item.calls)),
+				),
+				h("div", { className: "dpc-zh dpc-zh-plain dpc-mcp-target", title: item.target }, h("code", null, item.target || "（没写 command / url）")),
+				h(
+					"div",
+					{ className: "dpc-muted dpc-mcp-meta" },
+					"serverName " + item.name + "　·　" + String(item.file || "").split(/[\\/]/).pop() + ":" + (item.line || "?"),
+					(item.envKeys || []).length > 0 ? "　·　env " + item.envKeys.length + " 个键" : "",
+					(item.headerKeys || []).length > 0 ? "　·　header " + item.headerKeys.length + " 个键" : "",
+					"　·　工具 " + (item.toolCount || 0) + " 个",
+				),
+				hits.length > 0 ? h("div", { className: "dpc-hit", title: "搜索命中的工具名" }, "工具：" + hits.join(" · ")) : null,
+				h(
+					"div",
+					{ className: "dpc-card-foot" },
+					h(TagChips, { ids: (item.tags && item.tags.purpose) || [], all }),
+					h("span", { className: "dpc-foot-meta" }, item.subagentCalls > 0 ? "含子代理 " + fmtNumber(item.subagentCalls) + " · " : "", item.lastUsed ? "最近 " + ago(item.lastUsed) : "从未调用"),
+				),
+			);
+		}
+
+		/* ── R30：MCP 视图的头部 ──
+		   三种情况都要说清楚：①一台都没有（给可抄的模板，三类来源各一段）；
+		   ②有服务器（给来源/状态计数与孤儿调用）；③客户端包缺失（写了条目也不会加载）。 */
+		function McpBanner(props) {
+			const mcp = props.mcp || {};
+			const counts = mcp.counts || {};
+			const bySource = counts.bySource || {};
+			const client = mcp.client || {};
+			const resources = mcp.resources || {};
+			const orphans = mcp.orphans || { servers: [], calls: 0 };
+			const [copied, setCopied] = useState("");
+			const template = mcp.template || {};
+			const blocks = [
+				["自己配置（本地脚本 + 本地路径）", template.self || ""],
+				["第三方（npx 拉外部包）", template.third || ""],
+				["远程（streamable-http）", template.http || ""],
+			].filter(([, text]) => text !== "");
+			return h(
+				"div",
+				{ className: "dpc-mcp-banner" },
+				h(
+					"div",
+					{ className: "dpc-mcp-banner-head" },
+					h("strong", null, "MCP 服务器 " + (counts.total || 0) + " 台"),
+					h("span", { className: "dpc-muted" }, "　官方 " + (bySource.official || 0) + " · 第三方 " + (bySource.third || 0) + " · 自己配置 " + (bySource.self || 0) + "　｜　启用 " + (counts.on || 0) + " / 关掉 " + (counts.off || 0) + " / 条件 " + (counts.conditional || 0)),
+					h("span", { className: client.present ? "dpc-muted" : "dpc-bad" }, "　｜　客户端包 " + (client.present ? (client.inAsar ? "在（官方 asar）" : "在（profile）") : "缺失")),
+					h("span", { className: resources.present ? "dpc-muted" : "dpc-muted" }, "　｜　资源包 " + (resources.present ? "在（" + ((resources.rows || []).length) + " 条声明）" : "不在")),
+					h("span", { className: "dpc-muted" }, "　｜　mcp__* 调用 " + fmtNumber(mcp.totalCalls || 0)),
+				),
+				orphans.calls > 0
+					? h("div", { className: "dpc-bad dpc-mcp-note" }, "⚠️ 孤儿调用 " + fmtNumber(orphans.calls) + " 次，指向现在没有配置的服务器：" + (orphans.servers || []).join("、") + "（删过条目或改了 serverName；统计里还在）")
+					: null,
+				(counts.total || 0) === 0
+					? h(
+							"div",
+							{ className: "dpc-mcp-note" },
+							h("div", null, "本机还没有配置任何 MCP 服务器。要加一台，把下面任意一段追加到 profile 的 ", h("code", null, "cordis.yml"), "（或 ", h("code", null, "cordis.patch.yml"), "），改完**重启 DSH**；工具名会是 ", h("code", null, "mcp__<serverName>__<tool>"), "。"),
+							blocks.map(([label, text]) =>
+								h(
+									"div",
+									{ key: label, className: "dpc-mcp-template" },
+									h(
+										"div",
+										{ className: "dpc-mcp-template-head" },
+										h("span", null, label),
+										h(
+											"button",
+											{
+												className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copied === label ? " is-on" : ""),
+												onClick: () => setCopied(copyText(text) ? label : ""),
+											},
+											copied === label ? "已复制" : "复制",
+										),
+									),
+									h("pre", { className: "dpc-mcp-pre" }, text),
+								),
+							),
+						)
+					: h("div", { className: "dpc-muted dpc-mcp-note" }, "来源是**启发式**（本地路径/环回地址→自己配置；@deepseek-ai/→官方；其余→第三方），可手工改。点卡片看配置与每个 mcp 工具的调用明细。"),
+			);
+		}
+
+		/* ── R30：详情浮窗里的 MCP 配置块 ──
+		   这里给的是"照着能改"的信息：条目的位置（file:line）、传输、目标命令或 URL、
+		   以及**只有键名**的 env/header —— 值从来不下发到浏览器。 */
+		function McpConfigBlock(props) {
+			const item = props.item;
+			const [copied, setCopied] = useState("");
+			const copy = (label, text) => {
+				const ok = copyText(text);
+				setCopied(ok ? label : "");
+				if (!ok) props.onNotice && props.onNotice("复制失败：渲染进程不让写剪贴板，请手动选中后复制");
+			};
+			const row = (label, value, mono) =>
+				h("div", { className: "dpc-row" }, h("span", { className: "dpc-muted" }, label), mono ? h("code", { className: "dpc-path" }, value) : h("span", null, value));
+			return h(
+				"div",
+				{ className: "dpc-block" },
+				h("div", { className: "dpc-block-title" }, "MCP 配置（组合文件里的声明）"),
+				row("条目状态", item.mcpState === "off" ? "已关掉（disabled: true）" : item.mcpState === "expression" ? "条件启用（!!js 表达式，本工具不求值）" : "启用"),
+				row("传输", item.transport || "?（没写 transport）"),
+				h(
+					"div",
+					{ className: "dpc-row" },
+					h("span", { className: "dpc-muted" }, "目标"),
+					h("code", { className: "dpc-path" }, item.target || "（没写 command / url）"),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copied === "target" ? " is-on" : ""), onClick: () => copy("target", item.target || "") }, copied === "target" ? "已复制" : "复制"),
+				),
+				row("serverName", item.name + (item.entryId ? "　（条目 id " + item.entryId + "）" : "")),
+				h(
+					"div",
+					{ className: "dpc-row" },
+					h("span", { className: "dpc-muted" }, "位置"),
+					h("code", { className: "dpc-path" }, String(item.file || "") + ":" + (item.line || "")),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copied === "file" ? " is-on" : ""), onClick: () => copy("file", String(item.file || "") + ":" + (item.line || "")) }, copied === "file" ? "已复制" : "复制"),
+				),
+				(item.envKeys || []).length > 0 ? row("env 键", (item.envKeys || []).join("、") + "（值不显示）") : null,
+				(item.headerKeys || []).length > 0 ? row("header 键", (item.headerKeys || []).join("、") + "（值不显示）") : null,
+				item.timeoutMs ? row("工具超时", item.timeoutMs + " ms") : null,
+				item.failOnStartupError === true ? row("启动失败策略", "failOnStartupError: true —— 连不上会拒绝激活这个插件") : null,
+				(item.problems || []).length > 0
+					? h("div", { className: "dpc-load-warn" }, "配置问题：" + item.problems.map((problem) => problem.message).join("；") + "（改完要重启 DSH）")
+					: h("div", { className: "dpc-muted" }, "改这个条目的位置是 " + String(item.file || "").split(/[\\/]/).pop() + " —— 改完**重启 DSH** 才生效（cordis.patch.yml 不热更）。"),
+			);
+		}
+
 		function Card(props) {
 			const item = props.item;
+			/* R30：MCP 服务器不是"装的包"——没有目录/依赖/加载态，卡片要按它自己的形状画，
+			   否则会显示「无人依赖」这种对它毫无意义的结论（而且看起来像可以删）。 */
+			if (item.kind === "mcp") return McpCard(props);
 			const all = props.tags || [];
 			const hits = props.hits || [];
 			const picked = Boolean(props.picked);
@@ -1411,7 +1584,9 @@ window.__ModuleLoader__.load({
 												/* 体积：先用全量快照（打开就有），没有再退到懒算的 /size */
 												sizeRow(),
 											)
-										: h(
+										: item.kind === "mcp"
+											? h(McpConfigBlock, { item, onNotice: (notice) => set({ notice }) })
+											: h(
 												"div",
 												{ className: "dpc-block" },
 												h("div", { className: "dpc-block-title" }, "位置与体积"),
@@ -2815,6 +2990,9 @@ window.__ModuleLoader__.load({
 			/* R22：配置层（声明层）—— 服务端 60 秒缓存一份紧凑视图，随 /state 一起下发 */
 			const composition = (data && data.composition) || null;
 			const compositionBad = composition && composition.verdict === "bad" ? composition : null;
+			/* R30：MCP（0 台时也是有用的一份：它带模板与三类来源说明） */
+			const mcp = (data && data.mcp) || null;
+			const mcpCount = Number(mcp && mcp.counts && mcp.counts.total) || 0;
 
 			return h(
 				"div",
@@ -2830,7 +3008,7 @@ window.__ModuleLoader__.load({
 						h(
 							"div",
 							{ className: "dpc-sub" },
-							"插件 " + (totals.plugins || 0) + " · Skill " + (totals.skills || 0) + " · 官方 " + ((totals.bySource && totals.bySource.official) || 0) + " / 自写 " + ((totals.bySource && totals.bySource.self) || 0) + " / 第三方 " + ((totals.bySource && totals.bySource.third) || 0) + " / 混血 " + ((totals.bySource && totals.bySource.hybrid) || 0),
+							"插件 " + (totals.plugins || 0) + " · Skill " + (totals.skills || 0) + " · MCP " + (totals.mcp || 0) + " · 官方 " + ((totals.bySource && totals.bySource.official) || 0) + " / 自写 " + ((totals.bySource && totals.bySource.self) || 0) + " / 第三方 " + ((totals.bySource && totals.bySource.third) || 0) + " / 混血 " + ((totals.bySource && totals.bySource.hybrid) || 0),
 							stats.ready
 								? h("span", null, "｜最近 " + (meta.windowDays || 90) + " 天 " + fmtNumber(meta.calls || 0) + " 次调用（" + (meta.sessions || 0) + " 会话）｜缓存 " + ago(meta.builtAt))
 								: h("span", { className: "dpc-bad" }, "｜统计缓存还没生成（首次约 40~60 秒，已在后台算）"),
@@ -3014,8 +3192,15 @@ window.__ModuleLoader__.load({
 					h(
 						"div",
 						{ className: "dpc-seg" },
-						[{ id: "all", label: "全部" }, { id: "plugin", label: "插件" }, { id: "skill", label: "Skill" }].map((option) =>
-							h("button", { key: option.id, className: "dpc-seg-btn" + (state.kind === option.id ? " is-on" : ""), onClick: () => set({ kind: option.id, page: 1 }) }, option.label),
+						/* R30：MCP 是第三类条目（组合文件里的一条声明），与插件/Skill 并列。
+						   0 台时也保留这颗 chip —— 点进去是空态 + 可抄模板，比"藏起来"有用。 */
+						[
+							{ id: "all", label: "全部" },
+							{ id: "plugin", label: "插件" },
+							{ id: "skill", label: "Skill" },
+							{ id: "mcp", label: "MCP" + (mcpCount > 0 ? " " + mcpCount : "") },
+						].map((option) =>
+							h("button", { key: option.id, className: "dpc-seg-btn" + (state.kind === option.id ? " is-on" : ""), onClick: () => set({ kind: option.id, page: 1 }), title: option.id === "mcp" ? "MCP 服务器：组合文件里 @deepseek-ai/dsh-mcp-client 的每条条目（本机 " + mcpCount + " 台）" : undefined }, option.label),
 						),
 					),
 					h(
@@ -3196,6 +3381,7 @@ window.__ModuleLoader__.load({
 					),
 				),
 				/* 卡片网格 */
+				state.kind === "mcp" && mcp ? h(McpBanner, { mcp }) : null,
 				h(
 					"div",
 					{ className: "dpc-grid" },
@@ -3407,6 +3593,20 @@ window.__ModuleLoader__.load({
 .dpc-en-block{font-size:12px;margin-top:6px;-webkit-line-clamp:6}
 .dpc-card-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px}
 .dpc-foot-meta{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary,#8b93a1)}
+/* ── R30：MCP（服务器卡片 + 视图头部 + 可抄模板） ── */
+.dpc-mcp-target code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  word-break:break-all;color:var(--dsw-alias-label-primary,#1f2937)}
+.dpc-mcp-meta{font-size:11px;line-height:1.55;word-break:break-all}
+.dpc-mcp-banner{grid-column:1/-1;display:flex;flex-direction:column;gap:10px;padding:14px 16px;
+  border-radius:14px;border:1px solid var(--dpc-line);background:var(--dpc-fill)}
+.dpc-mcp-banner-head{display:flex;align-items:baseline;gap:4px;flex-wrap:wrap;font-size:13px}
+.dpc-mcp-note{font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary,#525a66)}
+.dpc-mcp-template{border:1px solid var(--dpc-line-soft);border-radius:10px;overflow:hidden;
+  background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.03))}
+.dpc-mcp-template-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 10px;font-size:12px;border-bottom:1px solid var(--dpc-line-soft)}
+.dpc-mcp-pre{margin:0;padding:10px 12px;overflow:auto;max-height:280px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.65}
 .dpc-chips{display:inline-flex;gap:4px;flex-wrap:wrap}
 .dpc-chip{font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.06));
   color:var(--dsw-alias-label-secondary,#4b5563)}

@@ -20,7 +20,7 @@ const GOOD = {
 	now: NOW,
 	build: { version: "0.26.0", at: NOW, stale: false, newestFile: "lib/handoff.mjs" },
 	loaded: { version: "0.26.0", at: NOW },
-	tools: 12,
+	tools: 13,
 	composition: { line: "配置层：2 条", verdict: "ok", counts: { effective: 2 } },
 	changes: { baselineAt: NOW - 1000, counts: { total: 2, composition: 0 } },
 	ack: { at: NOW - 500, entries: 10 },
@@ -29,12 +29,14 @@ const GOOD = {
 	ship: { path: "D:\\x\\.cache\\ship-20261025.md", at: NOW, passed: 1200, failed: 0 },
 	git: { head: "abcdef1", branch: "main", dirty: 0, ahead: 0, behind: 0 },
 	report: { path: "D:\\x\\reports\\catalog-20261025.md", at: NOW },
+	/* R30：MCP 是本机真实状态的一部分 —— 0 台也是"对齐"（本机就可能一台都没配） */
+	mcp: { line: "MCP：0 台服务器（官方 0 / 第三方 0 / 自己配置 0）", counts: { total: 0, withProblems: 0, bySource: { official: 0, third: 0, self: 0 } }, orphans: { calls: 0, servers: [] } },
 };
 
 /* ── 1. 全部对齐 → ok，九项都在，没有「下一步」 ── */
 {
 	const report = buildHandoff(GOOD);
-	ok("H1 全部对齐 → verdict=ok、9 项核对、没有下一步", report.verdict === "ok" && report.checks.length === 9 && report.next.length === 0 && report.counts.bad === 0, JSON.stringify({ verdict: report.verdict, checks: report.checks.length, next: report.next }));
+	ok("H1 全部对齐 → verdict=ok、10 项核对、没有下一步", report.verdict === "ok" && report.checks.length === 10 && report.next.length === 0 && report.counts.bad === 0, JSON.stringify({ verdict: report.verdict, checks: report.checks.length, next: report.next }));
 	ok("H1b 带版本号与表格的 Markdown", report.version === HANDOFF_VERSION && report.markdown.includes("# 交接单") && report.markdown.includes("| 项 | 状态 | 说明 |") && report.markdown.includes("可以直接换会话"), report.markdown.split("\n").slice(0, 3).join(" | "));
 }
 
@@ -81,7 +83,7 @@ const GOOD = {
 /* ── 8. 空输入不炸（旧宿主 / 数据没准备好） ── */
 {
 	const report = buildHandoff({});
-	ok("H8 空输入不抛（verdict=warn，九项仍齐全）", report.verdict === "warn" && report.checks.length === 9 && typeof renderHandoff(report) === "string", JSON.stringify({ verdict: report.verdict }));
+	ok("H8 空输入不抛（verdict=warn，十项仍齐全）", report.verdict === "warn" && report.checks.length === 10 && typeof renderHandoff(report) === "string", JSON.stringify({ verdict: report.verdict }));
 }
 
 /* ── 9. ship 报告解析不出数字 → warn（文件在 ≠ 体检过） ── */
@@ -89,6 +91,16 @@ const GOOD = {
 	const report = buildHandoff({ ...GOOD, ship: { ...GOOD.ship, passed: 0, failed: 0 } });
 	const check = report.checks.find((item) => item.id === "ship");
 	ok("H9 ship 报告 0/0（解析失败）→ warn，不冒充通过", report.verdict === "warn" && check.status === "warn" && check.detail.includes("没解析出"), check.detail);
+}
+
+/* ── 10. R30：MCP 有问题 / 有孤儿调用 → warn（0 台不算失败） ── */
+{
+	const problems = buildHandoff({ ...GOOD, mcp: { ...GOOD.mcp, counts: { ...GOOD.mcp.counts, withProblems: 2 } } });
+	const orphans = buildHandoff({ ...GOOD, mcp: { ...GOOD.mcp, orphans: { calls: 7, servers: ["gone"] } } });
+	const check = problems.checks.find((item) => item.id === "mcp");
+	ok("H10 配置问题 2 台 → warn，并点名「MCP」这一项", problems.verdict === "warn" && check.status === "warn", JSON.stringify({ verdict: problems.verdict, status: check.status }));
+	ok("H10b 孤儿调用 → warn，且 detail 里写出服务器名", orphans.verdict === "warn" && orphans.checks.find((item) => item.id === "mcp").detail.includes("gone"), JSON.stringify(orphans.checks.find((item) => item.id === "mcp")));
+	ok("H10c 0 台（本机没配 MCP）不判失败", buildHandoff(GOOD).verdict === "ok", buildHandoff(GOOD).verdict);
 }
 
 const failed = results.filter((item) => !item.pass);

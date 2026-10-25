@@ -17,7 +17,7 @@ export const SHIP_CHECKS = Object.freeze([
 	{ id: "render", label: "界面渲染", script: "dev/render-check.cjs" },
 	{ id: "hosttest", label: "宿主行为", script: "dev/hosttest.mjs" },
 	/* R18：独立探针（loadstate / uninstall / simulate / tags / history；R20 加 staging；
-	   R22 加 composition，共七个）。之前它们只是"交接文件里写着、有人记得就跑"，
+	   R22 加 composition；R30 加 mcp，共十一个）。之前它们只是"交接文件里写着、有人记得就跑"，
 	   不变式从没进过发版体检。 */
 	{ id: "probes", label: "独立探针", script: "dev/run-probes.mjs" },
 	/* 最后一项在 ship **本进程内**跑（不 spawn）：只 stat 几十个 SKILL.md。

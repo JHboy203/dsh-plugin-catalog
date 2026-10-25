@@ -77,7 +77,7 @@ const stubService = new Proxy(
 );
 const tools = buildCatalogTools({ service: stubService });
 ok("工具数量 ≥ 6", tools.length >= 6, "实际 " + tools.length);
-const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync", "catalog_handoff"];
+const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync", "catalog_handoff", "catalog_mcp"];
 for (const name of requiredNames) {
 	ok("存在工具 " + name, tools.some((tool) => tool.name === name));
 }
@@ -530,7 +530,7 @@ ok("体积不跟随符号链接 / junction（只推入真目录）", serviceSour
 ok(
 	"构建目录 / 列表都不算体积（dirSize 只在 entrySize / entrySizes / computeSizes 三处）",
 	(serviceSource.match(/await dirSize\(/g) || []).length === 3 &&
-		!serviceSource.slice(serviceSource.indexOf("listEntries() {"), serviceSource.indexOf("totalsOf(plugins, skills)")).includes("dirSize(") &&
+		!serviceSource.slice(serviceSource.indexOf("listEntries() {"), serviceSource.indexOf("totalsOf(plugins, skills")).includes("dirSize(") &&
 		/async computeSizes\(options = \{\}\)[\s\S]{0,2000}?await dirSize\(/.test(serviceSource),
 );
 ok("没有独立目录时如实返回 size:null + 原因（不返回 0）", serviceSource.includes("Skill 没有独立目录") && serviceSource.includes("在官方 asar 里，没有独立目录"));
@@ -626,7 +626,7 @@ ok(
 	"条目带 dependents / dependentCount / dependsOn / dependsOnCount",
 	["dependents: pack.dependents || []", "dependentCount: pack.dependentCount || 0", "dependsOn: pack.dependsOn || []", "dependsOnCount: pack.dependsOnCount || 0"].every((needle) => catalogSource.includes(needle)),
 );
-ok("条目形状变了 → CATALOG_VERSION = 9（R19 给 Skill 加了 contentHash；R14 的 packageName / aliasOf 同一条线索）", /export const CATALOG_VERSION = 9;/.test(catalogSource));
+ok("条目形状变了 → CATALOG_VERSION = 10（R30 加 MCP 条目；R19 的 contentHash、R14 的 packageName / aliasOf 同一条线索）", /export const CATALOG_VERSION = 10;/.test(catalogSource));
 ok("依赖图自述进快照（扫了多少包 / 多少直接依赖 / 几个候选 / 加载路径四态）", /dependencyMeta: depMeta \|\| \{ scanned: 0, direct: 0, orphanHint: 0, loadRoots: 0, loadCounts: \{ bundle: 0, config: 0, transitive: 0, dormant: 0 \}, compositionFiles: 0 \}/.test(catalogSource));
 ok("state 与 /health 都带依赖图", (serviceSource.match(/dependency: this\.catalog\?\.dependencyMeta \|\| null,/g) || []).length === 2);
 ok("导出清单加「被依赖 / 加载」两列（拿出去也要能判断）", serviceSource.includes('"| 名称 | 类型 | 来源 | 调用 | 报错 | 报错率 | 最近一次 | 体积 | 被依赖 | 加载 | 位置 |"'));
@@ -928,7 +928,7 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.28.0 / r28.0", /"version": "0\.28\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r28.0"'));
+ok("版本号与构建戳同步抬到 0.30.0 / r30.0", /"version": "0\.30\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r30.0"'));
 
 
 ok(
@@ -948,7 +948,7 @@ const readmeEn = readFileSync(new URL("../README.en.md", import.meta.url), "utf8
 ok("处置清单复用 `scanInstalledPackages`（不自己再扫一遍 node_modules）", uninstallSource.includes("scanInstalledPackages") && !/from "node:fs\/promises"/.test(uninstallSource) && !uninstallSource.includes("readdir("));
 ok("同一个包的多份副本取**依赖并集**（并集写在 lib/loadstate.mjs 里，一处定义）", loadstateSource.includes("mergeDeps") && loadstateSource.includes("并集") && catalogSource.includes("mergeDep("));
 ok("catalog 的加载态先按目录名、再按包名查（别名目录不再被误报成「不会被加载」）", catalogSource.includes("loadPaths.byName.get(pack.pkg) || loadPaths.byName.get(pack.packageName"));
-ok("目录快照版本抬到 v9（判据改了，旧快照必须作废）", catalogSource.includes("export const CATALOG_VERSION = 9;"));
+ok("目录快照版本抬到 v10（判据改了，旧快照必须作废）", catalogSource.includes("export const CATALOG_VERSION = 10;"));
 
 /* ② 只生成、不执行：源码里不许出现任何删除调用 */
 ok(
@@ -1109,7 +1109,7 @@ ok("probe-history 覆盖 H1–H32 且破一条就非零退出", ["H1", "H2", "H3
 ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），且这段逻辑在纯函数模块里", historySource.includes("export function summarizeChanges") && historySource.includes("if (!prev)") && serviceSource.includes("summarizeChanges"));
 
 /* ⑧ R19：变化追踪收口 —— Skill 正文哈希 + 「已看过」确认窗口 */
-ok("catalog 在读 SKILL.md 时顺手算正文哈希（不额外读文件），并抬了 CATALOG_VERSION", catalogSource.includes('createHash("sha1")') && catalogSource.includes("contentHash") && /export const CATALOG_VERSION = 9;/.test(catalogSource));
+ok("catalog 在读 SKILL.md 时顺手算正文哈希（不额外读文件），并抬了 CATALOG_VERSION", catalogSource.includes('createHash("sha1")') && catalogSource.includes("contentHash") && /export const CATALOG_VERSION = 10;/.test(catalogSource));
 ok("history 信号含 content（仅 Skill），v3 加了升级迁移规则（旧快照没哈希 / 没配置层签名都不算变化）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 3;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
 ok("compareEntries 是 diff 与 sameSignal 的唯一判据（两处各写一份判据迟早会差）", historySource.includes("return !compareEntries(a, b).any;") && /const \{ changed, any \} = compareEntries\(old, entry\)/.test(historySource));
 ok("正文改动单列成 edited（reason=content），且与描述改动互斥（只报一行）", historySource.includes('reason: "content"') && historySource.includes("else if (changed.description)") && historySource.includes("正文已改"));
@@ -1270,7 +1270,7 @@ const handoffSource = readFileSync(new URL("../lib/handoff.mjs", import.meta.url
 const handoffProbeSource = readFileSync(new URL("./probe-handoff.mjs", import.meta.url), "utf8");
 ok("交接单是纯函数（buildHandoff / renderHandoff，九项核对 + verdict + 下一步）", handoffSource.includes("export function buildHandoff") && handoffSource.includes("export function renderHandoff") && handoffSource.includes("HANDOFF_VERSION") && handoffSource.includes("checks.length") === false && handoffSource.includes('"version"') && handoffSource.includes('"ship"'));
 ok("service 汇总既有结论（ship 报告 / git / drift / history / 最新导出），不新扫目录", serviceSource.includes("async handoffReport(") && serviceSource.includes("const PLUGIN_ROOT") && serviceSource.includes("^ship-") && serviceSource.includes("divergenceVsUpstream") && serviceSource.includes("buildHandoff({"));
-ok("工具 catalog_handoff 默认只读、write:true 才落 reports/；hosttest 锁九项", toolsSource.includes('name: "catalog_handoff"') && toolsSource.includes("handoffReport({ write: args.write === true })") && hosttestSource.includes("catalog_handoff 返回九项核对") && handoffProbeSource.includes("H1 ") && handoffProbeSource.includes("H8 "));
+ok("工具 catalog_handoff 默认只读、write:true 才落 reports/；hosttest 锁十项", toolsSource.includes('name: "catalog_handoff"') && toolsSource.includes("handoffReport({ write: args.write === true })") && hosttestSource.includes("catalog_handoff 返回十项核对") && handoffProbeSource.includes("H1 ") && handoffProbeSource.includes("H8 "));
 
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));

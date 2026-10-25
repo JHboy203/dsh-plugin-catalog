@@ -179,9 +179,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 12 个工具", registeredTools.length, 12);
+eq("注册了 13 个工具", registeredTools.length, 13);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_handoff", "catalog_health", "catalog_list", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_handoff", "catalog_health", "catalog_list", "catalog_mcp", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -267,12 +267,18 @@ ok("/state 带 tags 与自定义标签提示词", Boolean(stateRoute.json?.tags?
 ok("/state 带宿主核心工具（单列）", Boolean(stateRoute.json?.hostCore));
 ok("/state 带 publishing 信息", Boolean(stateRoute.json?.publishing));
 ok("/state 说明了数据目录", typeof stateRoute.json?.dataDir === "string" && stateRoute.json.dataDir.includes("dsh-plugin-catalog") || stateRoute.json.dataDir === dataDir);
+/* R30：MCP —— 0 台是**合法状态**，但 /state 必须给得出空态需要的那几样（计数 / 模板 / 客户端包状态） */
+ok("/state 带 MCP 报告（计数 / 客户端包 / 模板）", Boolean(stateRoute.json?.mcp) && typeof stateRoute.json.mcp.counts === "object" && Boolean(stateRoute.json.mcp.template && stateRoute.json.mcp.template.self));
+ok("/state 的 MCP.servers 是数组（0 台时是空数组，不是缺字段）", Array.isArray(stateRoute.json?.mcp?.servers));
+ok("/state 的 totals 里有 MCP 台数", typeof stateRoute.json?.totals?.mcp === "number", String(stateRoute.json?.totals && stateRoute.json.totals.mcp));
 
 const healthRoute = await callRoute("/health");
 ok("/health 返回 200 且 ok", healthRoute.status === 200 && healthRoute.json?.ok === true);
 ok("/health 里有构建标记", typeof healthRoute.json?.build?.label === "string" && healthRoute.json.build.label.length > 0);
 ok("/health 里统计了自注册的工具数", healthRoute.json?.toolsRegistered === 8, String(healthRoute.json?.toolsRegistered));
 ok("/health 报告了归属统计", healthRoute.json?.attribution !== null && healthRoute.json?.attribution !== undefined);
+/* R30：health 里 MCP 一行（0 台也要说"还没有配置"，不能一声不响） */
+ok("/health 带 MCP 摘要与一行人话", Boolean(healthRoute.json?.mcp) && typeof healthRoute.json.mcp.line === "string" && healthRoute.json.mcp.line.includes("MCP"), JSON.stringify(healthRoute.json?.mcp && healthRoute.json.mcp.line));
 
 /* ── R10：发版体检（/preflight）──
    只测 dry 那一支：真跑一次要 40 秒，而且是"在自检里再跑自检"。
@@ -295,18 +301,26 @@ ok("catalog_list 的文本里带来源中文标签", /官方|自写|第三方|�
 const healthTool = await callTool("catalog_health", {});
 ok("catalog_health 文本含构建与路径", healthTool.text.includes("构建") && healthTool.text.includes("数据目录"));
 ok("catalog_health 文本提示工具注册数", healthTool.text.includes("注册 8"));
+/* R30：catalog_mcp —— 0 台时必须**成功返回**并给模板，不能报错 */
+const mcpTool = await callTool("catalog_mcp", {});
+ok(
+	"catalog_mcp 返回计数 + 客户端包 + 模板（0 台也是成功）",
+	mcpTool.ok === true && typeof mcpTool.counts === "object" && Boolean(mcpTool.template && mcpTool.template.self) && typeof mcpTool.totalCalls === "number" && mcpTool.text.includes("MCP"),
+	JSON.stringify({ ok: mcpTool.ok, counts: mcpTool.counts, hasTemplate: Boolean(mcpTool.template) }),
+);
 /* R26：交接单工具（只读模式；写盘要显式 write:true） */
 const handoffTool = await callTool("catalog_handoff", {});
 ok(
-	"catalog_handoff 返回九项核对 + 结论 + 下一步（默认不写盘）",
+	"catalog_handoff 返回十项核对 + 结论 + 下一步（默认不写盘）",
 	handoffTool.ok === true &&
 		["ok", "warn", "bad"].includes(handoffTool.verdict) &&
 		Array.isArray(handoffTool.checks) &&
-		handoffTool.checks.length === 9 &&
+		handoffTool.checks.length === 10 &&
 		typeof handoffTool.path === "string" &&
 		handoffTool.path === "" &&
 		handoffTool.text.includes("结论") &&
 		handoffTool.checks.some((check) => check.id === "version") &&
+		handoffTool.checks.some((check) => check.id === "mcp") &&
 		handoffTool.checks.some((check) => check.id === "ship"),
 	JSON.stringify({ verdict: handoffTool.verdict, checks: handoffTool.checks?.length, path: handoffTool.path }),
 );
