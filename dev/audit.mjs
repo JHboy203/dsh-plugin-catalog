@@ -925,6 +925,9 @@ ok(
 );
 ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）", tagsProbeSource.includes("function emptyStore()") && !tagsProbeSource.includes("loadTagsStore") && !tagsProbeSource.includes("saveTagsStore"));
 
+/* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
+   抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
+   而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
 ok("版本号与构建戳同步抬到 0.28.0 / r28.0", /"version": "0\.28\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r28.0"'));
 
 
@@ -1071,6 +1074,20 @@ ok("还原计划回传可选备份清单（backups / backupCount），点名不�
 ok("写盘那一步带着**同一份**备份（否则会按「最近一份」重新解析，看起来还完全成功）", clientSource.includes("const backup = plan.backup ||") && routeSource.includes('const backup = body.backup ? String(body.backup) : "";'));
 ok("面板还原确认里可以点「更早的备份」（onPick → 重新出计划），不是只能还原最近一份", clientSource.includes("onPick: (backup) => planStageRestore(item.id, backup)") && clientSource.includes("更早的备份"));
 ok("CSV 两个入口都挂了按钮（当前这一屏 / 选中批次），且结果条会说清格式", clientSource.includes("onClick: exportFilteredCsv") && clientSource.includes("onClick: exportPickedCsv") && clientSource.includes('state.exportFormat === "csv"'));
+
+/* ── R29：换会话前的最后一条命令（dev/deliver.mjs）── */
+const deliverSource = readFileSync(new URL("../dev/deliver.mjs", import.meta.url), "utf8");
+ok("dev/deliver.mjs 存在：把「换会话前做什么」固化成一条命令，而不是只写在交接文件里", deliverSource.includes("换会话 / 交付前的最后一条命令") && deliverSource.includes("dev/ship.mjs") && deliverSource.includes("dev/live-check.mjs"));
+ok(
+	"deliver 只**消费**判据、不自己重算（两处各写一份清单迟早差一次）",
+	deliverSource.includes("parseShipJson") && deliverSource.includes('["--json"]') && deliverSource.includes("passed (\\d+) \\/ failed (\\d+)") && !deliverSource.includes("audit.mjs") && !deliverSource.includes("render-check"),
+);
+ok(
+	"deliver 不执行任何写盘动作：不 spawn git、不调 staging 写接口，只把命令打出来",
+	!/execFile\([^)]*"git"/.test(deliverSource) && !deliverSource.includes("copySkillToStaging") && !deliverSource.includes("restoreSkillBackup") && deliverSource.includes("不提交、不推送、不同步") && deliverSource.includes("host_selfcheck script=dev/git-commit.mjs"),
+);
+ok("deliver 的结论判据只有三条（ship 全绿 / 运行中一致 / 没有悬空项），且 --skip-ship 不算失败", deliverSource.includes("const ready = shipOk && Boolean(live) && (live.skipped || live.ok) && nextSteps.length === 0") && deliverSource.includes("const shipOk = ship ? Boolean(ship.ok) : true;"));
+ok("deliver 把「沙箱 spawn 被拒」与「断言红了」分开报（否则人会以为插件坏了）", deliverSource.includes("spawnDenied") && deliverSource.includes("要在宿主里跑"));
 ok("对账的措辞只在 uninstall.mjs 一处定义（面板/工具/报告共用）", uninstallSource.includes("export const VERIFY_REASON") && uninstallSource.includes("export const VERIFY_VERDICT") && toolsSource.includes("import { VERIFY_REASON, VERIFY_VERDICT }"));
 ok("报告渲染把「白删 / 计划过期 / 逐成员 / 边界」四节都写出来", uninstallSource.includes("export function renderVerifyReport") && uninstallSource.includes("删了等于白删（最要紧）") && uninstallSource.includes("## 逐成员"));
 ok("面板：VerifyBlock 结论与原因同时出现，且按钮不含「删除」字样", clientSource.includes("function VerifyBlock(props)") && clientSource.includes("对账（不动盘）") && clientSource.includes("白删（会被装回来 / 入口指空）：") && clientSource.includes("对账不改任何东西"));
