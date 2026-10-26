@@ -50,11 +50,18 @@ const GOOD = {
 	ok("H1c profile 比快照新 → 快照新鲜度 bad，下一步第一条是「先重建再交接」", report.verdict === "bad" && check.status === "bad" && check.detail.includes("可能已经错") && report.next[0].includes("重建") && report.freshness.factStale === true, check.detail);
 }
 
-/* ── 1d. R34：只是旧（事实没变）→ warn，不拦交接（结论仍然有效） ── */
+/* ── 1d. R34：只是旧（事实没变）→ 分两档：6 小时内不吵（ok），超过 6 小时才 warn ──
+   ★ 直接用 ageStale（TTL 5 分钟）判 warn 会让交接单**永远是 warn**，ok 档永不出现。 */
 {
-	const report = buildHandoff({ ...GOOD, freshness: { factStale: false, ageStale: true, builtAt: NOW - 3600000, profileTouchedAt: NOW - 7200000 } });
-	const check = report.checks.find((item) => item.id === "freshness");
-	ok("H1d 只有年龄过期 → warn，不清零、不排「先重建」", report.verdict === "warn" && check.status === "warn" && !report.next.some((item) => item.includes("重建")), check.detail);
+	const recent = buildHandoff({ ...GOOD, freshness: { factStale: false, ageStale: true, ageMs: 20 * 60 * 1000, builtAt: NOW - 1200000, profileTouchedAt: NOW - 7200000 } });
+	const checkRecent = recent.checks.find((item) => item.id === "freshness");
+	const older = buildHandoff({ ...GOOD, freshness: { factStale: false, ageStale: true, ageMs: 10 * 3600 * 1000, builtAt: NOW - 36000000, profileTouchedAt: NOW - 72000000 } });
+	const checkOlder = older.checks.find((item) => item.id === "freshness");
+	ok(
+		"H1d 只是旧：6 小时内 ok（不吵）／超过 6 小时才 warn，且都不排「先重建」",
+		recent.verdict === "ok" && checkRecent.status === "ok" && checkRecent.detail.includes("仍然有效") && older.verdict === "warn" && checkOlder.status === "warn" && checkOlder.detail.includes("只有重建一次才看得出来") && !older.next.some((item) => item.includes("重建")),
+		JSON.stringify({ recent: checkRecent.status, older: checkOlder.status }),
+	);
 }
 
 /* ── 1e. R34：读不到 mtime → warn，不能假装"一致" ── */
