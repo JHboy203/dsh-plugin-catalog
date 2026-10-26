@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r31.0";
+		const BUILD = "r33.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -2239,7 +2239,7 @@ window.__ModuleLoader__.load({
 		   回答的是「这些条目从哪来、谁关掉了、谁指向找不到的东西」—— 与「装了会不会加载」是两件事：
 		   后者看 `loadState`（bundles + 配置条目 + 依赖链），前者只看**两份组合文件的顶层条目**。
 		   ★ 三条边界直接印在脚注里，不许省略：
-		     ① 不展开 bundle 自带的 patch 层（`disabled: true` 可能被它重新打开）；
+		     ① R33 起**会展开** bundle 自带的 patch 层（rc.3 的唯一入口来源），按 bundles 顺序合并、profile patch 最后应用；
 		     ② `!!js` 表达式不求值，只给原文；
 		     ③ 组合条目「静态查不到」≠ 一定坏（运行期注入的虚拟模块看不见）。 */
 		function CompositionModal(props) {
@@ -2350,6 +2350,24 @@ window.__ModuleLoader__.load({
 									(counts.patched || 0) +
 									" 条",
 							),
+							composition.layers
+								? h(
+										"div",
+										null,
+										"层：" +
+											(composition.model === "bundle-layers" ? "bundle-layers（入口表 0 条）" : composition.model || "flat") +
+											" · bundle 层 " +
+											(composition.layers.bundleFiles || 0) +
+											" 份 " +
+											(composition.layers.bundleEntries || 0) +
+											" 条（其中 asar " +
+											(composition.layers.bundleFromAsar || 0) +
+											" 份） · profile patch " +
+											(composition.layers.profileEntries || 0) +
+											" 条" +
+											((composition.layers.missing || []).length > 0 ? " · 读不到 " + composition.layers.missing.length + " 份" : ""),
+									)
+								: null,
 							h(
 								"div",
 								null,
@@ -2419,14 +2437,14 @@ window.__ModuleLoader__.load({
 									"关掉的条目（`disabled: true`）—— " + (state.off || disabled.length) + " 条",
 									"",
 									disabled.map((item) => row(item, null, true)),
-									"这是**声明**：bundle 自带的 patch 层可能把它们重新打开（本机 `tool-bash` / `tool-pwsh` 就写着 disabled，但工具确实在跑）。别照这张表判断「某个工具没启用」。",
+									"这是**合并后**的声明（会展开 bundle 自带的 patch 层）：某条在基线里写着 disabled、却被后应用的层重新打开时，这里就不会出现它。别照这张表判断「某个工具没启用」。",
 								)
 							: null,
 						h(
 							"div",
 							{ className: "dpc-conf-foot dpc-muted" },
 							(composition.at ? "算于 " + fmtDateTime(composition.at) + "（60 秒缓存；改完配置点头部「重新扫描」） · " : "") +
-								"判据：只读**声明**（两份组合文件的顶层条目 + `dsh.profile.bundles` + `profile/node_modules` + asar 包名）。不展开 bundle 自带的 patch 层、`!!js` 表达式不求值；按路径挂载只检查文件在不在。清单最多列 40 条（完整清单：工具 catalog_composition view=entries）。",
+								"判据：只读**声明**（`dsh.profile.bundles` 顺序 → 每个 bundle 自带的 `cordis.patch.yml` → profile patch，同 id 后者胜；再叠加 `profile/node_modules` 与 asar 包名）。`!!js` 表达式不求值、`config:` 内部不展开；按路径挂载只检查文件在不在。清单最多列 40 条（完整清单：工具 catalog_composition view=entries）。",
 						),
 					),
 				),
@@ -3024,7 +3042,7 @@ window.__ModuleLoader__.load({
 										{
 											className: "dpc-conf-link" + (data.composition.verdict === "bad" ? " is-bad" : data.composition.verdict === "warn" ? " is-warn" : ""),
 											onClick: () => set({ showComposition: true }),
-											title: "配置层（声明）：两份组合文件的顶层条目、关掉/条件启用的条目、bundles 缺口。只读声明，不展开 bundle 自带的 patch 层",
+											title: "配置层（声明）：按 bundles 顺序合并各 bundle 自带的 patch 层 + profile patch，给出关掉/条件启用的条目与 bundles 缺口。只读声明，`!!js` 不求值",
 										},
 										"｜配置层" +
 											(((composition.bundles && composition.bundles.missing) || 0) > 0

@@ -19,12 +19,15 @@ import { join } from "node:path";
 import { CatalogService } from "../lib/service.mjs";
 import { profileDependencies } from "../lib/hostinfo.js";
 import {
+	INSPECT_CODES,
+	REMOVAL_API,
 	REMOVAL_JOURNAL_LIMIT,
 	REMOVAL_PLAN_TTL_MS,
 	appendRemovalJournal,
 	collectRemovalFacts,
 	describeRemovalHost,
 	executePackageRemoval,
+	inspectPackageState,
 	planPackageRemoval,
 	readRemovalJournal,
 	specKind,
@@ -183,6 +186,69 @@ eq("留痕: 文件不存在 → 空账本", badJournal.items.length, 0);
 await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
 eq("计划有效期: 5 分钟", REMOVAL_PLAN_TTL_MS, 5 * 60 * 1000);
 ok("执行次数: 只调了假宿主，未动真环境", calls >= 0, String(calls));
+
+/* ── R33：契约 api 2 —— restore / inspect / rowDropped ── */
+
+eq("API: 契约版本是 2（加了 restore 与 inspect）", REMOVAL_API, 2);
+ok("API: INSPECT_CODES 是冻结白名单", Array.isArray(INSPECT_CODES) && Object.isFrozen(INSPECT_CODES) && INSPECT_CODES.includes("installed-not-loaded"));
+
+/* restore：卸载会去掉什么、装回来要写回什么 */
+{
+	const inBundles = planPackageRemoval({ name: "dsh-x", spec: "1.2.3", version: "1.2.3", bundles: ["dsh-x"], loadState: "bundle" });
+	eq("restore: 在 bundles 里 → bundleRow=true（装回来必须写回）", inBundles.restore.bundleRow, true);
+	ok("restore: 文案点名「装回来时必须写回」", inBundles.restore.text.includes("写回") && inBundles.restore.text.includes("不会被加载"), inBundles.restore.text);
+	const outBundles = planPackageRemoval({ name: "dsh-y", spec: "1.0.0", version: "1.0.0", bundles: ["other"], loadState: "dormant", bundleRow: false });
+	eq("restore: 不在 bundles → bundleRow=false", outBundles.restore.bundleRow, false);
+	const withComp = planPackageRemoval({ name: "dsh-z", spec: "1.0.0", version: "1.0.0", bundles: [], compositionRows: [{ id: "z", name: "dsh-z", file: "cordis.patch.yml", line: 7 }] });
+	ok("restore: 组合条目一并点名（patch 不会被卸载删掉）", withComp.restore.composition.length === 1 && withComp.restore.text.includes("组合条目"), withComp.restore.text);
+}
+
+/* inspect：装完核对（纯函数） */
+{
+	const loaded = inspectPackageState({ name: "dsh-ok", installed: true, version: "1.0.0", loadState: "bundle", via: "", bundleRow: true, spec: "1.0.0" });
+	eq("inspect: 会被加载 → code=loaded / ok=true", [loaded.code, loaded.ok], ["loaded", true]);
+	const notLoaded = inspectPackageState({ name: "dsh-off", installed: true, version: "2.0.0", loadState: "dormant", bundleRow: false, spec: "2.0.0", dependents: [] });
+	eq("inspect: 装了但没有任何入口 → installed-not-loaded / ok=false", [notLoaded.code, notLoaded.ok], ["installed-not-loaded", false]);
+	ok("inspect: 同时给出「写回 bundle 行」的处置", notLoaded.warnings.some((item) => item.code === "no-entry") && notLoaded.text.includes("写回"), JSON.stringify(notLoaded.warnings));
+	const missing = inspectPackageState({ name: "dsh-none" });
+	eq("inspect: 没装 → not-installed", missing.code, "not-installed");
+	eq("inspect: 宿主自带包点名单列（不判成「没装」）", inspectPackageState({ name: "@deepseek-ai/dsh-base", installed: false }).code, "host-owned");
+	eq("inspect: 自己 → self", inspectPackageState({ name: "dsh-plugin-catalog", installed: true, loadState: "bundle", bundleRow: true }).code, "self");
+	const link = inspectPackageState({ name: "dsh-link", installed: true, loadState: "bundle", bundleRow: true, spec: "link:D:/x" });
+	ok("inspect: link 安装给出「改源码即生效」而不是「要重装」", link.warnings.some((item) => item.code === "link"), JSON.stringify(link.warnings));
+	const drift = inspectPackageState({ name: "dsh-ok", installed: true, loadState: "bundle", bundleRow: true, spec: "1.0.0", drift: { verdict: "differs" } });
+	ok("inspect: 副本不同步进 warnings（消费方可见）", drift.warnings.some((item) => item.code === "drift"), JSON.stringify(drift.warnings));
+	eq("inspect: 同一份事实 → 同一结论（幂等）", inspectPackageState({ name: "dsh-ok", installed: true, loadState: "bundle", bundleRow: true }).code, "loaded");
+}
+
+/* rowDropped：卸载真的动了 bundle 行没有（装回来要不要写回，靠这条事实） */
+{
+	const real = await profileDependencies().catch(() => ({}));
+	const candidate = ["dsh-diag", "dsh-plugin-catalog", "dsh-ops", "dsh-ffmpeg"].find((name) => real && typeof real[name] === "string");
+	if (!candidate) {
+		/* 换台机器时不算失败：这条依赖真机事实，跳过时明写原因 */
+		ok("rowDropped: 跳过（这台机器没有可用于演练的 profile 依赖）", true, "skip");
+	} else {
+		const host = { removeBundle: async () => ({ changed: true, application: "applied" }) };
+		const verify = async () => ({ removed: true, inDeps: false, dirExists: false });
+		const dropped = await executePackageRemoval({
+			pluginManager: host,
+			plan: { ok: true, name: candidate, purpose: "replace", version: null, spec: "" },
+			verify,
+			readBundles: async () => [],
+		});
+		eq("rowDropped: 卸载后 bundles 里没了 → true（装回来必须写回）", dropped.rowDropped, true);
+		eq("rowDropped: restore.needsWriteBack 与它同源", dropped.restore.needsWriteBack, true);
+		const kept = await executePackageRemoval({
+			pluginManager: host,
+			plan: { ok: true, name: candidate, purpose: "replace", version: null, spec: "" },
+			verify,
+			readBundles: async () => [candidate],
+		});
+		eq("rowDropped: 卸载后 bundles 还在 → false（不用写回）", kept.rowDropped, false);
+		eq("rowDropped: 文案说「没有变化」", kept.restore.text.includes("没有变化"), true);
+	}
+}
 
 const passed = checks.filter((item) => item.ok).length;
 const failedChecks = checks.filter((item) => !item.ok);

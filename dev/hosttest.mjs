@@ -1309,7 +1309,8 @@ ok(
 	"catalog_composition overview：摘要 + 缺口 + 边界都写出来",
 	String(compositionTool.text || "").includes("配置层：") &&
 		String(compositionTool.text || "").includes("缺口：") &&
-		String(compositionTool.text || "").includes("bundle 自带的 patch 层"),
+		String(compositionTool.text || "").includes("层次：模型") &&
+		String(compositionTool.text || "").includes("bundle 层"),
 	String(compositionTool.text || "").slice(0, 240),
 );
 const compositionToolEntries = await callTool("catalog_composition", { view: "entries", limit: 5 });
@@ -1333,7 +1334,7 @@ ok(
 );
 ok(
 	"导出报告新增「配置层（声明）」一节，并把判据边界写进去",
-	fullExportText.includes("## 配置层（声明）") && fullExportText.includes("不展开 bundle 自带的 patch 层") && fullExportText.includes("运行期注入"),
+	fullExportText.includes("## 配置层（声明）") && fullExportText.includes("bundles 顺序") && fullExportText.includes("运行期注入"),
 	fullExportText.split("\n").filter((line) => line.startsWith("## 配置层") || line.startsWith("- 配置层：")).join(" | ").slice(0, 240),
 );
 

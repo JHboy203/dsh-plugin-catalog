@@ -263,13 +263,19 @@ export async function apply(ctx) {
 			ctx.provide("pluginCatalog", {
 				name: "dsh-plugin-catalog",
 				version: PLUGIN_VERSION,
+				/* ★ R33 能力协商：消费方**按能力取用**，别按版本号猜字段。
+				   `removal` 仍是 api 数；旧消费方只认它也没问题（>= 1 就可用）。 */
+				capabilities: { removal: REMOVAL_API, inspect: 1 },
 				removal: {
 					api: REMOVAL_API,
 					describe: () => removalDescribe(),
 					plan: async (input) => await removalCall("removalPlan", input),
 					apply: async (input) => await removalCall("removalApply", input),
 					journal: async (limit) => await removalCall("removalJournal", limit),
+					/* api 2：装完核对（纯读；缺了它消费方自己降级，不影响卸载） */
+					inspect: async (input) => await removalCall("inspectPackage", input),
 				},
+				inspect: async (input) => await removalCall("inspectPackage", input),
 			});
 			mark(traceDir, "B2:provide-ok", "pluginCatalog v" + PLUGIN_VERSION);
 		} else {
@@ -464,6 +470,12 @@ export async function apply(ctx) {
 				}
 				if (path === "/removal/journal" && method === "GET") {
 					return json(res, 200, await catalog.removalJournal(Number(url.searchParams.get("limit")) || 10));
+				}
+				/* R33：装完核对 —— 只读，回答「这个包在目录眼里会不会被加载」。 */
+				if (path === "/inspect" && (method === "GET" || method === "POST")) {
+					const body = method === "POST" ? await readJsonBody(req) : {};
+					const name = String(body.name || url.searchParams.get("name") || "").trim();
+					return json(res, 200, await catalog.inspectPackage({ name }));
 				}
 
 				if (path === "/tags" && method === "POST") {

@@ -14,7 +14,7 @@
  * 全程**纯函数**：不读 profile、不读 asar、不碰真实配置文件（合成文本 + 合成包名表）。
  */
 
-import { auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseComposition, parseDisabled, renderCompositionSection } from "../lib/composition.mjs";
+import { auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseComposition, parseDisabled, renderCompositionSection, summarizeComposition } from "../lib/composition.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -233,7 +233,97 @@ function auditFixture(overrides = {}) {
 	const dirtyText = dirty.join("\n");
 	ok("C13 没缺口时写「缺口：0」，不写「真的缺」", cleanText.includes("缺口：**0**") && !cleanText.includes("### 真的缺"), cleanText.split("\n").slice(0, 6).join(" | ").slice(0, 160));
 	ok("C13b 有 bundle 缺口时单开一节，并写清「宿主启用它时会失败」", dirtyText.includes("### 真的缺") && dirtyText.includes("宿主启用它时会失败"), dirtyText.includes("### 真的缺"));
-	ok("C13c 边界说明必须写进报告（不展开 bundle patch 层 / 表达式不求值 / 运行期虚拟模块看不见）", dirtyText.includes("不展开 bundle 自带的 patch 层") && dirtyText.includes("不求值") && dirtyText.includes("运行期注入"), "boundary");
+	ok(
+		"C13c 边界说明必须写进报告（按 bundles 顺序合并 / 后者胜 / 表达式不求值 / 运行期虚拟模块看不见）",
+		dirtyText.includes("bundles 顺序") && dirtyText.includes("后者胜") && dirtyText.includes("不求值") && dirtyText.includes("运行期注入"),
+		"boundary",
+	);
+}
+
+/* ── C17 R33：`- insert:` 块（rc.3 的 bundle patch 全是这个形状） ── */
+{
+	const text = [
+		"- insert:",
+		"    - id: alpha",
+		"      name: dsh-alpha",
+		"      config:",
+		"        - id: not-an-entry",
+		"          name: also-not",
+		"    - id: beta",
+		"      name: >-",
+		"        dsh-beta",
+		"      disabled: true",
+		"    - id: gamma",
+		"      name: dsh-gamma",
+	].join("\n");
+	const rows = parseComposition(text, { file: "bundle/cordis.patch.yml" });
+	const byId = new Map(rows.map((row) => [row.id, row]));
+	ok("C17 insert 块里的条目都解析出来（4 空格缩进）", rows.length === 3 && byId.has("alpha") && byId.has("beta") && byId.has("gamma"), `rows=${rows.length}`);
+	ok("C17b config 内部的 10 空格 `- id:` 不算条目", !byId.has("not-an-entry") && !byId.has("also-not"), [...byId.keys()].join(","));
+	ok("C17c 条目属性在 6 空格也读得到（disabled）", Boolean(byId.get("beta")) && byId.get("beta").disabled === true, JSON.stringify(byId.get("beta") || {}));
+	ok("C17d 块标量 `name: >-` 在 insert 块里不吞下一条目", Boolean(byId.get("beta")) && byId.get("beta").name === "dsh-beta" && Boolean(byId.get("gamma")) && byId.get("gamma").name === "dsh-gamma", JSON.stringify([byId.get("beta") && byId.get("beta").name, byId.get("gamma") && byId.get("gamma").name]));
+	ok("C17e insert 条目带 insert:true，列 0 条目不带", byId.get("alpha").insert === true && parseComposition("- id: top\n  name: dsh-top")[0].insert === false, "insert flag");
+}
+
+/* ── C18 R33：分层合并（bundle 层在前、profile patch 在后，同 id 后者胜） ── */
+{
+	const files = [
+		{ file: "cordis.yml", text: "# empty\n[]", role: "root" },
+		{ file: "node_modules/a/cordis.patch.yml", text: "- insert:\n    - id: shared\n      name: dsh-a\n      disabled: false\n    - id: only-a\n      name: dsh-only-a", role: "bundle-patch", source: "profile", bundle: "a" },
+		{ file: "node_modules/base/cordis.patch.yml", text: "- insert:\n    - id: shared\n      name: dsh-base\n      disabled: true", role: "bundle-patch", source: "asar", bundle: "base" },
+		{ file: "cordis.patch.yml", text: "- id: shared\n  disabled: false\n- id: shared\n  disabled: true", role: "profile-patch" },
+	];
+	const report = auditComposition({ files, bundles: ["a"], installed: new Map([["dsh-a", []], ["dsh-only-a", []]]), asarNames: new Set() });
+	const shared = report.entries.find((row) => row.id === "shared");
+	ok("C18 同 id 后写的层胜（profile patch 最后应用）", Boolean(shared) && shared.state === "off" && shared.layer === "profile-patch", JSON.stringify(shared || {}));
+	ok("C18b 层数 / 层内条数记全（root+bundle×2+profile=4 层）", report.layers.length === 4 && report.counts.byRole.root === 0 && report.counts.byRole["bundle-patch"] === 3 && report.counts.byRole["profile-patch"] === 2, JSON.stringify(report.counts.byRole));
+	ok("C18c asar 来源的层要标出来", (report.layers.find((row) => row.bundle === "base") || {}).source === "asar", "source");
+	ok("C18d 合并后生效条数少于解析条数（共享 id 被折叠）", report.counts.parsed === 5 && report.counts.effective === 2, `${report.counts.parsed}/${report.counts.effective}`);
+}
+
+/* ── C19 R33：组合模型（rc.2 flat / rc.3 bundle-layers / 空） ── */
+{
+	const flat = auditComposition({ files: [{ file: "cordis.yml", text: "- id: a\n  name: dsh-a" }] });
+	const layered = auditComposition({ files: [{ file: "cordis.yml", text: "[]" }, { file: "x/cordis.patch.yml", text: "- insert:\n    - id: a\n      name: dsh-a", role: "bundle-patch", bundle: "x" }] });
+	const empty = auditComposition({});
+	ok("C19 入口表有条目 → flat；入口表空 + bundle 层 → bundle-layers；无文件 → empty", flat.model === "flat" && layered.model === "bundle-layers" && empty.model === "empty", [flat.model, layered.model, empty.model].join("/"));
+	ok("C19b 空入口表 + 无 bundle 层 → 不冒充 bundle-layers", auditComposition({ files: [{ file: "cordis.yml", text: "[]" }] }).model === "flat", "single-empty-root");
+}
+
+/* ── C20 R33：计数守恒（分层不重不漏） ── */
+{
+	const files = [
+		{ file: "cordis.yml", text: "[]", role: "root" },
+		{ file: "a/cordis.patch.yml", text: "- insert:\n    - id: a1\n      name: dsh-a1\n    - id: a2\n      name: dsh-a2", role: "bundle-patch", bundle: "a" },
+		{ file: "cordis.patch.yml", text: "- id: a1\n  disabled: true\n- id: p1\n  name: dsh-p1", role: "profile-patch" },
+	];
+	const report = auditComposition({ files, installed: new Map([["dsh-a1", []], ["dsh-a2", []], ["dsh-p1", []]]) });
+	const sumLayers = report.layers.reduce((sum, row) => sum + row.entries, 0);
+	const sumRoles = report.counts.byRole.root + report.counts.byRole["bundle-patch"] + report.counts.byRole["profile-patch"];
+	ok("C20 counts.parsed = 各层条目之和 = byRole 之和", report.counts.parsed === sumLayers && sumLayers === sumRoles, `${report.counts.parsed}/${sumLayers}/${sumRoles}`);
+	ok("C20b 生效 ≤ 解析，且 insert 条数单独可读", report.counts.effective <= report.counts.parsed && report.counts.inserted === 2, `${report.counts.effective}/${report.counts.parsed}/${report.counts.inserted}`);
+}
+
+/* ── C21 R33：摘要与紧凑视图（面板 20 秒轮询只拿计数） ── */
+{
+	const files = [
+		{ file: "cordis.yml", text: "[]", role: "root" },
+		{ file: "a/cordis.patch.yml", text: "- insert:\n    - id: a1\n      name: dsh-a1", role: "bundle-patch", source: "asar", bundle: "a" },
+		{ file: "cordis.patch.yml", text: "- id: a1\n  disabled: true", role: "profile-patch" },
+	];
+	const report = auditComposition({ files, installed: new Map([["dsh-a1", []]]) });
+	const summary = summarizeComposition(report);
+	const compact = compactComposition(report);
+	ok("C21 摘要写明 bundle-layers 模型与两层条数", summary.includes("bundle-layers") && summary.includes("bundle 层 1 份") && summary.includes("profile patch 1 条"), summary.slice(0, 90));
+	ok("C21b compact 带 model + layers 计数（不塞 49 条路径）", compact.model === "bundle-layers" && compact.layers.bundleFiles === 1 && compact.layers.profileEntries === 1 && !JSON.stringify(compact.layers).includes("cordis.patch.yml"), JSON.stringify(compact.layers));
+}
+
+/* ── C22 R33：读不到的层不算空层（要能说出来） ── */
+{
+	const report = auditComposition({ files: [{ file: "cordis.yml", text: "[]", role: "root" }], missing: ["@deepseek-ai/dsh-base", "dsh-x"] });
+	const summary = summarizeComposition(report);
+	ok("C22 读不到的层进 missingLayers（不静默成 0 条）", report.missingLayers.length === 2 && summary.includes("读不到的层 2 份"), JSON.stringify(report.missingLayers));
+	ok("C22b 没有 missing 时不写这句（避免噪音）", !summarizeComposition(auditComposition({ files: [{ file: "cordis.yml", text: "[]" }] })).includes("读不到的层"), "no-missing");
 }
 
 /* ── C14 空输入 / 坏输入不炸（旧 profile、没有组合文件、坏 types） ── */

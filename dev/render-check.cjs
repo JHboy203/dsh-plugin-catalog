@@ -1329,7 +1329,22 @@ ok("配置层 R22：条件启用给表达式原文、关掉的条目单列、脚
 	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
 	T.store.data = saved.data;
 	T.store.showComposition = saved.show;
-	return text.includes("条件启用") && text.includes("!!js") && text.includes("关掉的条目") && text.includes("不展开 bundle 自带的 patch 层") && text.includes("表达式不求值") && text.includes("算于") && text.includes("60 秒缓存");
+	return text.includes("条件启用") && text.includes("!!js") && text.includes("关掉的条目") && text.includes("后者胜") && text.includes("表达式不求值") && text.includes("算于") && text.includes("60 秒缓存");
+})());
+ok("配置层 R33：bundle-layers 模型写出「层：…bundle 层 49 份 259 条」；旧服务端没有 layers 时不画这一行", (() => {
+	const saved = { data: T.store.data, show: T.store.showComposition };
+	const layered = { ...compositionFixture, version: 2, model: "bundle-layers", layers: { root: 0, bundleFiles: 49, bundleEntries: 259, bundleFromAsar: 8, profileEntries: 24, missing: [] } };
+	T.store.data = { ...data, composition: layered };
+	T.store.showComposition = true;
+	const withLayers = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	const old = { ...compositionFixture };
+	delete old.model;
+	delete old.layers;
+	T.store.data = { ...data, composition: old };
+	const withoutLayers = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	T.store.data = saved.data;
+	T.store.showComposition = saved.show;
+	return withLayers.includes("bundle-layers") && withLayers.includes("bundle 层 49 份 259 条") && withLayers.includes("profile patch 24 条") && !withoutLayers.includes("bundle-layers");
 })());
 ok("配置层 R22：bundles 真的缺才占公告位；没缺口 / 旧服务端都不出现", (() => {
 	const saved = T.store.data;

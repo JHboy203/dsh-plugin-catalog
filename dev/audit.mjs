@@ -932,7 +932,7 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.31.0 / r31.0", /"version": "0\.31\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r31.0"'));
+ok("版本号与构建戳同步抬到 0.33.0 / r33.0", /"version": "0\.33\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r33.0"'));
 
 
 ok(
@@ -1248,16 +1248,27 @@ ok("三组计数各自守恒（kind / resolution / state 都等于生效条目�
 ok("摘要与紧凑视图同源（summary 说「静态查不到」；compact 不带全量 entries）", summarizeComposition(compEntryMissing).includes("静态查不到") && compactComposition(compEntryMissing, 5).entries === undefined && compactComposition(compEntryMissing, 5).counts.byResolution.missing === 1);
 ok("service：compositionAudit 60 秒缓存 + /state.composition + health 摘要 + 导出「配置层」一节", serviceSource.includes("async compositionAudit(") && serviceSource.includes("< 60 * 1000") && serviceSource.includes("composition: compactComposition(await this.compositionAudit())") && serviceSource.includes("renderCompositionSection(await this.compositionAudit())"));
 ok("配置层与安装形态同源：重建目录时缓存一起作废", serviceSource.includes("this.compositionReport = null") && /rebuildCatalog[\s\S]{0,700}this\.compositionReport = null/.test(serviceSource));
-ok("工具面第 11 个 catalog_composition（view 五档；描述写明不求值/不展开 patch 层）", tools.some((tool) => tool.name === "catalog_composition") && /enum: \["overview", "entries", "missing", "disabled", "conditional"\]/.test(toolsSource) && toolsSource.includes("不展开 bundle 自带的 patch 层"));
+ok("工具面第 11 个 catalog_composition（view 五档；描述写明分层合并/rc.3 空入口表/不求值）", tools.some((tool) => tool.name === "catalog_composition") && /enum: \["overview", "entries", "missing", "disabled", "conditional"\]/.test(toolsSource) && toolsSource.includes("按应用顺序合并") && toolsSource.includes("空表") && toolsSource.includes("不求值"));
 ok("catalog_health 打出配置层一行（读 health.composition.line）", toolsSource.includes("health.composition ? health.composition.line") && toolsSource.includes("配置层：还没读"));
 ok("面板：头部「配置层」入口 + 浮层 + 四类清单 + 缺口公告只在 bad 时占位", clientSource.includes("showComposition: false") && clientSource.includes("function CompositionModal") && clientSource.includes("dpc-conf-link") && clientSource.includes("compositionBad") && clientSource.includes("dpc-conf-block"));
-ok("浮层脚注写明三条边界（不展开 patch 层 / 表达式不求值 / 静态查不到不等于坏）", clientSource.includes("不展开 bundle 自带的 patch 层") && clientSource.includes("表达式不求值") && clientSource.includes("运行期注入"));
+ok("浮层脚注写明三条边界（按 bundles 顺序合并/后者胜 / 表达式不求值 / 静态查不到不等于坏）", clientSource.includes("后者胜") && clientSource.includes("表达式不求值") && clientSource.includes("运行期注入"));
 ok("浮层脚注给出缓存年龄（算于 X + 60 秒缓存 + 改完点重新扫描）—— R22.1", clientSource.includes("算于 ") && clientSource.includes("60 秒缓存") && clientSource.includes("重新扫描"));
 ok("health 摘要带 at（配置层陈旧与否要有时间戳可判）—— R22.1", serviceSource.includes("at: composition.at") && serviceSource.includes("/* 审计时间：面板浮层与 /health 都显示"));
 ok("新类名都有样式定义", [".dpc-conf-link{", ".dpc-conf-block{", ".dpc-conf-row{"].every((needle) => cssSource.includes(needle)));
 const compositionProbeSource = readFileSync(new URL("./probe-composition.mjs", import.meta.url), "utf8");
 ok("probe-composition 覆盖 C1–C14 且破一条非零退出", ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"].every((id) => compositionProbeSource.includes(id + " ")) && compositionProbeSource.includes("process.exit(1)"));
 ok("hosttest 覆盖 /state.composition（形状 / 计数守恒 / 每类都带 file+line）", hosttestSource.includes("/state.composition"));
+
+/* ⑨b R33：rc.3 起入口表是空表，组合层 = 每个 bundle 自带的 patch —— 只读 profile 两份文件会少 90%。
+   锁五件事：① 层读取模块存在且读 asar 成员；② service 走它（不再只用 profileComposition）；
+             ③ 报告带 model/layers/missingLayers；④ 紧凑视图只带计数；⑤ 探针 C17–C22 覆盖。 */
+const patchSource = readFileSync(new URL("../lib/patches.mjs", import.meta.url), "utf8");
+ok("R33：lib/patches.mjs 按 bundles 顺序读 patch 层（node_modules + asar 成员两路）", patchSource.includes("export async function collectCompositionLayers") && patchSource.includes("cordis.patch.yml") && patchSource.includes("ASAR_PKG_ROOT") && patchSource.includes("for (const name of list)"));
+ok("R33：service.compositionAudit 走分层读取（只读 profile 两份文件会漏掉 bundle 层）", serviceSource.includes("collectCompositionLayers") && /compositionAudit[\s\S]{0,900}collectCompositionLayers/.test(serviceSource));
+ok("R33：报告带 model / layers / missingLayers 三件（面板要能说出「模型换了」）", compositionSource.includes("model,") && compositionSource.includes("layers: fileRows") && compositionSource.includes("missingLayers,") && compositionSource.includes("COMPOSITION_MODELS"));
+ok("R33：紧凑视图只带层计数（49 份 patch 的路径不进 /state）", /compactComposition[\s\S]{0,1200}layers: \{/.test(compositionSource) && /compactComposition[\s\S]{0,1600}bundleFromAsar/.test(compositionSource));
+ok("R33：probe-composition 覆盖 C17–C22（insert / 分层合并 / 模型 / 计数守恒 / 紧凑视图 / 读不到的层）", ["C17", "C18", "C19", "C20", "C21", "C22"].every((id) => compositionProbeSource.includes(id + " ")));
+ok("R33：没有把「不展开 bundle patch 层」这句旧结论留在这三处", !toolsSource.includes("不展开 bundle 自带的 patch 层") && !clientSource.includes("不展开 bundle 自带的 patch 层") && !compositionSource.includes("不展开 bundle 自带的 patch 层"));
 
 /* ⑨ R23：配置层变化进历史 —— 改 disabled / 加 bundle 时目录条目一个都没变，
    v2 只比条目信号，这类改动完全看不见。这一轮锁五件事：
