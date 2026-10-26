@@ -135,6 +135,53 @@ ok(
 	stagedSkills.length === 0 || stagedSkills.every(([, entry]) => (typeof entry.loadedHash === "string" || entry.loadedHash === null) && entry.backups && typeof entry.backups.count === "number"),
 	`${stagedSkills.length} staged skills`,
 );
+/* R35：运行期真相 —— 真机必须读得到 Loader（读不到也要如实说 available:false + reason），
+   而且插件条目上带的 runtimeState 只能是那八种之一。 */
+const liveRuntime = state.json?.runtime || null;
+ok(
+	"state.runtime: available + counts + issues (unavailable must carry a reason)",
+	Boolean(liveRuntime) &&
+		typeof liveRuntime.available === "boolean" &&
+		(liveRuntime.available ? Number(liveRuntime.counts?.total) > 0 && typeof liveRuntime.issues?.failed === "number" && typeof liveRuntime.line === "string" : String(liveRuntime.reason || "").length > 0),
+	JSON.stringify({ available: liveRuntime?.available, total: liveRuntime?.counts?.total, failed: liveRuntime?.issues?.failed, reason: String(liveRuntime?.reason || "").slice(0, 60) }),
+);
+ok(
+	"state entries: plugin rows carry runtimeState from RUNTIME_STATES",
+	(() => {
+		const allowed = ["active", "failed", "pending", "loading", "unloading", "disabled", "declared-absent", "unknown"];
+		const plugins = (state.json?.entries || []).filter((entry) => entry.kind === "plugin");
+		return plugins.length > 0 && plugins.every((entry) => allowed.includes(String(entry.runtimeState || "unknown")));
+	})(),
+);
+/* R35：动作层（面板专用）—— /state 给位置与最近留痕；读动作只读，不写盘 */
+const liveActions = state.json?.actions || null;
+ok(
+	"state.actions: journalFile + trashRoot + recent (no token exposed)",
+	Boolean(liveActions) &&
+		String(liveActions.journalFile || "").includes("actions-journal.json") &&
+		String(liveActions.trashRoot || "").includes("trash") &&
+		Array.isArray(liveActions.recent) &&
+		liveActions.token === undefined,
+	JSON.stringify({ journal: liveActions?.journalFile, trash: liveActions?.trashRoot, recent: liveActions?.recent?.length }),
+);
+const runtimeRoute = await getJson("/runtime");
+ok(
+	"/runtime: read-only report (available flag + line)",
+	runtimeRoute.status === 200 && runtimeRoute.json?.ok === true && typeof runtimeRoute.json.available === "boolean" && typeof runtimeRoute.json.line === "string",
+	JSON.stringify({ status: runtimeRoute.status, available: runtimeRoute.json?.available, total: runtimeRoute.json?.counts?.total }),
+);
+const actionGuard = await postJson("/action/apply", { token: "not-a-real-token" });
+ok(
+	"action write gate: apply without confirm is rejected (nothing written)",
+	actionGuard.status === 400 && actionGuard.json?.ok === false && /confirm/.test(String(actionGuard.json?.error || "")),
+	JSON.stringify(actionGuard.json && { status: actionGuard.status, error: actionGuard.json.error }),
+);
+const planUnknown = await postJson("/action/plan", { id: "plugin:live-check-does-not-exist" });
+ok(
+	"action plan: unknown entry is reported, not silently ok",
+	planUnknown.status === 200 && planUnknown.json?.ok === false && planUnknown.json?.code === "unknown-entry",
+	JSON.stringify(planUnknown.json && { ok: planUnknown.json.ok, code: planUnknown.json.code }),
+);
 
 const restorePlan = await postJson("/skillsync", { action: "restore" });
 ok(

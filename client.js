@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r33.0";
+		const BUILD = "r35.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -163,6 +163,19 @@ window.__ModuleLoader__.load({
 			/* R22：配置层浮层（读**声明**：条目从哪来 / 关掉的 / 条件启用的 / bundles 缺口）。
 			   ★ 不持久化：它是一个"现在看一眼"的面板，重载后不需要自动弹回来。 */
 			showComposition: false,
+			/* R35：卡片底部动作 —— 当前展开的那张卡的动作面板。
+			   {id, op, busy, plan, error, result}。★ **不进 localStorage**：
+			   一份过期的确认计划不能跨重载活着（与 syncPlan / restorePlan 同一条纪律）。 */
+			action: null,
+			/* R35：回收站（Skill 删除后可还原）。同样不持久化。 */
+			trash: null,
+			/* R35：密度。看 133 条时"紧凑"比"舒适"有用 —— 它是使用习惯，进视图持久化。 */
+			density: "comfortable",
+			/* R35：首次使用的引导提示（点过就记住；它只占一行，但能让人发现卡片底部的操作） */
+			hintDismissed: false,
+			/* R35：只看「运行期有问题」的条目（失败 / 声明会加载但 Loader 里没有 / 打架）。
+			   ★ 不持久化：它是排查视角，下次打开应从"全部"开始。 */
+			runtimeOnly: false,
 		};
 
 		/* ── 视图状态持久化（热重载 / 刷新之后，筛选与滚动位置不再归零） ──
@@ -170,7 +183,7 @@ window.__ModuleLoader__.load({
 		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
 		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
 		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
-		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"];
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter", "density", "hintDismissed"];
 
 		function readView() {
 			try {
@@ -698,6 +711,212 @@ window.__ModuleLoader__.load({
 			return (items || []).filter(isDormant).length;
 		}
 
+		/* ───────── R35：运行期真相（服务端已把 runtimeState 合并进条目；这里只做文案与筛选） ─────────
+		 *
+		 * 为什么客户端还要一份映射：`/state` 只下发 `runtimeState` 与一句 `runtimeIssue`
+		 * （不下发整份 Loader 列表），chip 文案属于界面，留在界面这一层；筛选判据也只用这两个字段。
+		 * ★ 与宿主 `lib/runtime.mjs` 的 RUNTIME_META 是**同一套词**，改一处要两处一起改
+		 *   （`dev/audit.mjs` 会断言这两处文案一致）。 */
+		const RUNTIME_LABEL = {
+			failed: "运行期失败",
+			"declared-absent": "不在 loader",
+			pending: "等待加载",
+			loading: "加载中",
+			unloading: "卸载中",
+			disabled: "已停用",
+		};
+
+		/** 卡片 chip：active 且无问题时不占版面（133 张卡不会每张顶一个绿标）。 */
+		function runtimeLabel(item) {
+			if (!item || item.kind !== "plugin") return "";
+			const state = String(item.runtimeState || "");
+			if (state === "active") return item.runtimeIssue ? "运行中 · 不一致" : "";
+			return RUNTIME_LABEL[state] || "";
+		}
+
+		/** chip 色调：失败=红，声明/加载中=琥珀，「已停用」=灰（那是合法状态，不是警报）。 */
+		function runtimeTone(item) {
+			const state = String((item && item.runtimeState) || "");
+			if (state === "failed") return "is-bad";
+			if (state === "declared-absent" || state === "pending" || state === "loading") return "is-warn";
+			return "is-muted";
+		}
+
+		function runtimeTitle(item) {
+			if (!item || item.kind !== "plugin") return "";
+			return [item.runtimeIssue, item.runtimeDetail].filter(Boolean).join("\n") || "运行期：Loader 里是 active，没有发现问题";
+		}
+
+		/** 「运行期有问题」的唯一定义（洞察条计数与筛选都用它，别各写一份）。 */
+		function hasRuntimeIssue(item) {
+			if (!item || item.kind !== "plugin") return false;
+			const state = String(item.runtimeState || "");
+			return state === "failed" || state === "declared-absent" || Boolean(item.runtimeIssue);
+		}
+
+		function runtimeIssueCountOf(items) {
+			return (items || []).filter(hasRuntimeIssue).length;
+		}
+
+		/* ───────── R35：卡片底部的动作 ─────────
+		 *
+		 * 设计取舍（对着"实际用起来"的几件事）：
+		 *   · 卡片是 `<div role="button">` 而不是 `<button>` —— 按钮里不能再嵌按钮（HTML 不允许，
+		 *     浏览器会把内层按钮甩出去，点起来像是"点了没反应"）。
+		 *   · 动作按钮**常显**（不是 hover 才出现）：隐藏入口最容易被说成"这功能没有"；
+		 *     但它们是小号 ghost 按钮，靠右、低对比，不抢卡片正文。
+		 *   · 点动作按钮 = **只出计划**（这一步只读）；确认条里再点一次才真改东西。
+		 *     计划由服务端出（带一次性 token），面板不自己拼"会发生什么"。
+		 *   · 选择（多选）模式下动作区整体收起：那时点卡片是选人，不是操作。 */
+
+		/** 一条条目在界面上应该显示哪些动作（可用性由服务端 plan 判定，这里只决定"给不给入口"）。 */
+		function cardActionsOf(item) {
+			if (!item) return [];
+			const list = [{ op: "detail", label: "详情" }];
+			if (item.kind === "plugin") {
+				const self = item.name === "dsh-plugin-catalog";
+				if (item.realDir) list.push({ op: "copy", label: "复制路径" });
+				if (!self) {
+					list.push({ op: item.enabled ? "disable" : "enable", label: item.enabled ? "停用" : "启用" });
+					list.push({ op: "uninstall", label: "卸载", danger: true });
+				}
+				return list;
+			}
+			if (item.kind === "skill") {
+				if (item.realDir) list.push({ op: "copy", label: "复制路径" });
+				list.push({ op: "delete", label: "删除", danger: true });
+				return list;
+			}
+			if (item.kind === "mcp") {
+				if (item.mcpState !== "off") list.push({ op: "disable", label: "停用" });
+				list.push({ op: "remove", label: "删除条目", danger: true });
+				return list;
+			}
+			return list;
+		}
+
+		function CardActions(props) {
+			const item = props.item;
+			if (!item || props.picking) return null;
+			const actions = cardActionsOf(item);
+			if (actions.length === 0) return null;
+			const open = Boolean(props.action && props.action.id === item.id);
+			const busy = Boolean(props.action && props.action.id === item.id && props.action.busy);
+			return h(
+				"div",
+				{
+					className: "dpc-card-actions" + (open ? " is-open" : ""),
+					onClick: (event) => event.stopPropagation(),
+					onMouseDown: (event) => event.stopPropagation(),
+					onKeyDown: (event) => event.stopPropagation(),
+				},
+				actions.map((action) =>
+					h(
+						"button",
+						{
+							key: action.op,
+							className: "dpc-act" + (action.danger ? " is-danger" : "") + (open && props.action.op === action.op ? " is-on" : ""),
+							disabled: busy,
+							title:
+								action.op === "detail"
+									? "打开详情（同点卡片）"
+									: action.op === "copy"
+										? "把这个条目的目录复制到剪贴板"
+										: "只出计划（不写盘）；确认条里再点一次才真执行",
+							onClick: (event) => {
+								event.stopPropagation();
+								if (action.op === "detail") props.onDetail(item);
+								else if (action.op === "copy") props.onCopy(item);
+								else props.onAction(item, action.op);
+							},
+						},
+						action.label,
+					),
+				),
+			);
+		}
+
+		/**
+		 * 卡片内的动作确认条（"在卡片最下面操作"的落点）。
+		 *
+		 * 三态：出计划中 / 计划（可确认）/ 结果。
+		 * ★ 服务端返回的 blockers 必须原样摊开 —— 「为什么不能删」比"按钮灰着"有用得多。
+		 */
+		function ActionPanel(props) {
+			const action = props.action;
+			if (!action) return null;
+			const plate = (action.plan && ACTION_OP_META[action.plan.op]) || ACTION_OP_META[action.op] || { label: "操作", confirm: "确认" };
+			const plan = action.plan || null;
+			const blocked = Boolean(plan && plan.available === false);
+			const canConfirm = Boolean(action.token) && !action.busy && !blocked && !action.result;
+			return h(
+				"div",
+				{
+					className: "dpc-actionbox" + (action.result ? (action.result.ok ? " is-ok" : " is-bad") : blocked ? " is-bad" : ""),
+					onClick: (event) => event.stopPropagation(),
+					onMouseDown: (event) => event.stopPropagation(),
+					onKeyDown: (event) => event.stopPropagation(),
+				},
+				h(
+					"div",
+					{ className: "dpc-actionbox-head" },
+					h("span", { className: "dpc-actionbox-step" }, action.result ? "结果" : action.busy ? "准备中" : "步骤 1/2 · 看计划"),
+					h("span", null, plate.label + " " + (action.name || "")),
+					action.expiresAt && !action.result ? h("span", { className: "dpc-muted" }, "计划 " + Math.max(1, Math.round((action.expiresAt - Date.now()) / 60000)) + " 分钟内有效") : null,
+				),
+				action.busy ? h("div", { className: "dpc-muted" }, "正在向服务端要计划…（只读，不会改任何东西）") : null,
+				!action.busy && action.error ? h("div", { className: "dpc-bad dpc-actionbox-line" }, action.error) : null,
+				plan
+					? h(
+							"div",
+							{ className: "dpc-actionbox-body" },
+							h("div", { className: "dpc-actionbox-line" }, plan.summary),
+							plan.effect ? h("div", { className: "dpc-muted dpc-actionbox-line" }, "生效方式：" + plan.effect) : null,
+							plan.target ? h("div", { className: "dpc-muted dpc-actionbox-line" }, "目标：", h("code", { className: "dpc-path" }, plan.target)) : null,
+							(plan.warnings || []).map((warning, index) => h("div", { key: "w" + index, className: "dpc-actionbox-warn" }, "⚠️ " + warning.text)),
+							(plan.blockers || []).map((blocker, index) => h("div", { key: "b" + index, className: "dpc-actionbox-block" }, "✗ " + blocker.text)),
+							plan.preview ? h("pre", { className: "dpc-mcp-pre dpc-actionbox-pre" }, plan.preview) : null,
+							plan.trashRoot ? h("div", { className: "dpc-muted dpc-actionbox-line" }, "回收站：" + plan.trashRoot + "（面板里可还原）") : null,
+						)
+					: null,
+				action.result
+					? h(
+							"div",
+							{ className: "dpc-actionbox-body" },
+							h("div", { className: action.result.ok ? "dpc-ok dpc-actionbox-line" : "dpc-bad dpc-actionbox-line" }, action.result.text || (action.result.ok ? "已完成" : "没做成")),
+							action.result.backup ? h("div", { className: "dpc-muted dpc-actionbox-line" }, "备份：", h("code", { className: "dpc-path" }, action.result.backup)) : null,
+						)
+					: null,
+				h(
+					"div",
+					{ className: "dpc-actionbox-foot" },
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onCancel, disabled: action.busy }, action.result ? "关闭" : "取消"),
+					!action.result
+						? h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm" + (plate.dangerous ? " dpc-btn-danger" : ""),
+									disabled: !canConfirm,
+									title: blocked ? "计划里有阻断项，先看上面" : "点这里才真正执行（第二次确认）",
+									onClick: props.onApply,
+								},
+								action.busy ? "执行中…" : plate.confirm,
+							)
+						: null,
+					blocked ? h("span", { className: "dpc-muted" }, "计划里有阻断项 —— 这条现在不能这样处理") : null,
+				),
+			);
+		}
+
+		/* 动作的人话（与服务端 lib/actions.mjs 的 ACTION_META 同一套词；audit 会断言一致） */
+		const ACTION_OP_META = {
+			uninstall: { label: "卸载", confirm: "确认卸载", dangerous: true },
+			disable: { label: "停用", confirm: "确认停用", dangerous: false },
+			enable: { label: "启用", confirm: "确认启用", dangerous: false },
+			delete: { label: "删除", confirm: "确认删除（进回收站）", dangerous: true },
+			remove: { label: "删除条目", confirm: "确认删除条目", dangerous: true },
+		};
+
 		/**
 		 * 搜索命中：把**命中的工具名**挑出来（最多 4 个）。
 		 * 这是面板要能回答的第二个问题 —— 「这个工具是谁提供的」。
@@ -836,11 +1055,19 @@ window.__ModuleLoader__.load({
 			const off = item.mcpState === "off";
 			const problems = item.problems || [];
 			return h(
-				"button",
+				"div",
 				{
-					className: "dpc-card dpc-card-mcp" + (off ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
+					className: "dpc-card dpc-card-mcp" + (off ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : "") + (props.action && props.action.id === item.id ? " has-action" : ""),
+					role: "button",
+					tabIndex: 0,
 					onClick: () => (picking ? props.onPick(item.id) : openEntry(item)),
-					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的配置与调用明细",
+					onKeyDown: (event) => {
+						if (event.key !== "Enter" && event.key !== " ") return;
+						event.preventDefault();
+						if (picking) props.onPick(item.id);
+						else openEntry(item);
+					},
+					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的配置与调用明细；底部可直接停用 / 删除条目",
 				},
 				h(
 					"div",
@@ -870,6 +1097,8 @@ window.__ModuleLoader__.load({
 					h(TagChips, { ids: (item.tags && item.tags.purpose) || [], all }),
 					h("span", { className: "dpc-foot-meta" }, item.subagentCalls > 0 ? "含子代理 " + fmtNumber(item.subagentCalls) + " · " : "", item.lastUsed ? "最近 " + ago(item.lastUsed) : "从未调用"),
 				),
+				h(CardActions, props),
+				props.action && props.action.id === item.id ? h(ActionPanel, props) : null,
 			);
 		}
 
@@ -996,11 +1225,23 @@ window.__ModuleLoader__.load({
 			const main = zh || en;
 			const sub = zh && en ? en : "";
 			return h(
-				"button",
+				/* ★ R35：外层从 `<button>` 换成 `<div role="button">`。
+				   原因很硬：按钮里不能再嵌按钮 —— 卡片底部要放「卸载 / 删除」时，
+				   嵌套的 <button> 会被浏览器甩出父按钮，点起来像"点了没反应"。
+				   键盘可达性用 tabIndex + Enter/Space 补齐。 */
+				"div",
 				{
-					className: "dpc-card" + (isDormant(item) ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : ""),
+					className: "dpc-card" + (isDormant(item) ? " is-off" : "") + (picked ? " is-picked" : "") + (picking ? " is-picking" : "") + (props.action && props.action.id === item.id ? " has-action" : ""),
+					role: "button",
+					tabIndex: 0,
 					onClick: () => (picking ? props.onPick(item.id) : openEntry(item)),
-					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的调用明细",
+					onKeyDown: (event) => {
+						if (event.key !== "Enter" && event.key !== " ") return;
+						event.preventDefault();
+						if (picking) props.onPick(item.id);
+						else openEntry(item);
+					},
+					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的调用明细；底部的按钮可直接停用 / 卸载",
 				},
 				h(
 					"div",
@@ -1011,6 +1252,9 @@ window.__ModuleLoader__.load({
 					item.kind === "skill" ? h("span", { className: "dpc-kind" }, "Skill") : null,
 					/* R12：会不会被加载 —— 只有宿主给出 loadState 才敢下结论 */
 					loadLabel(item) ? h("span", { className: "dpc-load" + (isConfigLoaded(item) ? " is-config" : ""), title: loadTitle(item) }, loadLabel(item)) : null,
+					/* R35：运行期真相 —— 声明层看不见的那三类（fiberPhase=failed / 不在 loader / 打架）。
+					   没有问题时**不占版面**：133 张卡不该每张顶一个绿标。 */
+					runtimeLabel(item) ? h("span", { className: "dpc-runtime " + runtimeTone(item), title: runtimeTitle(item) }, runtimeLabel(item)) : null,
 					driftLabel(drift) ? h("span", { className: "dpc-drift", title: driftDetail(drift) }, driftLabel(drift)) : null,
 					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
 					hasErrors(item)
@@ -1068,6 +1312,8 @@ window.__ModuleLoader__.load({
 						item.createdAt ? " · 建于 " + fmtTime(item.createdAt) : "",
 					),
 				),
+				h(CardActions, props),
+				props.action && props.action.id === item.id ? h(ActionPanel, props) : null,
 			);
 		}
 
@@ -2596,6 +2842,53 @@ window.__ModuleLoader__.load({
 
 		/* ── 面板 ── */
 
+		/* ── R35：回收站（Skill 删除的"后悔药"） ──
+		   删除 = 整目录移进 `<数据目录>/trash/skills/`，所以这里能把它们移回原位；
+		   原位已有同名目录时服务端拒绝覆盖（不做"悄悄替换"。） */
+		function TrashModal(props) {
+			const trash = props.trash || {};
+			const items = trash.items || [];
+			return h(
+				"div",
+				{ className: "dpc-overlay", onClick: props.onClose },
+				h(
+					"div",
+					{ className: "dpc-modal", onClick: (event) => event.stopPropagation() },
+					h(
+						"div",
+						{ className: "dpc-modal-head" },
+						h("span", { className: "dpc-modal-title" }, "回收站"),
+						h("span", { className: "dpc-muted" }, items.length + " 条记录 · 可还原 " + (trash.restorable || 0)),
+						h("span", { className: "dpc-grow" }),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onClose }, "关闭"),
+					),
+					h(
+						"div",
+						{ className: "dpc-modal-body" },
+						h("div", { className: "dpc-muted" }, "Skill 删除是移动而不是抹掉：都在这儿，可以还原到原位（原位已有同名目录时会拒绝覆盖，不会悄悄替换）。回收站目录：", h("code", { className: "dpc-path" }, trash.root || "?")),
+						items.length === 0
+							? h("div", { className: "dpc-note" }, "回收站是空的 —— 还没有从面板删过 Skill。")
+							: items.map((item) =>
+									h(
+										"div",
+										{ key: item.id, className: "dpc-trash-row" },
+										h(
+											"div",
+											{ className: "dpc-trash-head" },
+											h("span", { className: "dpc-trash-name" }, item.name || item.id),
+											h("span", { className: item.present ? "dpc-ok" : "dpc-muted" }, item.present ? "在回收站（可还原）" : "已不在回收站"),
+											h("span", { className: "dpc-muted" }, item.at ? fmtDateTime(item.at) : ""),
+										),
+										h("div", { className: "dpc-muted dpc-actionbox-line" }, "来自 " + (item.from || "?")),
+										h("div", { className: "dpc-muted dpc-actionbox-line" }, "现在在 " + (item.to || "?")),
+										item.present ? h("button", { className: "dpc-btn dpc-btn-sm", onClick: () => props.onRestore(item.id) }, "还原到原位") : null,
+									),
+								),
+					),
+				),
+			);
+		}
+
 		function Panel() {
 			const state = useStore();
 			const data = state.data;
@@ -2614,6 +2907,72 @@ window.__ModuleLoader__.load({
 			function jumpToCard(name) {
 				if (!name) return;
 				set({ query: name, page: 1, kind: "all", source: "any", usage: "any", orphanOnly: false, dormantOnly: false, tagFilter: [], showComposition: false });
+			}
+
+			/* ── R35：卡片动作（三步：点动作 → 出计划 → 确认执行） ──
+			   ★ 计划只活在内存（`state.action`），刷新即失效：拿一份过期的确认去改文件是危险的。
+			   ★ 服务端才是判据：面板不自己拼"会发生什么"，只把返回的 summary / warnings / blockers 摊开。 */
+			async function runActionPlan(item, op) {
+				if (!item) return;
+				set({ action: { id: item.id, name: item.name, op, busy: true, plan: null, token: null, expiresAt: 0, error: null, result: null } });
+				try {
+					const result = await post("/action/plan", { id: item.id, op });
+					const current = store.action;
+					/* 期间用户可能点了别的卡：只认"还是这一次"的返回 */
+					if (!current || current.id !== item.id || current.op !== op) return;
+					if (!result || result.ok === false) {
+						set({ action: { ...current, busy: false, plan: (result && result.plan) || null, token: null, error: (result && result.error) || "出计划失败" } });
+						return;
+					}
+					set({ action: { ...current, busy: false, plan: result.plan || null, token: result.token || null, expiresAt: result.expiresAt || 0, error: null } });
+				} catch (error) {
+					set({ action: { ...(store.action || {}), busy: false, error: String((error && error.message) || error) } });
+				}
+			}
+			function cancelAction() {
+				set({ action: null });
+			}
+			function copyItemPath(item) {
+				const path = item && item.realDir ? String(item.realDir) : "";
+				if (!path) {
+					set({ notice: "这条没有独立目录（官方包在 asar 里 / Skill 没有目录）" });
+					return;
+				}
+				set({ notice: copyText(path) ? "已复制：" + path : "复制失败：渲染进程不让写剪贴板" });
+			}
+			async function runActionApply() {
+				const current = store.action;
+				if (!current || !current.token) return;
+				set({ action: { ...current, busy: true } });
+				try {
+					const result = await post("/action/apply", { token: current.token, confirm: true });
+					set({ action: { ...(store.action || current), busy: false, token: null, result: result || { ok: false, text: "没有返回" }, error: result && result.ok === false ? result.error : null } });
+					set({ notice: (result && (result.text || result.error)) || "已完成" });
+					/* 立刻刷一次（动作的即时效果），2.5 秒后再刷（后台重建目录完成） */
+					refresh();
+					setTimeout(() => refresh(), 2500);
+				} catch (error) {
+					set({ action: { ...(store.action || current), busy: false, token: null, result: { ok: false, text: "请求失败：" + String((error && error.message) || error) } } });
+				}
+			}
+			/* 回收站：Skill 删除是可逆的 —— 面板里能看见、能还原（不做硬删） */
+			async function openTrash() {
+				try {
+					const result = await post("/action/trash", { action: "status" });
+					set({ trash: result || { ok: false, items: [] } });
+				} catch (error) {
+					set({ notice: "读回收站失败：" + String((error && error.message) || error) });
+				}
+			}
+			async function restoreTrashItem(id) {
+				try {
+					const result = await post("/action/trash", { action: "restore", id, confirm: true });
+					set({ notice: (result && (result.text || result.error)) || "已请求还原" });
+					await openTrash();
+					refresh();
+				} catch (error) {
+					set({ notice: "还原失败：" + String((error && error.message) || error) });
+				}
 			}
 
 			/* R15：标签 id → ? 的索引。筛选要按维度分组判定，不能只看 id 在不在。 */
@@ -2639,6 +2998,8 @@ window.__ModuleLoader__.load({
 					if (state.orphanOnly && !isOrphanHint(item)) return false;
 					/* R12：只看「不会被加载」的条目（宿主没给 loadState 时一条都不命中，不做猜测） */
 					if (state.dormantOnly && !isDormant(item)) return false;
+					/* R35：只看运行期有问题的（失败 / 声明会加载但 Loader 里没有 / 打架） */
+					if (state.runtimeOnly && !hasRuntimeIssue(item)) return false;
 					/* R15：标签筛选 —— 选中了某一维的标签，条目就必须命中该维至少一个 */
 					if (grouped.purpose.length > 0 && !grouped.purpose.some((id) => (item.tags?.purpose || []).includes(id))) return false;
 					if (grouped.context.length > 0 && !grouped.context.some((id) => (item.tags?.context || []).includes(id))) return false;
@@ -2665,7 +3026,7 @@ window.__ModuleLoader__.load({
 					return String(a.name).localeCompare(String(b.name));
 				});
 				return list;
-			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, state.dormantOnly, state.tagFilter, tagMap, sizeMap]);
+			}, [items, state.query, state.kind, state.source, state.usage, state.sort, state.orphanOnly, state.dormantOnly, state.runtimeOnly, state.tagFilter, tagMap, sizeMap]);
 
 			/* 洞察条的数字：**只受 kind/source 影响**，不被关键词与用法筛选带着跳 ——
 			   否则「点开未使用后 未使用 变成 0」会让人以为数据没了。 */
@@ -2689,6 +3050,41 @@ window.__ModuleLoader__.load({
 			const dormantCount = useMemo(() => {
 				return dormantCountOf(items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source)));
 			}, [items, state.kind, state.source]);
+
+			/* R35：运行期有问题的条数（失败 / 不在 loader / 打架）。与洞察条同口径。 */
+			const runtimeIssueCount = useMemo(() => {
+				return runtimeIssueCountOf(items.filter((item) => (state.kind === "all" || item.kind === state.kind) && (state.source === "any" || item.source === state.source)));
+			}, [items, state.kind, state.source]);
+
+			/* R35：当前生效的筛选（一行摘要 + 每个都能单独摘掉）——133 条里"为什么只剩 3 条"要能一眼回答。 */
+			const activeFilters = useMemo(() => {
+				const list = [];
+				if (state.query.trim() !== "") list.push({ key: "query", label: "关键词「" + state.query.trim() + "」" });
+				if (state.source !== "any") list.push({ key: "source", label: "来源 " + ((SOURCE_META[state.source] && SOURCE_META[state.source].label) || state.source) });
+				if (state.kind !== "all") list.push({ key: "kind", label: "类型 " + ({ plugin: "插件", skill: "Skill", mcp: "MCP" }[state.kind] || state.kind) });
+				if (state.usage !== "any") list.push({ key: "usage", label: (USAGE_FILTERS.find((option) => option.id === state.usage) || {}).label || state.usage });
+				if (state.orphanOnly) list.push({ key: "orphanOnly", label: "无人依赖" });
+				if (state.dormantOnly) list.push({ key: "dormantOnly", label: "不会被加载" });
+				if (state.runtimeOnly) list.push({ key: "runtimeOnly", label: "运行期有问题" });
+				for (const id of state.tagFilter) {
+					const tag = tagMap.get(id);
+					if (tag) list.push({ key: "tag:" + id, label: tag.label });
+				}
+				return list;
+			}, [state.query, state.source, state.kind, state.usage, state.orphanOnly, state.dormantOnly, state.runtimeOnly, state.tagFilter, tagMap]);
+
+			function clearFilters() {
+				set({ query: "", source: "any", kind: "all", usage: "any", orphanOnly: false, dormantOnly: false, runtimeOnly: false, tagFilter: [], page: 1 });
+			}
+			function clearOneFilter(key) {
+				if (key === "query") return set({ query: "", page: 1 });
+				if (key === "source") return set({ source: "any", page: 1 });
+				if (key === "kind") return set({ kind: "all", page: 1 });
+				if (key === "usage") return set({ usage: "any", page: 1 });
+				if (key === "orphanOnly" || key === "dormantOnly" || key === "runtimeOnly") return set({ [key]: false, page: 1 });
+				if (key.startsWith("tag:")) return set({ tagFilter: state.tagFilter.filter((id) => id !== key.slice(4)), page: 1 });
+				return undefined;
+			}
 
 			/* R15：每个标签被多少条目用着（只算 purpose / context；origin 是推导值，不可筛）。
 			   ★ 只列**真的有条目在用**的标签：27 个内置标签全铺出来会把工具条撑成三行，
@@ -3014,7 +3410,7 @@ window.__ModuleLoader__.load({
 
 			return h(
 				"div",
-				{ className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll },
+				{ className: "dpc-panel" + (state.density === "compact" ? " is-compact" : ""), id: "dpc-panel", onScroll: rememberScroll },
 				/* 头部 */
 				h(
 					"div",
@@ -3078,6 +3474,25 @@ window.__ModuleLoader__.load({
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runClassify }, "AI 分类标签"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (weeklyDue.gap ? " is-due" : ""), onClick: () => runWeekly("gap"), disabled: state.reportBusy }, weeklyDue.gap ? "缺口分析（已到期）" : "缺口分析"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (weeklyDue.security ? " is-due" : ""), onClick: () => runWeekly("security"), disabled: state.reportBusy }, weeklyDue.security ? "安全审核（已到期）" : "安全审核"),
+						/* R35：回收站（Skill 删除后可还原）+ 密度 —— 两个都是"看 133 条"时的日常入口 */
+						h(
+							"button",
+							{
+								className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+								onClick: openTrash,
+								title: "回收站：面板删除的 Skill 都移到这里（可还原，不硬删）。也会列出可以还原的条目数",
+							},
+							"回收站",
+						),
+						h(
+							"button",
+							{
+								className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+								onClick: () => set({ density: state.density === "compact" ? "comfortable" : "compact" }),
+								title: "切换卡片密度：紧凑模式隐藏英文原文、压缩行距 —— 一条条扫过去时更好用（记在本地）",
+							},
+							state.density === "compact" ? "密度：紧凑" : "密度：舒适",
+						),
 					),
 				),
 				/* 任务条 */
@@ -3114,6 +3529,35 @@ window.__ModuleLoader__.load({
 								((compositionBad.bundlesMissing || []).length > 4 ? " 等" : "") +
 								"　",
 							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ showComposition: true }) }, "查看配置层"),
+						)
+					: null,
+				/* R35：首次使用的引导（只占一行；点过就记住）。卡片底部的操作是新入口，
+				   不提示的话没人会往下看 —— 这是本轮真实的使用习惯问题。 */
+				state.hintDismissed
+					? null
+					: h(
+							"div",
+							{ className: "dpc-hint" },
+							h("span", null, "点卡片看详情；卡片底部可以直接 ", h("strong", null, "停用 / 卸载"), " 插件、", h("strong", null, "删除"), " Skill、", h("strong", null, "停用或删除"), " MCP 条目 —— 都会先出计划、再确认一次；Skill 删除进回收站，可还原。"),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ hintDismissed: true }) }, "知道了"),
+						),
+				/* R35：运行期真相 —— 声明层看不见的那三类问题 + bundle 层的健康（listBundles 的说法）。
+				   有才占版面，并把名字点出来。 */
+				data.runtime && ((data.runtime.issues && data.runtime.issues.total > 0) || (data.runtime.bundles && (data.runtime.bundles.problems || []).length > 0))
+					? h(
+							"div",
+							{ className: "dpc-note dpc-note-warn" },
+							"运行期：" +
+								[
+									data.runtime.issues.failed > 0 ? "fiberPhase=failed " + data.runtime.issues.failed + "（" + (data.runtime.issues.names.failed || []).slice(0, 3).join("、") + "）" : "",
+									data.runtime.issues.absent > 0 ? "声明会加载但 Loader 里没有 " + data.runtime.issues.absent + "（" + (data.runtime.issues.names.absent || []).slice(0, 3).join("、") + "）" : "",
+									data.runtime.issues.mismatch > 0 ? "声明与运行时不一致 " + data.runtime.issues.mismatch : "",
+									data.runtime.bundles && (data.runtime.bundles.problems || []).length > 0 ? "bundle 有问题 " + data.runtime.bundles.problems.length + "（" + data.runtime.bundles.problems.slice(0, 3).map((item) => item.name).join("、") + "）" : "",
+								]
+									.filter(Boolean)
+									.join("；") +
+								"　",
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.runtimeOnly ? " is-on" : ""), onClick: () => set({ runtimeOnly: !state.runtimeOnly, page: 1 }) }, state.runtimeOnly ? "✓ 只看这些" : "只看这些"),
 						)
 					: null,
 				/* 提示 */
@@ -3198,7 +3642,7 @@ window.__ModuleLoader__.load({
 				/* 工具条 */
 				h(
 					"div",
-					{ className: "dpc-toolbar" },
+					{ className: "dpc-toolbar dpc-toolbar-sticky" },
 					h("input", { id: "dpc-search", className: "dpc-search", placeholder: "搜索名称 / 简介 / 工具名…（/ 聚焦）", value: state.query, onChange: (event) => set({ query: event.target.value, page: 1 }) }),
 					h(
 						"div",
@@ -3322,6 +3766,24 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
+				/* R35：筛选摘要 —— 每个条件都能单独摘掉，"为什么只剩 3 条"不用再猜 */
+				activeFilters.length > 0
+					? h(
+							"div",
+							{ className: "dpc-filterbar" },
+							h("span", { className: "dpc-filterbar-title" }, "筛选"),
+							activeFilters.map((filter) =>
+								h(
+									"button",
+									{ key: filter.key, className: "dpc-filter-chip", onClick: () => clearOneFilter(filter.key), title: "去掉这个条件" },
+									filter.label,
+									h("span", { className: "dpc-chip-x" }, "×"),
+								),
+							),
+							h("span", { className: "dpc-muted" }, "命中 " + filtered.length + " 条"),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: clearFilters }, "清除全部"),
+						)
+					: null,
 				/* R15：标签筛选行 —— 只在「有标签真的被用着」时出现。
 				   一条标签都没有时整行不占位，而不是显示一行空框等用户去猜。 */
 				tagUsage.size > 0
@@ -3397,14 +3859,63 @@ window.__ModuleLoader__.load({
 							option.label + " " + insightCounts[option.id],
 						),
 					),
+					/* R35：运行期问题（fiberPhase=failed / 声明会加载但 Loader 里没有 / 打架）——
+					   它和"用没用""报没报错"是**不同维度**的事实，所以单列一颗 chip。 */
+					runtimeIssueCount > 0 || state.runtimeOnly
+						? h(
+								"button",
+								{
+									className: "dpc-insight is-warn" + (state.runtimeOnly ? " is-on" : ""),
+									title: "运行期问题：Loader 里 fiberPhase=failed、或者声明层说会加载而 Loader 里根本没有这一条、或者 enabled 与运行时打架。点一下只看这些。",
+									onClick: () => set({ runtimeOnly: !state.runtimeOnly, page: 1 }),
+								},
+								"运行期问题 " + runtimeIssueCount,
+							)
+						: null,
 				),
 				/* 卡片网格 */
 				state.kind === "mcp" && mcp ? h(McpBanner, { mcp }) : null,
 				h(
 					"div",
 					{ className: "dpc-grid" },
-					pageItems.map((item) => h(Card, { key: item.id, item, tags: all, hits: toolHits(item, state.query), picking: state.picking, picked: state.picked.includes(item.id), onPick: togglePick, drift: (data.drift || {})[item.id] || null, size: sizeOfItem(item, sizeMap), sizeTruncated: sizeTruncated.includes(item.id) })),
-					pageItems.length === 0 ? h("div", { className: "dpc-muted dpc-pad" }, "没有匹配的条目。") : null,
+					pageItems.map((item) =>
+						h(Card, {
+							key: item.id,
+							item,
+							tags: all,
+							hits: toolHits(item, state.query),
+							picking: state.picking,
+							picked: state.picked.includes(item.id),
+							onPick: togglePick,
+							drift: (data.drift || {})[item.id] || null,
+							size: sizeOfItem(item, sizeMap),
+							sizeTruncated: sizeTruncated.includes(item.id),
+							/* R35：卡片底部动作 —— 计划 / 确认 / 结果都走同一条服务端路径 */
+							action: state.action,
+							onAction: runActionPlan,
+							onDetail: openEntry,
+							onCopy: copyItemPath,
+							onCancel: cancelAction,
+							onApply: runActionApply,
+						}),
+					),
+					pageItems.length === 0
+						? h(
+								"div",
+								{ className: "dpc-empty" },
+								h("div", { className: "dpc-empty-title" }, "没有匹配的条目"),
+								h(
+									"div",
+									{ className: "dpc-muted" },
+									activeFilters.length > 0
+										? "当前筛选：" + activeFilters.map((filter) => filter.label).join(" · ")
+										: data.catalogMeta && data.catalogMeta.builtAt
+											? "目录是空的 —— 试试点头部「重新扫描」"
+											: "目录还没建好（首次约 40~60 秒，已在后台算）",
+								),
+								activeFilters.length > 0 ? h("button", { className: "dpc-btn dpc-btn-sm", onClick: clearFilters }, "清除全部筛选") : null,
+							)
+						: null,
 				),
 				/* 列表分页条 */
 				h(
@@ -3470,6 +3981,8 @@ window.__ModuleLoader__.load({
 				state.tagPick ? h(TagBatchModal, { ids: state.tagPick.ids }) : null,
 				state.plan ? h(PlanModal, {}) : null,
 				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }), onJump: jumpToCard }) : null,
+				/* R35：回收站（Skill 删除可还原） */
+				state.trash ? h(TrashModal, { trash: state.trash, onClose: () => set({ trash: null }), onRestore: restoreTrashItem }) : null,
 			);
 		}
 
@@ -3863,6 +4376,74 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.05));white-space:pre-wrap;word-break:break-all}
 .dpc-hostcore{margin-top:6px}
 .dpc-footer{margin-top:10px;font-size:11px;line-height:1.8;color:var(--dsw-alias-label-secondary,#8b93a1)}
+/* ── R35：卡片底部操作区（常显 · 小号 ghost · 危险动作红字） ──
+   ★ 卡片外层已从 <button> 换成 <div role="button">：按钮里不能再嵌按钮，
+     否则内层会被浏览器甩出去，点起来像"点了没反应"。 */
+.dpc-card-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;padding-top:7px;
+  border-top:1px solid var(--dpc-line-soft)}
+.dpc-act{appearance:none;font:inherit;font-size:11px;line-height:1.2;padding:3px 8px;border-radius:7px;
+  border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#6b7280);
+  cursor:pointer;transition:background .12s ease,color .12s ease,border-color .12s ease}
+.dpc-act:hover{background:var(--dpc-fill-hover);color:var(--dsw-alias-label-primary,#1f2937);border-color:var(--dpc-line)}
+.dpc-act.is-on{color:var(--dpc-klein);border-color:rgba(0,47,167,.45);background:rgba(0,47,167,.08);font-weight:600}
+.dpc-act.is-danger{color:#b42318}
+.dpc-act.is-danger:hover{background:rgba(220,38,38,.09);border-color:rgba(220,38,38,.38);color:#b42318}
+.dpc-act:focus-visible{outline:2px solid rgba(0,47,167,.55);outline-offset:1px}
+.dpc-act:disabled{opacity:.5;cursor:default}
+.dpc-card.has-action{border-color:rgba(0,47,167,.5);box-shadow:0 0 0 1px rgba(0,47,167,.28)}
+/* 动作确认条：卡片最下面那一块。绿=做成了，红=阻断/失败，其余=中性计划 */
+.dpc-actionbox{display:flex;flex-direction:column;gap:7px;margin-top:7px;padding:9px 10px;border-radius:11px;
+  border:1px solid rgba(0,47,167,.35);background:color-mix(in srgb,var(--dpc-klein) 6%,transparent);font-size:11.5px;line-height:1.6}
+.dpc-actionbox.is-ok{border-color:rgba(22,163,74,.42);background:rgba(22,163,74,.07)}
+.dpc-actionbox.is-bad{border-color:rgba(220,38,38,.42);background:rgba(220,38,38,.06)}
+.dpc-actionbox-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-weight:600;font-size:12px}
+.dpc-actionbox-step{font-size:10px;font-weight:600;padding:1px 6px;border-radius:5px;background:rgba(0,47,167,.12);color:var(--dpc-klein);white-space:nowrap}
+.dpc-actionbox.is-bad .dpc-actionbox-step{background:rgba(220,38,38,.14);color:#b91c1c}
+.dpc-actionbox.is-ok .dpc-actionbox-step{background:rgba(22,163,74,.16);color:#15803d}
+.dpc-actionbox-body{display:flex;flex-direction:column;gap:3px}
+.dpc-actionbox-line{font-size:11.5px;line-height:1.6}
+.dpc-actionbox-warn{font-size:11px;line-height:1.55;color:#8a5a06}
+.dpc-actionbox-block{font-size:11px;line-height:1.55;color:#b91c1c}
+.dpc-actionbox-pre{max-height:180px;margin:2px 0 0;border:1px solid var(--dpc-line-soft);border-radius:8px;background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.03))}
+.dpc-actionbox-foot{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:2px}
+.dpc-btn-danger{background:#b42318;border-color:#b42318;color:#fff}
+.dpc-btn-danger:hover{background:#961e14}
+.dpc-ok{color:#15803d}
+/* ── R35：运行期 chip（失败=红 / 声明缺失=琥珀 / 已停用=灰） ── */
+.dpc-runtime{font-size:10.5px;padding:1px 6px;border-radius:6px;font-weight:650;flex:0 0 auto;border:1px solid transparent}
+.dpc-runtime.is-bad{color:#b91c1c;background:rgba(220,38,38,.12);border-color:rgba(220,38,38,.38)}
+.dpc-runtime.is-warn{color:#8a5a06;background:rgba(217,119,6,.13);border-color:rgba(217,119,6,.35)}
+.dpc-runtime.is-muted{color:var(--dsw-alias-label-secondary,#6b7280);background:var(--dpc-fill);border-color:var(--dpc-line-soft)}
+/* ── R35：首次使用引导 + 筛选摘要 + 空态 ── */
+.dpc-hint{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 11px;border-radius:10px;font-size:12px;line-height:1.6;
+  border:1px dashed rgba(0,47,167,.35);background:rgba(0,47,167,.05);color:var(--dsw-alias-label-secondary,#4b5563)}
+.dpc-hint strong{color:var(--dpc-klein)}
+.dpc-filterbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px}
+.dpc-filterbar-title{font-size:10px;padding:0 5px;border-radius:4px;background:var(--dpc-fill);color:var(--dsw-alias-label-secondary,#8b93a1)}
+.dpc-filter-chip{appearance:none;font:inherit;font-size:11px;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;
+  cursor:pointer;border:1px solid rgba(0,47,167,.35);background:rgba(0,47,167,.07);color:var(--dpc-klein)}
+.dpc-filter-chip:hover{background:rgba(0,47,167,.14)}
+.dpc-empty{grid-column:1/-1;display:flex;flex-direction:column;gap:8px;align-items:flex-start;padding:22px 18px;border-radius:14px;
+  border:1px dashed var(--dpc-line);background:var(--dpc-fill)}
+.dpc-empty-title{font-size:13px;font-weight:650}
+/* ── R35：回收站 ── */
+.dpc-trash-row{display:flex;flex-direction:column;gap:2px;padding:9px 11px;border-radius:10px;
+  border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-trash-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px}
+.dpc-trash-name{font-weight:600;word-break:break-all}
+/* ── R35：工具条吸顶（面板自己是滚动容器，sticky 才有意义） ── */
+.dpc-toolbar-sticky{position:sticky;top:0;z-index:5;
+  background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 88%,transparent);backdrop-filter:blur(10px);
+  box-shadow:0 8px 18px -18px rgba(0,0,0,.55)}
+/* ── R35：密度（紧凑：隐藏英文原文、压缩行距；133 条一条条扫过去时更好用） ── */
+.dpc-panel.is-compact .dpc-grid{gap:8px;grid-template-columns:repeat(auto-fill,minmax(270px,1fr))}
+.dpc-panel.is-compact .dpc-card{padding:10px 12px;gap:5px}
+.dpc-panel.is-compact .dpc-en{display:none}
+.dpc-panel.is-compact .dpc-zh{-webkit-line-clamp:2}
+.dpc-panel.is-compact .dpc-card-actions{margin-top:4px;padding-top:5px}
+.dpc-panel.is-compact .dpc-calls{font-size:12.5px}
+/* 卡片从 <button> 换成 div：把按钮的默认字体重置回来，否则整张卡的字体与面板不一致 */
+.dpc-card{font:inherit;box-sizing:border-box}
 @media (max-width:760px){
   .dpc-panel{padding:12px 10px 32px}
   .dpc-grid{grid-template-columns:1fr}
@@ -3966,6 +4547,18 @@ window.__ModuleLoader__.load({
 			UninstallCard,
 			/* R22：配置层浮层（声明层；关掉的 / 条件启用的 / 静态查不到的 / bundles 缺口） */
 			CompositionModal,
+			/* R35：运行期真相 + 卡片动作（纯函数与组件都要能被自检直接断言） */
+			RUNTIME_LABEL,
+			ACTION_OP_META,
+			runtimeLabel,
+			runtimeTone,
+			runtimeTitle,
+			hasRuntimeIssue,
+			runtimeIssueCountOf,
+			cardActionsOf,
+			CardActions,
+			ActionPanel,
+			TrashModal,
 			toolHits,
 			hotkeyOf,
 			copyText,

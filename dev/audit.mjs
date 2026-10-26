@@ -31,6 +31,9 @@ import { parseFrontmatter } from "../lib/catalog.mjs";
 import { LOAD_STATES, parseComposition, resolveLoadPaths, isLoadedState, isDormantState, loadStateLabel } from "../lib/loadstate.mjs";
 import { COMPOSITION_KINDS, DISABLE_KINDS, ENTRY_RESOLUTIONS, auditComposition, classifyCompositionName, compactComposition, mergeCompositionEntries, packageNameOf, parseDisabled, signatureOf, summarizeComposition } from "../lib/composition.mjs";
 import { PROVENANCE, buildUninstallPlan, renderUninstallPlan, summarizeUninstallPlan } from "../lib/uninstall.mjs";
+/* R35：运行期真相与卡片动作 —— 判据模块必须是**纯函数**（探针在不碰盘/不碰宿主的前提下跑） */
+import { RUNTIME_STATES, indexRuntime, runtimeIssues, runtimeOf, summarizeRuntime } from "../lib/runtime.mjs";
+import { ACTION_OPS, ACTION_PLAN_TTL_MS, appendDisableEntry, findEntryBlock, planMcpRemove, planSkillDelete, removeBlock, verifyEntryRemoved } from "../lib/actions.mjs";
 import { compareComposition, describeChange, diffSnapshots, snapshotOf } from "../lib/history.mjs";
 import { computeStats } from "../lib/stats.mjs";
 
@@ -81,7 +84,7 @@ const stubService = new Proxy(
 );
 const tools = buildCatalogTools({ service: stubService });
 ok("工具数量 ≥ 6", tools.length >= 6, "实际 " + tools.length);
-const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync", "catalog_handoff", "catalog_mcp"];
+const requiredNames = ["catalog_list", "catalog_stats", "catalog_tag", "catalog_classify", "catalog_review", "catalog_publish", "catalog_health", "catalog_skill_sync", "catalog_handoff", "catalog_mcp", "catalog_runtime"];
 for (const name of requiredNames) {
 	ok("存在工具 " + name, tools.some((tool) => tool.name === name));
 }
@@ -518,10 +521,17 @@ ok("视图持久化的读、写都有 try（存储被禁用时不拖垮渲染）
 	return readBlock.includes("try {") && readBlock.includes("catch (error)") && writeBlock.includes("try {") && writeBlock.includes("catch (error)");
 })());
 ok("读视图前先判断 typeof localStorage（无头 / 禁用存储都不能假设存在）", /typeof localStorage !== "undefined" \? localStorage\.getItem/.test(clientSource) && clientSource.includes('if (typeof localStorage === "undefined") return false'));
-ok("只持久化视图键（data / detail 不入库）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*"data"/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*"detail"/.test(clientSource));
+const viewKeysMatch = /const VIEW_KEYS = \[([^\]]*)\]/.exec(clientSource);
+const viewKeys = viewKeysMatch ? Array.from(viewKeysMatch[1].matchAll(/"([^"]+)"/g)).map((match) => match[1]) : [];
+ok(
+	"只持久化视图键（data / detail / picked / action 都不入库）",
+	["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter", "density", "hintDismissed"].every((key) => viewKeys.includes(key)) &&
+		!["data", "detail", "picked", "action", "trash"].some((key) => viewKeys.includes(key)),
+	viewKeys.join(","),
+);
 ok("滚动位置恢复只发生一次（用 ref 挡后续轮询重渲染）", /const restoredScroll = useRef\(false\)/.test(clientSource) && /if \(restoredScroll\.current \|\| !data\) return;/.test(clientSource));
 ok("换筛选 / 换页后回到顶部（否则第 2 页第一条落在屏幕外）", clientSource.includes('"page" in patch') && clientSource.includes("panel.scrollTop = 0"));
-ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel", id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
+ok("滚动容器有稳定 id（恢复位置靠它）", clientSource.includes('id: "dpc-panel"') && /className: "dpc-panel" \+ \(state\.density === "compact" \? " is-compact" : ""\), id: "dpc-panel", onScroll: rememberScroll/.test(clientSource));
 ok("滚动落盘有节流（300ms 内不重复写 localStorage）", /if \(now - scrollSavedAt < 300\) return;/.test(clientSource));
 
 /* ─────────── R4（2026-10-22 第三轮）：体积懒算 / 导出当前筛选 / 0 值置灰 ───────────
@@ -549,7 +559,7 @@ ok("0 值档位有置灰类（.dpc-insight.is-empty）", cssSource.includes(".dp
 ok("/sizes 批量路由注册了", routeSource.includes('path === "/sizes" && method === "POST"'));
 ok("批量体积上限 200 条", /\.slice\(0, 200\)/.test(serviceSource) && serviceSource.includes("async entrySizes(ids)"));
 ok("批量体积并发 4（串行会让 20 个选中项等到几秒）", serviceSource.includes("Math.min(4, Math.max(1, queue.length))"));
-ok("选中项不进 localStorage（重启后不留幽灵批次）", /const VIEW_KEYS = \["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter"\]/.test(clientSource) && !/VIEW_KEYS = \[[^\]]*picked/.test(clientSource));
+ok("选中项不进 localStorage（重启后不留幽灵批次）", viewKeys.includes("dormantOnly") && !viewKeys.includes("picked") && !viewKeys.includes("picking"));
 ok("选择模式下点卡片是选中，不是开浮窗", /onClick: \(\) => \(picking \? props\.onPick\(item\.id\) : openEntry\(item\)\)/.test(clientSource));
 ok("退出选择模式会清空选中", /function togglePicking\(\)/.test(clientSource) && /picked: picking \? store\.picked : \[\]/.test(clientSource));
 ok("选中态与批次条都有样式（is-picked / dpc-pickedbar / dpc-pick-badge）", [".dpc-card.is-picked{", ".dpc-pickedbar{", ".dpc-pick-badge{"].every((needle) => cssSource.includes(needle)));
@@ -932,7 +942,7 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.33.0 / r33.0", /"version": "0\.33\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r33.0"'));
+ok("版本号与构建戳同步抬到 0.35.0 / r35.0", /"version": "0\.35\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r35.0"'));
 
 
 ok(
@@ -1392,6 +1402,67 @@ const handoffProbeSource = readFileSync(new URL("./probe-handoff.mjs", import.me
 ok("交接单是纯函数（buildHandoff / renderHandoff，九项核对 + verdict + 下一步）", handoffSource.includes("export function buildHandoff") && handoffSource.includes("export function renderHandoff") && handoffSource.includes("HANDOFF_VERSION") && handoffSource.includes("checks.length") === false && handoffSource.includes('"version"') && handoffSource.includes('"ship"'));
 ok("service 汇总既有结论（ship 报告 / git / drift / history / 最新导出），不新扫目录", serviceSource.includes("async handoffReport(") && serviceSource.includes("const PLUGIN_ROOT") && serviceSource.includes("^ship-") && serviceSource.includes("divergenceVsUpstream") && serviceSource.includes("buildHandoff({"));
 ok("工具 catalog_handoff 默认只读、write:true 才落 reports/；hosttest 锁十一项（含 freshness）", toolsSource.includes('name: "catalog_handoff"') && toolsSource.includes("handoffReport({ write: args.write === true })") && hosttestSource.includes("catalog_handoff 返回十一项核对") && hosttestSource.includes('check.id === "freshness"') && handoffProbeSource.includes("H1 ") && handoffProbeSource.includes("H1c ") && handoffProbeSource.includes("H8 "));
+
+/* ⑫ R35：运行期真相层 + 卡片动作（卸载 / 停用 / 删 Skill / 停用或删 MCP）
+   这一轮的红线比功能多，所以自检分两类：
+     · **判据必须纯**：`lib/runtime.mjs`、`lib/actions.mjs` 不 import fs —— 否则探针没法独立重算，
+       只能靠"在真机上试一下"，而真机上的删除是不可逆的；
+     · **动作只走面板**：不注册成工具（模型拿不到"删用户东西"这个动作），写盘一律两段式 + confirm + 备份。 */
+const runtimeSource = readFileSync(new URL("../lib/runtime.mjs", import.meta.url), "utf8");
+const actionsSource = readFileSync(new URL("../lib/actions.mjs", import.meta.url), "utf8");
+const disposeSource = readFileSync(new URL("../lib/dispose.mjs", import.meta.url), "utf8");
+const runtimeProbeSource = readFileSync(new URL("./probe-runtime.mjs", import.meta.url), "utf8");
+const actionsProbeSource = readFileSync(new URL("./probe-actions.mjs", import.meta.url), "utf8");
+
+ok("R35 运行期判据是纯函数（不 import fs / 不读盘，探针才能独立重算）", /@module/.test(runtimeSource) && !/from "node:fs/.test(runtimeSource) && !/readFile|readdir|stat\(/.test(runtimeSource));
+ok("R35 动作判据是纯函数（不 import fs、不 import 执行层）", !/from "node:fs/.test(actionsSource) && !/from "\.\/dispose/.test(actionsSource) && actionsSource.includes("export function planSkillDelete") && actionsSource.includes("export function planMcpRemove"));
+ok("R35 读不到运行期一律 unknown，绝不猜成 active（这是这一层最贵的错）", runtimeSource.includes('if (!index || !(index.byPackage instanceof Map)) return empty') && RUNTIME_STATES.includes("declared-absent") && runtimeOf({ kind: "plugin", loadState: "bundle" }, null).state === "unknown");
+ok("R35 moduleName 带子路径按包名归一（否则每条都判「Loader 里没有」）", indexRuntime([{ entryId: "e", moduleName: "@scope/pkg/sub", enabled: true, fiberPhase: "active" }]).byPackage.has("@scope/pkg"));
+ok("R35 三类问题（failed / declared-absent / mismatch）单列，且 Skill 上伪造的 failed 不算", (() => {
+	const issues = runtimeIssues([{ kind: "plugin", runtimeState: "failed" }, { kind: "plugin", runtimeState: "declared-absent" }, { kind: "plugin", runtimeState: "active", runtimeIssue: "不一致" }, { kind: "skill", runtimeState: "failed" }]);
+	return issues.failed.length === 1 && issues.absent.length === 1 && issues.mismatch.length === 1 && issues.total === 3;
+})());
+ok("R35 service：运行期 20 秒缓存 + 读失败时 index=null（给空 Map 会让声明层全判缺失）", serviceSource.includes("async refreshRuntime(") && /const ttl = 20 \* 1000/.test(serviceSource) && /error === "" \? index : null/.test(serviceSource) && serviceSource.includes("await this.refreshRuntime();"));
+ok("R35 条目合并运行期字段（listEntries 走 mergeRuntime，不是各处自己拼）", /const plugins = mergeRuntime\(/.test(serviceSource) && serviceSource.includes("this.runtimeCache?.index || null") && serviceSource.includes("runtimeState:"));
+ok("R35 /state 与 /health 都带 runtime 与 actions（面板/工具/交接同一个来源）", serviceSource.includes("runtime: {") && serviceSource.includes("version: RUNTIME_VERSION") && serviceSource.includes("actions: {") && serviceSource.includes("version: ACTIONS_VERSION") && serviceSource.includes("journalFile: this.actionJournalFile()"));
+ok("R35 工具面新增 catalog_runtime（只读）；**动作没有注册成工具**（模型拿不到删东西的动作）", tools.some((tool) => tool.name === "catalog_runtime") && toolsSource.includes('name: "catalog_runtime"') && !toolsSource.includes("catalog_action") && !tools.some((tool) => ["uninstall_plugin", "delete_skill", "delete_mcp"].includes(tool.name)) && !requiredNames.some((name) => name.includes("remove") || name.includes("delete")));
+ok("R35 路由：/runtime 只读、/action/plan 出计划、/action/apply 要 confirm、/action/trash 还原要 confirm", routeSource.includes('path === "/runtime" && method === "GET"') && routeSource.includes('path === "/action/plan" && method === "POST"') && /path === "\/action\/apply"[\s\S]{0,400}confirm !== true/.test(routeSource) && /path === "\/action\/trash"[\s\S]{0,900}body\.confirm !== true/.test(routeSource));
+ok("R35 动作两段式：计划 5 分钟一次性 token + 执行闸 + 留痕；插件卸载复用 R32 的 removal token", serviceSource.includes("ACTION_PLAN_TTL_MS") && serviceSource.includes("this._actionPlans.delete(token)") && serviceSource.includes("this._actionInFlight") && serviceSource.includes("removalToken") && serviceSource.includes("appendActionJournal("));
+ok("R35 Skill 删除是可逆的：移进回收站（rename → cp 回退），绝不 unlink 硬删", actionsSource.includes("移到回收站") && disposeSource.includes("export async function moveToTrash") && disposeSource.includes("await rename(dir, to)") && disposeSource.includes("export async function restoreFromTrash") && /existsSync\(item\.from\)/.test(disposeSource) && !/unlink\(|unlinkSync|rmdir\(|rmdirSync/.test(disposeSource));
+ok("R35 组合文件写盘：先备份、原子写（tmp+rename）、写后校验、校验失败自动回滚", disposeSource.includes("export async function rewriteTextFile") && disposeSource.includes('file + ".bak-" + stamp') && disposeSource.includes("await rename(tmp, file)") && disposeSource.includes('code: "verify-failed"') && disposeSource.includes("copyFile(backup, file)") && disposeSource.includes("rolledBack"));
+ok("R35 MCP 删除必须定位到条目块并做删后校验（目标少一条、别的不少、总数只少 1）", actionsSource.includes("export function findEntryBlock") && actionsSource.includes("export function verifyEntryRemoved") && (() => {
+	const text = "- id: a\n  name: x\n- id: b\n  name: y\n";
+	const block = findEntryBlock(text.split("\n"), { id: "a" });
+	const after = removeBlock(text, block);
+	return verifyEntryRemoved(text, after, "a").ok === true && verifyEntryRemoved(text, after, "b").ok === false;
+})());
+ok("R35 MCP 停用是幂等的（同一 id 不重复追加），且只写 id + disabled", appendDisableEntry("- id: x\n  disabled: true\n", { entryId: "x" }).changed === false && appendDisableEntry("", { entryId: "y" }).text.includes("  disabled: true") && !appendDisableEntry("", { entryId: "y" }).text.includes("serverName"));
+ok("R35 面板：卡片底部操作区常显；卡片是 div[role=button]（嵌套按钮不会被甩出去）", clientSource.includes("function CardActions(props)") && clientSource.includes("dpc-card-actions") && /role: "button",\s*\n\s*tabIndex: 0,/.test(clientSource) && !/return h\(\s*"button",\s*\{\s*className: "dpc-card/.test(clientSource));
+ok("R35 面板：动作条点击不冒泡（否则点卸载会同时打开详情浮窗）", clientSource.includes("onClick: (event) => event.stopPropagation()") && /className: "dpc-card-actions"/.test(clientSource) && /function ActionPanel\(props\)/.test(clientSource) && clientSource.includes("步骤 1/2 · 看计划"));
+ok("R35 面板：阻断项原样摊开（为什么不能删比按钮灰着有用）；确认按钮只在拿到 token 后可点", clientSource.includes("plan.blockers || []") && clientSource.includes("plan.warnings || []") && clientSource.includes("Boolean(action.token) && !action.busy && !blocked && !action.result"));
+ok("R35 面板：卡片上的运行期 chip + 「运行期问题 N」筛选 + 筛选摘要（133 条里为什么只剩 3 条）", clientSource.includes("runtimeLabel(item)") && clientSource.includes("runtimeIssueCountOf") && clientSource.includes("运行期问题 ") && clientSource.includes("function clearOneFilter(key)") && cssSource.includes(".dpc-filterbar{"));
+ok("R35 面板：密度（紧凑）/ 吸顶工具条 / 空态可清除 / 首次使用提示 —— 四个都是「看 133 条」的习惯问题", clientSource.includes('state.density === "compact" ? " is-compact" : ""') && cssSource.includes(".dpc-toolbar-sticky{") && clientSource.includes("dpc-empty-title") && clientSource.includes("hintDismissed"));
+ok("R35 面板：回收站浮层能还原（Skill 删除的后悔药在界面上，不只在文件里）", clientSource.includes("function TrashModal(props)") && clientSource.includes('post("/action/trash", { action: "restore", id, confirm: true })') && clientSource.includes("还原到原位"));
+ok("R35 新类名都有样式定义", [".dpc-card-actions{", ".dpc-act{", ".dpc-act.is-danger{", ".dpc-actionbox{", ".dpc-actionbox-block{", ".dpc-runtime.is-bad{", ".dpc-trash-row{", ".dpc-panel.is-compact .dpc-card{"].every((needle) => cssSource.includes(needle)));
+ok("R35 两个新探针都登记在 probe-list（没挂链的探针等于没写）", PROBES.some((probe) => probe.id === "runtime") && PROBES.some((probe) => probe.id === "actions") && runtimeProbeSource.includes("R1 ") && /process\.exit\(/.test(runtimeProbeSource) && actionsProbeSource.includes("A1 ") && /process\.exit\(/.test(actionsProbeSource));
+ok("R35 动作名冻结且计划有效期是 5 分钟（与 R32 单件卸载同一口径）", ACTION_OPS.join(",") === "uninstall,disable,enable,delete,remove" && ACTION_PLAN_TTL_MS === 5 * 60 * 1000);
+ok("R35 Skill 删除的阻断判据覆盖三件真事：随插件安装 / 没有目录 / 不在已知根下", planSkillDelete({ kind: "skill", realDir: "D:\\x", hostPlugin: "p" }, {}).blockers.some((b) => b.code === "host-plugin") && planSkillDelete({ kind: "skill", realDir: "" }, {}).blockers.some((b) => b.code === "no-dir") && planSkillDelete({ kind: "skill", realDir: "C:\\x" }, { roots: ["D:\\skills"] }).blockers.some((b) => b.code === "outside-roots"));
+ok("R35 MCP 删除对 bundle 层条目必须阻断（删它等于改安装包，重装就回来）", planMcpRemove({ entryId: "a", file: "D:\\p\\node_modules\\dsh-x\\cordis.patch.yml" }, { profileFiles: [{ file: "D:\\p\\cordis.patch.yml", text: "- id: a" }] }).blockers.some((b) => b.code === "bundle-layer"));
+ok("R35 摘要函数读不到时如实说（不写成 0 条）", summarizeRuntime({ available: false, reason: "no pluginManager" }).includes("读不到"));
+/* R35.1：真机第一跑就撞上的 7 条假警报 —— bundle 是「层」，不一定是 loader 条目。
+   钉两件事：① transitive / bundle-layer 不判 declared-absent；② bundle 的健康问 listBundles()。 */
+ok("R35 bundle 是「层」：transitive 与已知 bundle 层都不判 declared-absent（否则本机 7 条假警报）", (() => {
+	const withBundles = indexRuntime([], { bundles: [{ name: "@deepseek-ai/dsh-base", enabled: true, availability: "installation" }] });
+	const plain = indexRuntime([]);
+	return runtimeOf({ kind: "plugin", packageName: "@deepseek-ai/dsh-base", loadState: "bundle" }, withBundles).state === "unknown" &&
+		runtimeOf({ kind: "plugin", packageName: "@dsh-ops/bash-win32-x64", loadState: "transitive" }, withBundles).state === "unknown" &&
+		runtimeOf({ kind: "plugin", packageName: "dsh-plain", loadState: "bundle" }, withBundles).state === "declared-absent" &&
+		runtimeOf({ kind: "plugin", packageName: "dsh-plain", loadState: "bundle" }, plain).state === "declared-absent";
+})());
+ok("R35 bundle 健康来自 listBundles()（missing / error 分开点名），service 真的传了它", serviceSource.includes("pm.listBundles()") && serviceSource.includes("indexRuntime(list, { bundles })") && (() => {
+	const ix = indexRuntime([], { bundles: [{ name: "a", enabled: true, availability: "missing" }, { name: "b", enabled: true, availability: "profile", error: { code: "incompatible-version" } }] });
+	return ix.bundles.problems.length === 2 && ix.bundles.problems.some((item) => item.kind === "missing") && ix.bundles.problems.some((item) => item.kind === "error");
+})());
 
 /* ⑦ 文档 */
 ok("双语 README 都写了配置层与 dev/probe-composition.mjs", readmeZh.includes("catalog_composition") && readmeEn.includes("catalog_composition") && readmeZh.includes("dev/probe-composition.mjs") && readmeEn.includes("dev/probe-composition.mjs"));

@@ -28,6 +28,11 @@ export const PROBES = Object.freeze([
 	/* R34：留存与「还新不新」—— 快照陈旧判据（事实 vs 年龄）/ 每周任务全失败不许伪装成跑过 /
 	   reports/ 保留策略（只动自己那五种前缀、md+json 同组、留最新 N 组） */
 	{ id: "retention", label: "留存与陈旧", file: "dev/probe-retention.mjs" },
+	/* R35：运行期真相（fiberPhase 与声明层对账）—— 读不到不许猜成 active、子路径按包名归一 */
+	{ id: "runtime", label: "运行期真相", file: "dev/probe-runtime.mjs" },
+	/* R35：卡片动作判据 —— YAML 条目块切分/删除校验/停用幂等/Skill 可逆删除/MCP 阻断，
+	   合成文本，全程不碰真实 profile 与 Skill 目录 */
+	{ id: "actions", label: "卡片动作判据", file: "dev/probe-actions.mjs" },
 ]);
 
 /** 探针个数（文档里「11 个」的那个数）。 */

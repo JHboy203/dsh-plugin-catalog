@@ -31,6 +31,21 @@ node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "<插件目录>"
 
 装完**必须完全重启 DSH**（`dsh.profile.bundles` 与 `cordis.patch.yml` 都是启动期读的）。
 
+从 GitHub 安装（开源版，私有/公开仓都适用）：
+
+```bash
+# 1) 克隆到工作区（不要直接克隆进 profile/node_modules）
+git clone https://github.com/<you>/dsh-plugin-catalog.git "D:/你的工作区/DSH-Plugin/dsh-plugin-catalog"
+# 2) 用本机的安装脚本装成 junction（同样不要用 pnpm，理由见上）
+node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "D:/你的工作区/DSH-Plugin/dsh-plugin-catalog"
+# 3) 完全退出并重启 DSH；侧栏出现「插件目录」即成功
+```
+
+**环境要求**：DSH `0.2.1+`（用到 `pluginManager.listPlugins/removeBundle/setBundleEnabled`）、Node 24、Windows / macOS / Linux 均可（路径按平台分隔符处理）。
+**没有** `.tools/dsh-plugin-install.cjs` 的机器：把目录放进 `profile/node_modules/dsh-plugin-catalog`（junction 或实体目录都行），
+再把包名加进 `profile/package.json` 的 `dsh.profile.bundles`，重启 DSH。
+**卸载**：面板卡片底部「卸载」（走宿主 `removeBundle`），或从 `dsh.profile.bundles` 去掉包名后删除目录。
+
 装完检查一下有没有埋雷：
 
 ```bash
@@ -94,8 +109,32 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   **还原计划**（方向 `backup → staging`、覆盖谁、备份落在哪），再点「确认还原」才写盘；覆盖前把 staging 当前那份
   另存成新 `.bak`，**还原本身也能再撤销**。只动 staging，永远不碰 DSH 加载的那份；工具侧是 `catalog_skill_sync action=restore`
   - **R28：不只能还原"最近一份"** —— 确认条下面会把**更早的几份**也列出来（最近 8 份里除当前目标之外的最多 4 个），点哪一个就换成还原它、重新出计划，仍然要按「确认还原」才写盘。工具侧对应 `restore` + `backup=<时间戳 或全名>`；点名的那份不存在时**明说**「没有这份备份（现有 N 份：…）」，不会静默退回最近一份
-- **会不会被加载（R12）**：`enabled`（在不在 `dsh.profile.bundles`）**不是**加载判据 ——
-  `cordis.yml` / `cordis.patch.yml` 的顶层条目按 `name:` 能直接挂包，依赖链也会把包带起来。
+- **运行期真相（R35）**：目录的「会不会被加载」是**声明层**判据；面板另有**运行期**判据 ——
+  直接读宿主 Loader 的 `fiberPhase`（`pending / loading / active / failed / unloading`）与 `enabled`，
+  专抓声明层看不见的三类事：① **`fiberPhase = failed`**（插件被加载但 `apply` 抛错 —— 面板照常渲染、
+  它的工具与路由已经被回滚）；② **声明在 `dsh.profile.bundles` 里、Loader 里却没有这一条**
+  （宿主启动时按版本/依赖 skip 了它）；③ 声明与运行时打架（`enabled:false` 却 active）。
+  卡片上只在**有问题**时给一枚 chip（`运行期失败` 红 / `不在 loader` 琥珀 / `已停用` 灰），
+  洞察条多一颗「运行期问题 N」，点一下只看这些；头部横幅会点名具体插件。
+  ⚠️ 读不到运行期（旧宿主 / 没有 `pluginManager`）时一律 `unknown` + 一句原因，**绝不猜成 active**。
+- **卡片底部直接操作（R35）**：点卡片仍然打开详情；**卡片最下面**一排小按钮可以直接做事 ——
+  插件：`详情 / 复制路径 / 停用（或启用）/ 卸载`；Skill：`详情 / 复制路径 / 删除`；
+  MCP：`详情 / 停用 / 删除条目`。点动作只**出计划**（只读：会改什么、阻断项、警告、目标、备份位置），
+  确认条里再点一次「确认 …」才真执行；计划是**一次性 token**（5 分钟过期），刷新即失效。
+  - 插件卸载走宿主 `pluginManager.removeBundle()`（源码一个字节都不动；link 安装时只去掉那条依赖）
+  - 插件停用/启用走 `setBundleEnabled` / `setPluginEnabled`（保留文件与依赖）
+  - **Skill 删除 = 移进回收站** `<数据目录>/trash/skills/`，头部「回收站」里可以直接**还原到原位**
+    （原位已有同名目录时拒绝覆盖）。随插件安装的 Skill、没有独立目录的、不在已知 Skills 根目录下的，一律**阻断**并说明原因
+  - MCP `停用` = 往 profile 的 `cordis.patch.yml` 追加一条按 id 覆盖的 `disabled: true`（幂等，**重启 DSH** 生效）；
+    MCP `删除条目` = 从组合文件里删掉那一段（写前 `.bak-<时间戳>` 备份、写后重新解析校验：
+    目标少一条、别的条目一条不少、总数只少 1，校验不过**自动回滚**）。bundle 自带 patch 层里的条目不给删（那是改安装包）
+  - 命中阻断项时，确认按钮禁用，但**原因原样摊开** —— "为什么不能删"比"按钮灰着"有用得多
+  - **这些动作没有注册成工具**：模型拿不到"删用户东西"这个动作，只有人在面板上点了才会发生
+- **顺手的小习惯（R35）**：工具条**吸顶**（长列表滚动时搜索与筛选仍在）；「密度」一键在舒适/紧凑之间切换
+  （紧凑模式隐藏英文原文、压缩行距 —— 一条条扫 133 张卡时更好用，记在本地）；只要有筛选生效，
+  工具条下面就有一行**筛选摘要**，每个条件都能单独摘掉，右侧「清除全部」；空态会说清"为什么空"并给一键清除；
+  首次打开有一行**引导提示**（点过就记住）—— 卡片底部的操作是新入口，不提示的话没人会往下看
+- **会不会被加载（R12）**：`enabled`（在不在 `dsh.profile.bundles`）**不是**加载判据 ——  `cordis.yml` / `cordis.patch.yml` 的顶层条目按 `name:` 能直接挂包，依赖链也会把包带起来。
   面板按入口算四态：`bundles` 直接启用 / 配置条目挂载 / 随某个入口（依赖链）加载 /
   **不会被加载**（三条都不沾）。卡片只给两枚 chip（`不会被加载` 灰、`配置入口` 蓝），
   浮窗写出「随 `dsh-ops` 加载」这类具体链路，工具条有「不会被加载 N」筛选 ——
@@ -276,6 +315,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 |---|---|
 | `catalog_list` | 列出所有插件与 Skill（可按来源/类型/关键字过滤）；**R30 起 `kind=mcp` 只看 MCP 服务器** |
 | `catalog_mcp` | **MCP 服务器**：每台 = 组合文件里一条 `@deepseek-ai/dsh-mcp-client` 条目（serverName / 传输 / 命令或 URL / 开或关 / 文件:行），按**官方 / 第三方 / 自己配置**三分类计数，`mcp__<serverName>__<tool>` 的调用按服务器归属；`view=orphans` 找孤儿调用（指向已删/改名的服务器），`view=problems` 看配置问题，`view=template` 给三段可抄写法。只读，`env`/`headers` 的值从不显示 |
+| `catalog_runtime` | **运行期真相（R35）**：宿主 Loader 里每个插件的 `fiberPhase` / `enabled` 与目录的声明层对账 —— 抓 `fiberPhase=failed`、**声明会加载但 Loader 里没有**、声明与运行时打架三类；读不到就如实说读不到。只读 |
 | `catalog_stats` | 全局概览，或某个条目的分工具明细 + 会话列表 |
 | `catalog_tag` | 列标签 / 打标签（单个 `id`＝整条替换；批量 `ids`＝只加不减）/ **批量去标签**（`action=untag`）/ 新增自定义标签（必须给解释）/ 删标签 / **手工改来源**（`action=source`）/ **手工改工具归属**（`action=tool-owner`） |
 | `catalog_classify` | AI 自动打标签（会读自定义标签的解释） |
@@ -305,6 +345,61 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 - `env` / `headers` 的**值永不下发**到浏览器或报告，只给键名；url 的 userinfo 与 query 隐藏。
 - 「孤儿调用」= 统计里出现过 `mcp__<server>__*`，但组合文件里现在没有这台服务器 —— 删过条目或改了 `serverName`；`catalog_health` / 交接单会把它标成 warn。
 
+## 运行期真相与卡片操作（R35）
+
+**两件事必须分开看**：*声明层*回答"按配置会不会被加载"，*运行期*回答"宿主 Loader 里它到底怎么了"。
+本插件两个都有，而且互不替代。
+
+### 运行期真相（`catalog_runtime` / 卡片 chip / 洞察条）
+
+| 运行期状态 | 含义 | 面板上怎么显示 |
+|---|---|---|
+| `active` | Loader 里在跑；声明层也一致 | 不占版面（133 张卡不该每张顶一个绿标） |
+| `failed` | `fiberPhase = failed`：`apply` 抛过错，工具/路由可能已回滚 | 红色 chip「运行期失败」+ 头部横幅点名 |
+| `declared-absent` | 声明层说会加载，Loader 里**没有这一条**（启动时被 skip） | 琥珀 chip「不在 loader」 |
+| `pending / loading / unloading` | 正在加载/卸载 | 琥珀 chip |
+| `disabled` | Loader 里 `enabled=false`，且不在 bundles（合法停用） | 灰色 chip「已停用」 |
+| `unknown` | 读不到运行期（旧宿主 / 没有 `pluginManager`） | 不显示，`/health` 与工具里有原因 |
+
+判据在 `lib/runtime.mjs`（纯函数）：`moduleName` 带子路径时按包名归一；同一个包多条 Loader 条目时
+取"最能说明问题"的那条（failed 优先）；**读失败给 `index = null`**，而不是空表 ——
+用空表会把所有"声明会加载"的条目全判成 `declared-absent`，面板立刻一片假警报。
+
+**两类"看起来缺席、其实正常"的东西**（真机第一跑踩到的坑，已进自检）：
+bundle 是**层**（`@deepseek-ai/dsh-base` 就是 96 条 insert 的官方大层），它自己不作为插件运行；
+`transitive` 是 npm 依赖（`@dsh-ops/bash-win32-x64` 是原生二进制），本来就不注册 Loader 条目。
+所以 `declared-absent` 只对**非 bundle 的普通插件**与 `config` 条目成立；bundle 的健康改问
+`listBundles()` 的 `availability / error`，而且**只对 `enabled === true` 的 bundle 报** ——
+离线官方目录里"可选但没装"的条目（本机 `dsh-subagent-claude-code` / `-codex`）不算故障。
+
+### 卡片上的五个动作（只走面板，不注册成工具）
+
+| 动作 | 怎么做 | 可逆吗 | 生效 |
+|---|---|---|---|
+| 插件 `卸载` | 宿主 `pluginManager.removeBundle()`（不碰文件系统，不删源码） | 重新装回即可；profile 依赖与 bundle 行由宿主收 | 立即 |
+| 插件 `停用 / 启用` | `setBundleEnabled`（在 bundles 里）或 `setPluginEnabled`（Loader 条目） | 再点一次启用 | 立即 |
+| Skill `删除` | 整目录移进 `<数据目录>/trash/skills/`（`rename`，跨卷回退"先复制再删源"） | **可以**：面板「回收站」→「还原到原位」 | 立即（下次扫描后消失） |
+| MCP `停用` | 往 profile `cordis.patch.yml` **追加 2 行**（`- id: …` + `disabled: true`），只按 id 覆盖 | 删掉那 2 行 / 再改 `disabled: false` | **重启 DSH** |
+| MCP `删除条目` | 从 profile 的组合文件里删掉该条目块 | 文件旁留了 `.bak-<时间戳>` | **重启 DSH** |
+
+三条安全纪律（都有自检钉死）：
+
+1. **两段式**：点动作只出**计划**（`POST /action/plan`：可不可用、阻断项、警告、目标、备份/回收站位置）；
+   确认条里再点一次才执行（`POST /action/apply` 必须带一次性 token + `confirm:true`，5 分钟过期）。
+2. **写前备份、写后校验**：改组合文件先复制 `.bak-<时间戳>`，再写临时文件 + `rename` 原子替换；
+   然后重新解析校验（目标 id 少一条、别的条目一条不少、总数只少 1），**校验不过自动把备份写回去**。
+   Skill 删除本身就是"移动"，所以回收站就是它的备份。
+3. **留痕**：每次动作（成功与失败）追加一条到 `<数据目录>/actions-journal.json`（最多 100 条），
+   面板与 `catalog_health` 都能看到最近几条 ——"它怎么不见了"要能查到是谁、什么时候干的。
+
+**边界（如实）**：
+
+- MCP 只处置 **profile 自己那两份组合文件**里的条目；bundle 自带 patch 层里的条目（`node_modules/<bundle>/cordis.patch.yml`）**阻断** ——
+  删它等于改安装包，重装/升级就回来了。MCP 的解析器也只看 profile 两份文件（bundle 层的 `config:` 最小解析器读不懂）。
+- 插件卸载**不删源码**：自写插件通常是 junction，卸载只去掉依赖与入口。想彻底删，先卸载、再自己删工作区目录。
+- 随插件安装的 Skill（`assets/skill/` / `skill/`）**不给删** —— 请卸载插件或改插件源码。
+- 运行期真相依赖宿主 `pluginManager.listPlugins()`；没有它的老宿主上这一层退化为「读不到」，面板其余功能不受影响。
+
 ## 数据与隐私
 
 全部落在**工作区** `.dsh-plugin-catalog/`（不写插件安装目录 —— 升级/重装即丢）：
@@ -319,6 +414,8 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `intros.json` | 中文简介缓存（可手改） |
 | `weekly.json` | 每周任务上次执行时间与结果 |
 | `settings.json` | 设置 |
+| `actions-journal.json` | **R35**：卡片动作的留痕（成功与失败都记，最多 100 条；没有 token / 没有文件正文） |
+| `trash/skills/` + `trash/skills.json` | **R35**：Skill 删除的回收站（整目录 + 索引，可在面板里还原） |
 
 **红线：统计里只有会话 ID、会话昵称、时间戳、工具名、计数。没有任何对话文本。**
 工具参数只在解析 `skill` 调用取技能名时被读一次，随后丢弃。
@@ -421,6 +518,13 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
    本插件只做**清点、判据、处置清单、对账、导出**。★ 曾计划过一个 `catalog_import`，评估后**主动不做**：
    两套安装路径会各写各的快照与回滚，出问题时谁也没法证明是哪一套写的。两边的关系是"它装、我核"——
    装完回面板看 `loadState` 是否 loaded、进了 `catalog_mcp` / `catalog_list` 没有。
+   **R35 的卡片动作是例外，且只走面板**：卸载 / 停用 / 删 Skill / 删 MCP 由人点、服务端两段式确认；
+   它们**没有注册成工具**（模型拿不到"删用户东西"这个动作）。
+0b. **R35 动作层的三条边界**：MCP 只处置 profile 自己那两份组合文件（bundle 自带的 patch 层阻断）；
+   插件卸载不删源码（junction 只去掉依赖与入口）；随插件安装的 Skill 不给删。详见「运行期真相与卡片操作（R35）」。
+0c. **运行期真相依赖宿主 `pluginManager.listPlugins()`**：没有它的老宿主上这一层退化为「读不到」
+   （面板与工具都会如实说原因），其余功能不受影响。`fiberPhase=failed` 只能告诉你"它失败了"，
+   具体错误仍在宿主日志 / `plugin_manager set_plugin` 的 `diagnostic` 里。
 1. **私有仓拿不到平台级安全扫描**：GitHub 的 Secret Scanning / Dependabot / Push Protection 需要付费 GHAS。
    所以「依赖已知高危」只能靠本地规则与模型常识，**准确度低于平台级扫描**。
 2. **Skill 的调用统计只能到「次数 + 最近一次时间」**，无法细分到会话 —— 这是机制限制，界面上有标注。
@@ -517,7 +621,7 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
-**发版 / 交接前只跑这一条**（三层自检 + **13 个独立探针（351 条）** + 副本同步 + 版本一致性 + git，约 60 秒）：
+**发版 / 交接前只跑这一条**（三层自检 + **15 个独立探针（426 条）** + 副本同步 + 版本一致性 + git，约 60~90 秒）：
 
 ```bash
 node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
@@ -530,7 +634,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **13 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧**，共 351 条，约 6 秒） | 算失败 |
+| `probes` | **15 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧** / **运行期真相** / **卡片动作判据**，共 426 条，约 6 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -556,16 +660,16 @@ node dev/deliver.mjs --base http://127.0.0.1:<GUI端口>
                             #   判据三条：ship 全绿 / 运行中与磁盘一致 / 没有悬空项（未提交 / 未推送 / staging 旧了 / 该重启）。
                             #   退出码 0 = 可以换会话；报告 `.cache/deliver-<时间戳>.md`；--skip-ship 省 40 秒。
                             #   ★ 不提交、不推送、不同步 —— 写盘动作一律由人显式发起。
-node dev/audit.mjs         # 自洽（607 项）：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（沙箱可跑；R31 起多 22 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在、`/state` 字节数经 `noteTransport` 进 health；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
-node dev/render-check.cjs  # 界面：卡片内容/搜索(含工具名)/洞察条/排序(含体积)/列表分页/浮窗/体积四态/依赖 chip/加载态 chip 与置灰/自检按钮/体检结论卡/**处置清单卡（分类 chip 与二次确认、卡内没有删除按钮）+ 预演结果块（安全态与风险态、没预演过就不出现）+ **对账结果块（结论与逐条原因同时出现 / 计划龄 / 白删与计划过期两张名单 / 卡内仍然没有删除按钮 / 没对账过就不出现）**+ **变化条（有变化才出现 / 点开才列明细 / 第一条与 0 处都不占版面 / 标记已看过后的确认窗口 / 正文已改措辞 / 更早窗口的历史时间线）** + **运行中版本与磁盘不一致时标「（未重载）」**/多选批次/副本同步/**同步 staging 三步与二次确认**/**历史备份行与还原确认条（R28：更早的备份可选，点一份就换目标）**/**配置层入口与浮层（概览 / 静态查不到 / 条件启用 / 关掉的 / 缺口公告只在 bad 时出现 / **R24 可点行跳卡片 + 在不在 bundles 的交叉引用** / **R25 变化明细点名到具体 id**）**/导出/空态（223 项，无需 DSH）
+node dev/audit.mjs         # 自洽（697 项）：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（沙箱可跑；R31 起多 22 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在、`/state` 字节数经 `noteTransport` 进 health；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
+node dev/render-check.cjs  # 界面（264 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **处置对账（工具读回计划并逐目录 stat / 四态计数 / 文案四段齐 / 路由直接回结果且默认不写盘）**+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本 + **配置层（/state.composition 形状 / 三组计数守恒 / 每条带 file+line / bundles 缺口守恒 / 工具 view / health 只给摘要 / 导出「配置层」一节）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 308 项；普通 node 里 302 通过 + 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
-node dev/live-check.mjs --base http://127.0.0.1:<GUI端口>  # 对**运行中的面板**只读核验（≈0.2 秒）：
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **处置对账（工具读回计划并逐目录 stat / 四态计数 / 文案四段齐 / 路由直接回结果且默认不写盘）**+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本 + **配置层（/state.composition 形状 / 三组计数守恒 / 每条带 file+line / bundles 缺口守恒 / 工具 view / health 只给摘要 / 导出「配置层」一节）** + **R35：运行期与动作层（/state.runtime 读不到时给原因 / /runtime 只读 / 动作层 journal 与 trash 位置 / 两段式 token 一次性 / Skill 删除→回收站→还原 / MCP 删除与停用真改临时文件且留 .bak / 留痕）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 351 项；普通 node 里 345 通过 + 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/live-check.mjs --base http://127.0.0.1:<GUI端口>  # 对**运行中的面板**只读核验（≈0.7 秒，21 条）：
                             # 版本一致 / 工具与目录在 / 时间线形状 / drift 带哈希与备份 / 还原计划只读 / 不带 confirm 的还原被拒
                             # ★ 端口每次重启都会变；走 host_selfcheck 跑（args 传 --base），不写任何文件
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
@@ -573,7 +677,13 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **13 个探针串成一条**（发版体检的第 5 项，共 351 条，约 6 秒）：
+node dev/run-probes.mjs       # **15 个探针串成一条**（发版体检的第 5 项，共 426 条，约 6 秒）：
+node dev/probe-runtime.mjs    # ★ R35：运行期真相（31 条）。fiberPhase 六相位 / moduleName 带子路径按包名归一 /
+                              #   同包多条取 failed 优先 / 读不到一律 unknown（绝不猜 active）/ declared-absent 只在
+                              #   "声明会加载"时成立 / 三类问题分开数 / 摘要读不到要如实说。纯函数不碰盘、不碰宿主
+node dev/probe-actions.mjs    # ★ R35：卡片动作判据（44 条）。YAML 条目块切分（顶层 + insert 块 + 行号提示失效）/
+                              #   删后校验（目标少一条、别的不少、总数只少 1）/ 停用幂等 / Skill 三阻断（随插件安装 /
+                              #   没目录 / 不在已知根）/ 路径前缀不误判兄弟目录 / MCP bundle 层阻断 / 已关掉不重复写
 node dev/probe-retention.mjs  # ★ R34：留存与陈旧（19 条）。快照「旧在哪」拆成 factStale（profile 变了 ⇒ 结论可能已错、
                               #   值得重建）与 ageStale（只是旧 ⇒ 结论仍有效）；每周任务全失败不许伪装成跑过（0 仓 ≠ 全失败）；
                               #   reports/ 保留策略（只动自己五种前缀 / md+json 同组 / 留最新 N 组 / 脏输入不抛）。纯函数不碰盘
@@ -638,7 +748,7 @@ node dev/ship.mjs            # 发版体检（上面那条）；--json 供面板
 ★ `dev/ship.mjs` 在**普通 node** 里跑时，hosttest 的 asar 断言会标 `SKIP`（读不到 `app.asar`），
 所以数字比面板点「自检」少一条；两者都如实打出来，不静默。
 
-**「在链」与「旧一代」两类探针（R31 起明确区分）**：上面这一串是**发版体检链上**的 11 个
+**「在链」与「旧一代」两类探针（R31 起明确区分）**：上面这一串是**发版体检链上**的 15 个
 （清单只有一份：`dev/probe-list.mjs` 的 `PROBES`）；`dev/` 里另有一批 R1–R9 的探索脚本
 （`probe-asar` / `probe-export` / `probe-gitops` / `probe-init` / `probe-publish` / `probe-catalog` /
 `probe-dupe` / `probe-multifile` / `probe-stats`），它们**不在链上**、多数只是打印而非断言，
@@ -652,6 +762,23 @@ audit 会核对 `dev/` 顶层的每个 `probe-*.mjs` 都在这两张表之一 �
 
 `dev/probe-gitops.mjs` 为什么存在：上传是最难在沙箱里验的一段（子进程 spawn 被禁），
 而真实仓不能拿来试 —— 所以在临时仓里真跑一遍，涵盖「还没第一次提交的新仓」这种边界。
+
+## 开源版说明（R35 收口）
+
+这个仓库按"别人 clone 下来能装、能跑、能自检"的标准整理过：
+
+- **许可证**：MIT（见 `LICENSE`）。可商用、可修改、可再分发，保留版权与许可声明即可。
+- **不联网、不上传**：除你自己点的「上传备份到 GitHub」「缺口分析」「安全审核」「AI 分类 / 生成简介」这些显式动作外，
+  插件只读本机。统计数据**只含**会话 ID / 昵称 / 时间 / 工具名 / 计数，**没有任何对话文本**。
+- **没有内置密钥**：AI 走宿主 `llm` 服务；上传走本机 `gh` / SSH 凭据。仓库里没有 token（`dev/ghbackup-scan` 那类夹具用了假密钥）。
+- **代码结构**：`index.js`（宿主入口 / 路由 / 工具注册）· `lib/`（判据层，多数是纯函数）· `client.js`（面板）·
+  `dev/`（自检与探针）。**判据与执行分开**是刻意的：能在合成数据上钉死的，就不靠"在真机上试一下"。
+- **自检**：宿主里跑 `node dev/ship.mjs`（一条命令）；换手前跑 `node dev/deliver.mjs --base <GUI端口>`。
+  面板头部「自检」按钮走同一条路。
+- **贡献**：提 PR 前请跑 `node dev/audit.mjs`、`node dev/render-check.cjs`、`node dev/hosttest.mjs`、
+  `node dev/run-probes.mjs`。新增判据请配一个**纯函数探针**（写法见 `dev/probe-actions.mjs` / `dev/probe-runtime.mjs`）；
+  动写盘路径的，必须同时覆盖"写前备份 / 写后校验 / 校验失败回滚"。
+- **不要在这里加安装逻辑**：「装」归 `dsh-plugin-installer` / `plugin_manager`，关系是"它装、我核"。
 
 ## 许可证
 

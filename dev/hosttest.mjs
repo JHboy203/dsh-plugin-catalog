@@ -13,7 +13,7 @@
  *   DSH_CATALOG_DIR=<临时目录> node dev/hosttest.mjs
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -76,7 +76,7 @@ const fakeTools = {
 		return () => {};
 	},
 	schemas() {
-		/* 真机上是 172+ 个工具；这里给 7 个 catalog_*（与真实注册数一致，否则
+		/* 真机上是 172+ 个工具；这里给 14 个 catalog_*（与真实注册数一致，否则
 		   /health 的"注册几个"必然对不上）+ 2 个代表性工具覆盖"官方/第三方"归属。 */
 		return [
 			{ name: "catalog_list", description: "列出本机所有 DSH 插件与 Skill（含来源四分类）。" },
@@ -87,6 +87,12 @@ const fakeTools = {
 			{ name: "catalog_publish", description: "把自写/混血插件与 Skill 备份到 GitHub 私有仓（plan → apply → public）。" },
 			{ name: "catalog_export", description: "把目录快照导出成 Markdown 报告，供交接与留证。" },
 			{ name: "catalog_health", description: "目录面板自检：版本、路径、统计覆盖、归属覆盖率。" },
+			{ name: "catalog_skill_sync", description: "检查并同步 Skill 的 staging 副本（plan / apply / restore）。" },
+			{ name: "catalog_uninstall", description: "生成「不会被加载」的处置清单（只生成、永不执行删除）。" },
+			{ name: "catalog_composition", description: "配置层声明：按 bundles 顺序合并各 bundle 的 patch 层。" },
+			{ name: "catalog_handoff", description: "交接单：版本 / 配置层 / 变化 / 副本 / git 十一项一屏。" },
+			{ name: "catalog_mcp", description: "MCP 服务器清单与调用归属（只读组合文件声明）。" },
+			{ name: "catalog_runtime", description: "运行期真相：Loader 的 fiberPhase 与声明层对账。" },
 			{ name: "read", description: "Read a UTF-8 text file and return line-numbered content." },
 			{ name: "pty_run", description: "在伪终端里跑一条命令并把输出原样带回来，用于需要交互的构建。" },
 		];
@@ -198,9 +204,9 @@ ok(
 );
 
 /* ── 工具契约 ── */
-eq("注册了 13 个工具", registeredTools.length, 13);
+eq("注册了 14 个工具", registeredTools.length, 14);
 const toolNames = registeredTools.map((tool) => tool.name).sort();
-eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_handoff", "catalog_health", "catalog_list", "catalog_mcp", "catalog_publish", "catalog_review", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
+eq("工具名齐全", toolNames, ["catalog_classify", "catalog_composition", "catalog_export", "catalog_handoff", "catalog_health", "catalog_list", "catalog_mcp", "catalog_publish", "catalog_review", "catalog_runtime", "catalog_skill_sync", "catalog_stats", "catalog_tag", "catalog_uninstall"]);
 for (const tool of registeredTools) {
 	ok(`工具 ${tool.name} 声明了 output.schema`, Boolean(tool.output && tool.output.schema));
 	ok(`工具 ${tool.name} 声明了 output.render`, typeof tool.output?.render === "function");
@@ -291,10 +297,37 @@ ok("/state 带 MCP 报告（计数 / 客户端包 / 模板）", Boolean(stateRou
 ok("/state 的 MCP.servers 是数组（0 台时是空数组，不是缺字段）", Array.isArray(stateRoute.json?.mcp?.servers));
 ok("/state 的 totals 里有 MCP 台数", typeof stateRoute.json?.totals?.mcp === "number", String(stateRoute.json?.totals && stateRoute.json.totals.mcp));
 
+/* R35：运行期真相 + 动作层 —— 这个 ctx 没有 pluginManager，所以读不到运行期是**合法**结论，
+   但必须如实说"读不到 + 原因"，并且 action 层给出 journal/trash 的位置。 */
+ok(
+	"/state 带运行期真相（读不到时说读不到 + 原因，不写成 0 条）",
+	Boolean(stateRoute.json?.runtime) && stateRoute.json.runtime.available === false && String(stateRoute.json.runtime.reason).includes("pluginManager") && stateRoute.json.runtime.issues?.total === 0,
+	JSON.stringify(stateRoute.json?.runtime && { available: stateRoute.json.runtime.available, reason: stateRoute.json.runtime.reason, issues: stateRoute.json.runtime.issues }),
+);
+ok(
+	"/state 带动作层（journalFile / trashRoot / recent；不下发 token）",
+	Boolean(stateRoute.json?.actions) &&
+		typeof stateRoute.json.actions.journalFile === "string" &&
+		stateRoute.json.actions.journalFile.includes("actions-journal.json") &&
+		typeof stateRoute.json.actions.trashRoot === "string" &&
+		stateRoute.json.actions.trashRoot.includes("trash") &&
+		Array.isArray(stateRoute.json.actions.recent) &&
+		stateRoute.json.actions.token === undefined,
+	JSON.stringify(stateRoute.json?.actions && { journal: stateRoute.json.actions.journalFile, trash: stateRoute.json.actions.trashRoot }),
+);
+const runtimeRoute = await callRoute("/runtime");
+ok("R35 /runtime 只读路由：available=false 时给原因（不是 500）", runtimeRoute.status === 200 && runtimeRoute.json?.available === false && String(runtimeRoute.json.reason).includes("pluginManager"), JSON.stringify(runtimeRoute.json).slice(0, 200));
+const planUnknown = await callRoute("/action/plan", "POST", { id: "plugin:does-not-exist" });
+ok("R35 /action/plan 对不存在的条目给 unknown-entry（不静默成功）", planUnknown.status === 200 && planUnknown.json?.ok === false && planUnknown.json.code === "unknown-entry");
+const actionApplyNoConfirm = await callRoute("/action/apply", "POST", { token: "whatever" });
+ok("R35 /action/apply 不带 confirm 被拒（400）", actionApplyNoConfirm.status === 400 && actionApplyNoConfirm.json?.ok === false);
+const trashRoute = await callRoute("/action/trash", "GET");
+ok("R35 /action/trash GET 给 root / file / total / items（回收站是可见的）", trashRoute.status === 200 && trashRoute.json?.ok === true && typeof trashRoute.json.root === "string" && Array.isArray(trashRoute.json.items));
+
 const healthRoute = await callRoute("/health");
 ok("/health 返回 200 且 ok", healthRoute.status === 200 && healthRoute.json?.ok === true);
 ok("/health 里有构建标记", typeof healthRoute.json?.build?.label === "string" && healthRoute.json.build.label.length > 0);
-ok("/health 里统计了自注册的工具数", healthRoute.json?.toolsRegistered === 8, String(healthRoute.json?.toolsRegistered));
+ok("/health 里统计了自注册的工具数", healthRoute.json?.toolsRegistered === 14, String(healthRoute.json?.toolsRegistered));
 ok("/health 报告了归属统计", healthRoute.json?.attribution !== null && healthRoute.json?.attribution !== undefined);
 /* R30：health 里 MCP 一行（0 台也要说"还没有配置"，不能一声不响） */
 ok("/health 带 MCP 摘要与一行人话", Boolean(healthRoute.json?.mcp) && typeof healthRoute.json.mcp.line === "string" && healthRoute.json.mcp.line.includes("MCP"), JSON.stringify(healthRoute.json?.mcp && healthRoute.json.mcp.line));
@@ -319,7 +352,7 @@ ok("catalog_list 的文本里带来源中文标签", /官方|自写|第三方|�
 
 const healthTool = await callTool("catalog_health", {});
 ok("catalog_health 文本含构建与路径", healthTool.text.includes("构建") && healthTool.text.includes("数据目录"));
-ok("catalog_health 文本提示工具注册数", healthTool.text.includes("注册 8"));
+ok("catalog_health 文本提示工具注册数", healthTool.text.includes("注册 14"));
 /* R30：catalog_mcp —— 0 台时必须**成功返回**并给模板，不能报错 */
 const mcpTool = await callTool("catalog_mcp", {});
 ok(
@@ -1489,6 +1522,114 @@ ok(
 	keepOther.every((name) => reportsAfter.includes(name)),
 	JSON.stringify(keepOther.filter((name) => !reportsAfter.includes(name))),
 );
+
+/* ── R35：运行期真相 + 卡片动作（端到端，全部在临时目录里） ──
+   ★ 动作层最贵的错是"删错东西"，所以端到端必须**真的做一次**：Skill 删除 → 回收站 → 还原，
+     MCP 条目 → 删掉/停用（写前备份 + 写后校验），插件停用（假宿主）。
+   ★ 不碰真实 profile / 真实 Skill 目录：`DSH_PROFILE_DIR` / `DSH_SKILLS_DIR` / `DSH_CATALOG_DIR`
+     全部临时改道，跑完恢复。 */
+{
+	const { CatalogService } = await import("../lib/service.mjs");
+	const root = mkdtempSync(join(tmpdir(), "dsh-catalog-actions-"));
+	const profile = join(root, "profile");
+	const skillsRoot = join(root, "skills");
+	const actionData = join(root, "data");
+	mkdirSync(profile, { recursive: true });
+	mkdirSync(join(skillsRoot, "demo-skill"), { recursive: true });
+	mkdirSync(actionData, { recursive: true });
+	writeFileSync(join(skillsRoot, "demo-skill", "SKILL.md"), "---\nname: demo-skill\ndescription: demo\n---\n正文\n", "utf8");
+	writeFileSync(join(profile, "cordis.patch.yml"), ["# test patch", "- id: mcp-demo", "  name: '@deepseek-ai/dsh-mcp-client'", "  config:", "    serverName: demo", "    transport: stdio", "    command: node", ""].join("\n"), "utf8");
+	const envBackup = { profile: process.env.DSH_PROFILE_DIR, skills: process.env.DSH_SKILLS_DIR, catalog: process.env.DSH_CATALOG_DIR };
+	process.env.DSH_PROFILE_DIR = profile;
+	process.env.DSH_SKILLS_DIR = skillsRoot;
+	process.env.DSH_CATALOG_DIR = actionData;
+	const restoreEnv = () => {
+		for (const [key, value] of [["DSH_PROFILE_DIR", envBackup.profile], ["DSH_SKILLS_DIR", envBackup.skills], ["DSH_CATALOG_DIR", envBackup.catalog]]) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+	try {
+		const fakePm = {
+			async listPlugins() {
+				return [{ entryId: "entry-demo", moduleName: "dsh-demo", enabled: true, fiberPhase: "active", patchId: "patch-demo" }];
+			},
+			async setBundleEnabled(name, enabled) {
+				return { changed: true, application: "applied", stage: "enable", target: name, enabled };
+			},
+			async setPluginEnabled(id, enabled) {
+				return { changed: true, application: "applied", stage: "enable", target: String(id), enabled };
+			},
+			async removeBundle(name) {
+				return { changed: true, application: "applied", stage: "remove", target: name };
+			},
+		};
+		const svc = new CatalogService({ ctx: { get: (key) => (key === "pluginManager" ? fakePm : null) }, toolSchemas: () => [] });
+		svc.settings = { workspace: null, hideBackupSkills: false, pageSizes: [10, 20], sessionsPageSize: 20 };
+		svc.tags = { version: 2, custom: [], assignments: {} };
+		svc.overrides = { version: 1, sources: {}, tools: {} };
+		svc.catalog = {
+			builtAt: Date.now(),
+			counts: { plugins: 1, skills: 1 },
+			plugins: [{ id: "plugin:dsh-demo", name: "dsh-demo", packageName: "dsh-demo", version: "1.0.0", enabled: true, loadState: "bundle", dependency: "link:../../DSH-Plugin/dsh-demo", realDir: join(root, "demo"), isLink: true, dependents: [], source: "self", sourceWhy: [] }],
+			skills: [{ id: "skill:demo-skill", name: "demo-skill", dir: join(skillsRoot, "demo-skill"), root: skillsRoot, source: "third", sourceWhy: [], hasDescription: true, contentHash: "x", createdAt: Date.now() }],
+		};
+		/* 动作之后后台重建目录在这里没有意义（临时 profile 是空的），还会与断言抢状态 ——
+		   这里只保留「缓存作废」那部分，跳过 startJob 的重建。 */
+		let invalidated = 0;
+		svc.invalidateAfterAction = async () => {
+			invalidated += 1;
+			svc.mcpReport = null;
+			svc.compositionReport = null;
+			svc.mcpDigestCache = null;
+			svc.runtimeCache = null;
+			svc.runtimeAt = 0;
+			svc.driftCache = null;
+			return { started: false };
+		};
+
+		const runtime = await svc.refreshRuntime({ fresh: true });
+		const demoEntry = svc.listEntries().items.find((item) => item.id === "plugin:dsh-demo");
+		ok("R35 service：读得到 Loader 时 available=true，条目带 runtimeState=active", runtime.available === true && demoEntry?.runtimeState === "active", JSON.stringify({ available: runtime.available, state: demoEntry?.runtimeState }));
+
+		const plan = await svc.actionPlan({ id: "plugin:dsh-demo", op: "disable" });
+		ok("R35 动作：插件停用的计划带一次性 token 与 summary（写清从 bundles 摘掉）", plan.ok === true && typeof plan.token === "string" && String(plan.plan?.summary || "").includes("bundles"), JSON.stringify(plan).slice(0, 300));
+		const applied = await svc.actionApply({ token: plan.token, confirm: true });
+		const replay = await svc.actionApply({ token: plan.token, confirm: true });
+		ok("R35 动作：执行回执 ok（假宿主），且 token 一次性（重放 = unknown-token）", applied.ok === true && replay.code === "unknown-token", JSON.stringify({ applied: applied.ok, replay: replay.code }));
+		ok("R35 动作：执行后缓存被作废（mcpReport / runtime 缓存）", invalidated >= 1 && svc.mcpReport === null && svc.runtimeCache === null);
+
+		const skillPlan = await svc.actionPlan({ id: "skill:demo-skill", op: "delete" });
+		ok("R35 动作：Skill 删除计划写清回收站与「可还原」", skillPlan.ok === true && String(skillPlan.plan?.summary || "").includes("回收站") && (skillPlan.plan?.warnings || []).some((warning) => warning.code === "reversible"), JSON.stringify(skillPlan).slice(0, 300));
+		const deleted = await svc.actionApply({ token: skillPlan.token, confirm: true });
+		ok("R35 动作：Skill 真的移进回收站（原位没了、回收站里有）", deleted.ok === true && !existsSync(join(skillsRoot, "demo-skill")) && existsSync(deleted.trashPath), JSON.stringify({ ok: deleted.ok, trash: deleted.trashPath }));
+		const trash = await svc.trashStatus();
+		ok("R35 回收站：列出可还原条目（名字 / 原位 / 现状）", trash.ok === true && trash.restorable === 1 && trash.items[0].name === "demo-skill" && trash.items[0].present === true);
+		const restored = await svc.trashRestore({ id: trash.items[0].id, confirm: true });
+		ok("R35 还原：回到原位且 SKILL.md 还在", restored.ok === true && existsSync(join(skillsRoot, "demo-skill", "SKILL.md")));
+		const restoredAgain = await svc.trashRestore({ id: trash.items[0].id, confirm: true });
+		ok("R35 还原不可重复（already-restored）", restoredAgain.ok === false && restoredAgain.code === "already-restored");
+
+		const mcpPlan = await svc.actionPlan({ id: "mcp:demo", op: "remove" });
+		ok("R35 动作：MCP 删除计划给出块区间与预览（改的是 profile 那份文件）", mcpPlan.ok === true && Boolean(mcpPlan.plan?.block) && String(mcpPlan.plan?.preview || "").includes("mcp-demo"), JSON.stringify(mcpPlan.plan && { block: mcpPlan.plan.block, file: mcpPlan.plan.file }));
+		const mcpDeleted = await svc.actionApply({ token: mcpPlan.token, confirm: true });
+		const patchAfter = readFileSync(join(profile, "cordis.patch.yml"), "utf8");
+		ok("R35 动作：MCP 条目真的从组合文件里删掉，且留了 .bak 备份", mcpDeleted.ok === true && !patchAfter.includes("mcp-demo") && existsSync(mcpDeleted.backup), JSON.stringify({ ok: mcpDeleted.ok, backup: mcpDeleted.backup }));
+
+		writeFileSync(join(profile, "cordis.patch.yml"), "- id: mcp-demo\n  name: '@deepseek-ai/dsh-mcp-client'\n", "utf8");
+		svc.mcpReport = { servers: [{ id: "mcp:demo", kind: "mcp", entryId: "mcp-demo", serverName: "demo", transport: "stdio", command: "node", target: "node", state: "on", file: join(profile, "cordis.patch.yml"), line: 1, problems: [], source: "third", sourceWhy: [], envKeys: [], headerKeys: [] }], counts: { total: 1, on: 1, off: 0, conditional: 0, bySource: { official: 0, third: 1, self: 0 }, withProblems: 0 }, client: {}, resources: { rows: [] }, problems: [], notes: [], template: {}, at: Date.now() };
+		const disablePlan = await svc.actionPlan({ id: "mcp:demo", op: "disable" });
+		const disabled = await svc.actionApply({ token: disablePlan.token, confirm: true });
+		const patchDisabled = readFileSync(join(profile, "cordis.patch.yml"), "utf8");
+		ok("R35 动作：MCP 停用是追加一条按 id 覆盖的 disabled（原条目不动、可逆）", disabled.ok === true && patchDisabled.includes("- id: mcp-demo") && /- id: mcp-demo\s*\n\s*disabled: true/.test(patchDisabled), JSON.stringify(patchDisabled));
+
+		const journal = await svc.actionJournal(10);
+		ok("R35 留痕：成功与失败都记（这里至少 5 条），每条都有 op 与时间", journal.ok === true && journal.total >= 5 && journal.items.every((item) => typeof item.op === "string" && Number(item.at) > 0), JSON.stringify({ total: journal.total, ops: journal.items.map((item) => item.op) }));
+	} finally {
+		restoreEnv();
+		rmSync(root, { recursive: true, force: true });
+	}
+}
 
 /* ── 越权请求被拒 ── */
 {

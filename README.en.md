@@ -34,6 +34,22 @@ node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "<插件目录>"
 
 After installing you **must fully restart DSH** (`dsh.profile.bundles` and `cordis.patch.yml` are both read at startup).
 
+Install from GitHub (the open-source path; works for private and public repos):
+
+```bash
+# 1) Clone into your workspace (not into profile/node_modules)
+git clone https://github.com/<you>/dsh-plugin-catalog.git "D:/your-workspace/DSH-Plugin/dsh-plugin-catalog"
+# 2) Install as a junction with the local installer (again: no pnpm, see above)
+node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "D:/your-workspace/DSH-Plugin/dsh-plugin-catalog"
+# 3) Fully quit and restart DSH; the "Plugin Catalog" icon in the sidebar means success
+```
+
+**Requirements**: DSH `0.2.1+` (uses `pluginManager.listPlugins/removeBundle/setBundleEnabled`), Node 24, and Windows / macOS / Linux
+(paths are handled per platform). Without `.tools/dsh-plugin-install.cjs`, drop the directory into `profile/node_modules/dsh-plugin-catalog`
+(a junction or a real copy both work), add the package name to `dsh.profile.bundles` in `profile/package.json`, and restart DSH.
+**Uninstall**: the "uninstall" action at the bottom of a card (which goes through `removeBundle`), or remove the name from
+`dsh.profile.bundles` and delete the directory.
+
 After installing, check whether any mines were buried:
 
 ```bash
@@ -261,6 +277,35 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
   The same data feeds `catalog_health` (one line), the `catalog_composition` tool (and `catalog_handoff`, R26, for the nine-point handoff card), and the exported report's
   "Composition (declared)" section. The rule lives in `lib/composition.mjs` (pure, never touches the disk) and
   `dev/probe-composition.mjs` pins **C1–C14** against synthetic text.
+- **Runtime truth (R35)**: the catalog's "will it load" verdict is a **declaration-layer** judgement. The panel also
+  reads the host Loader directly (`fiberPhase` = `pending / loading / active / failed / unloading`, plus `enabled`) and
+  catches three things the declaration layer cannot see: ① **`fiberPhase = failed`** (the plugin loaded but `apply` threw —
+  the panel still renders while its tools and routes have been rolled back); ② **declared in `dsh.profile.bundles` but
+  missing from the Loader** (the host skipped it at startup on a version/dependency check); ③ declaration and runtime
+  disagree (`enabled:false` yet active). Cards only show a chip when something is wrong (`run failed` red /
+  `not in loader` amber / `disabled` grey); the insight bar gains "runtime issues N" and the banner names the plugins.
+  When runtime cannot be read (old host / no `pluginManager`) it says so and reports `unknown` — **never guesses active**.
+- **Card actions (R35)**: clicking a card still opens the detail popup; a small row **at the bottom of the card** can act:
+  plugins `detail / copy path / disable (or enable) / uninstall`; Skills `detail / copy path / delete`;
+  MCP `detail / disable / delete entry`. Clicking an action only produces a **plan** (read-only: what changes, blockers,
+  warnings, target, backup location); a second click in the inline confirmation really executes. Plans carry a one-shot
+  token that expires in 5 minutes.
+  - Plugin uninstall calls the host's `pluginManager.removeBundle()` (no filesystem deletion; for a link install only the
+    dependency goes away). Disable/enable uses `setBundleEnabled` / `setPluginEnabled` (files and dependencies stay).
+  - **Skill deletion moves the directory** into `<data dir>/trash/skills/`; the "Trash" button in the header restores it
+    in place (refuses to overwrite an existing directory). Skills shipped inside a plugin, without their own directory, or
+    outside the known Skills roots are **blocked with a reason**.
+  - MCP `disable` appends two lines (`- id: …`, `disabled: true`) to the profile's `cordis.patch.yml` (idempotent,
+    **restart required**); MCP `delete entry` removes that block from the profile composition file — with a `.bak-<stamp>`
+    backup first and a re-parse afterwards (the target loses one entry, everything else stays, the total drops by exactly one);
+    a failed verification **rolls the backup back**. Entries living in a bundle's own patch layer are refused (that would edit an
+    installed package).
+  - **These actions are not registered as tools**: the model cannot delete anything; only a human click on the panel can.
+- **Small everyday habits (R35)**: the toolbar is **sticky** while the list scrolls; a "density" toggle switches between
+  comfortable and compact (compact hides the English body and tightens spacing — better when scanning 130+ cards; remembered
+  locally); whenever a filter is active, a **filter summary** row lists every condition with a per-condition "x" and a
+  "clear all"; the empty state explains *why* it is empty and offers one-click clearing; first use shows a one-line hint
+  (dismissed once remembered) — the card actions are a new entry point and nobody scrolls down to discover them.
 - **Shortcuts**: `/` focuses the search box, `Esc` clears it (inside the popup `Esc` closes the popup)
 - **Cache self-healing**: when the statistics cache is older than 10 minutes and no job is running, the panel starts one **incremental** refresh by itself (only changed session logs are re-read; measured 0.4–0.7 s). It never stacks with the 20-second polling, and a mount that already refreshed once does not trigger again
 - **Pagination**: a bar under the list shows "N items · page X / Y" with previous/next/first/last, and **12 / 24 / 48 / 96 / all** per page; changing search, filter, or sort jumps back to page 1
@@ -294,6 +339,57 @@ A "Plugin Catalog" icon appears in the sidebar (`sidebar.panellist` id = `catalo
 | `catalog_uninstall` | **Removal plan for "never loaded" entries**: `plan` groups them by weakly connected component and reports reclaimable bytes, the category (entity / pinned by profile deps / link / second copy of the same project) and the steps; `simulate` removes those directories in memory, recomputes the load states and reports whether anything would be left dangling or still declaring them (pass `packages` to name package or directory names); `verify` **reconciles in reverse**: takes an existing plan and compares it with today's disk and declaration facts — which directories are really gone, which were **deleted for nothing** (would be reinstalled or leave an entry dangling), and which parts of the plan are stale (it would be loaded today, or a package outside the group now declares it); pass `planPath` to pick one file under `reports/`; `write` + `confirm:true` saves it as `reports/uninstall-*.md|.json` (`verify` + `confirm:true` writes `reports/uninstall-verify-*.md`). **None of the four actions deletes anything** (the commands are for a human to copy) |
 | `catalog_composition` | **Composition layer (declared)**: the top-level entries of both composition files — which file they come from, whether they mount a package / a subpath / a `file://` path / a group / an id-only override, whether the package is in the profile or the official asar, which are `disabled: true`, which are conditionally enabled via `!!js` (verbatim, never evaluated); plus whether `dsh.profile.bundles` names anything that cannot be found. `view=overview` gives counts and gaps; `entries` / `disabled` / `conditional` give the lists. **Bundles' own patch layers are not expanded**; read-only |
 | `catalog_mcp` | **MCP servers** (R30): one row per `@deepseek-ai/dsh-mcp-client` entry in the composition files — serverName, transport, command or URL, on/off, `file:line` — classified as **official / third-party / self-configured**, with `mcp__<server>__<tool>` calls attributed per server. `view=orphans` finds calls pointing at servers that no longer exist, `view=problems` lists config errors, `view=template` prints three copy-ready snippets. Zero servers is a valid state: the panel shows an empty state with templates. `env`/`headers` values are never shown |
+| `catalog_runtime` | **Runtime truth (R35)**: reconciles the host Loader's `fiberPhase` / `enabled` for every plugin with the catalog's declaration layer — catches `fiberPhase=failed`, **declared to load but absent from the Loader**, and declaration/runtime mismatches. Says "cannot read" instead of guessing. Read-only |
+
+## Runtime truth and card actions (R35)
+
+**Two layers that must never be confused**: the *declaration layer* answers "will it load according to the config";
+the *runtime* answers "what actually happened inside the host Loader". Both exist here and neither replaces the other.
+
+| Runtime state | Meaning | How the panel shows it |
+|---|---|---|
+| `active` | running in the Loader, declaration agrees | nothing (130+ cards should not each carry a green chip) |
+| `failed` | `fiberPhase = failed`: `apply` threw; tools/routes may be rolled back | red chip "run failed" + banner naming it |
+| `declared-absent` | the declaration says it loads, the Loader has no such entry (skipped at startup) | amber chip "not in loader" |
+| `pending / loading / unloading` | transitioning | amber chip |
+| `disabled` | Loader `enabled=false`, not in bundles (legitimate) | grey chip "disabled" |
+| `unknown` | runtime unreadable (old host / no `pluginManager`) | no chip; `/health` and the tool carry the reason |
+
+The rule lives in `lib/runtime.mjs` (pure): module names with subpaths are normalised to their package name; when a package
+has several Loader entries the most informative one wins (`failed` first); a failed read yields `index = null` rather than an
+empty table — an empty table would mark every "declared to load" entry as `declared-absent` and flood the panel with false alarms.
+
+**Two things that look absent but are normal** (found on the first real run; both are pinned by the self-checks):
+a bundle is a *layer* (`@deepseek-ai/dsh-base` is the official 96-insert layer and does not run as a plugin itself),
+and `transitive` means an npm dependency (`@dsh-ops/bash-win32-x64` is a native binary, never a Loader entry).
+So `declared-absent` only applies to **non-bundle plugins** and `config` entries; bundle health comes from
+`listBundles()` (`availability` / `error`) and is reported **only for `enabled === true` bundles** — offline catalog entries
+that are merely *not installed* (`dsh-subagent-claude-code` / `-codex` here) are not problems.
+
+| Action | How | Reversible | Takes effect |
+|---|---|---|---|
+| plugin `uninstall` | host `pluginManager.removeBundle()` (touches no files, deletes no source) | reinstall the package | immediately |
+| plugin `disable / enable` | `setBundleEnabled` (when in bundles) or `setPluginEnabled` (Loader entry) | click enable again | immediately |
+| Skill `delete` | moves the whole directory into `<data dir>/trash/skills/` (`rename`, with a copy-then-remove fallback across volumes) | **yes**, via the header "Trash" -> "restore in place" | immediately (gone on the next scan) |
+| MCP `disable` | appends two lines to the profile's `cordis.patch.yml` (`- id: …` + `disabled: true`), overriding by id only | remove those lines | **restart DSH** |
+| MCP `delete entry` | removes that block from the profile composition file | a `.bak-<stamp>` sits next to the file | **restart DSH** |
+
+Three safety rules (each pinned by the self-checks):
+
+1. **Two-step**: an action click only produces a **plan** (`POST /action/plan`: availability, blockers, warnings, target,
+   backup/trash location); the inline confirmation then executes (`POST /action/apply` requires a one-shot token plus
+   `confirm:true`, valid for 5 minutes).
+2. **Backup before write, verify after**: composition files are copied to `.bak-<stamp>`, rewritten through a temp file and
+   `rename`, then re-parsed (the target id loses exactly one entry, other entries are untouched, only the total drops by one);
+   a failed verification **writes the backup back**. Skill deletion *is* a move, so the trash is its backup.
+3. **Journal**: every action, success or failure, appends one row to `<data dir>/actions-journal.json` (max 100 rows);
+   the panel and `catalog_health` both show the most recent ones — "where did it go" must be answerable.
+
+Boundaries: MCP only handles entries in the **profile's own two composition files**; entries inside a bundle's patch layer are
+refused (that would edit an installed package and come back on reinstall). Plugin uninstall never deletes source (self-written
+plugins are usually junctions — uninstall only drops the dependency and the entry). Skills shipped inside a plugin cannot be
+deleted here. Runtime truth depends on the host's `pluginManager.listPlugins()`; on older hosts that layer degrades to
+"cannot read" and the rest of the panel is unaffected.
 
 ## MCP category (R30)
 
@@ -322,6 +418,8 @@ Everything lives in the **workspace** `.dsh-plugin-catalog/` (not in the plugin 
 | `intros.json` | Chinese introduction cache (manually editable) |
 | `weekly.json` | Last execution time and result of the weekly task |
 | `settings.json` | Settings |
+| `actions-journal.json` | **R35**: journal of card actions (success and failure, max 100 rows; no tokens, no file bodies) |
+| `trash/skills/` + `trash/skills.json` | **R35**: the Skill deletion trash (whole directories + an index, restorable from the panel) |
 
 **Red line: the statistics contain only session ID, session nickname, timestamp, tool name, count. No conversation text whatsoever.**
 Tool arguments are read only once, when parsing `skill` calls to get the skill name, then discarded.
@@ -399,6 +497,14 @@ Security review **does not run automatically** — the panel shows a "Security r
    A `catalog_import` was considered and **deliberately dropped**: two install paths would each write their own
    snapshot and rollback, and when something breaks nobody can prove which one did it. The relationship is
    "it installs, I verify" — after an install, come back and check `loadState`, `catalog_list` and `catalog_mcp`.
+   **R35 card actions are the exception, and they are panel-only**: uninstall / disable / delete Skill / delete MCP entry
+   happen on a human click behind a two-step confirm; they are **not registered as tools**.
+0b. **R35 action boundaries**: MCP only handles the profile's own two composition files (a bundle's patch layer is refused);
+   uninstalling a plugin deletes no source (a junction only loses the dependency and the entry); Skills shipped inside a plugin
+   cannot be deleted here. See "Runtime truth and card actions (R35)".
+0c. **Runtime truth needs `pluginManager.listPlugins()`**: on an older host the layer degrades to "cannot read" (stated with a
+   reason); `fiberPhase=failed` says *that* it failed — the exact error still lives in the host log or the `plugin_manager`
+   `diagnostic`.
 1. **Private repos do not get platform-level security scanning**: GitHub's Secret Scanning / Dependabot / Push Protection require paid GHAS.
    So "known vulnerable dependency" relies only on local rules and model common sense, **less accurate than platform-level scanning**.
 2. **Skill call statistics only go as far as "count + last call time"**, and cannot be broken down by session — this is a mechanism limitation, noted in the UI.
@@ -486,7 +592,7 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + seven probes + copy sync + version consistency + git, ~45 s):
+**Before shipping or handing off, run just this one** (three checks + **15 independent probes (426 invariants)** + copy sync + version consistency + git, ~60–90 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
@@ -499,7 +605,7 @@ Five checks:
 | `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
 | `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
 | `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
-| `probes` | **Ten standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export**, 177 invariants, ~3 s) | counts as failure |
+| `probes` | **15 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules**, 426 invariants, ~6 s) | counts as failure |
 | `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
 
 Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal
@@ -521,16 +627,16 @@ node dev/deliver.mjs --base http://127.0.0.1:<GUI_PORT>
                             #   running matches disk / no loose ends (uncommitted / unpushed / stale staging / restart due).
                             #   Exit code 0 = safe to switch sessions; report `.cache/deliver-<timestamp>.md`;
                             #   `--skip-ship` saves 40 s. ★ It never commits, pushes or syncs: write actions stay human-initiated.
-node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions / body hashes and the upgrade migration / acknowledgement baseline / the timeline's adjacent subtraction and baseline exclusion) / copy verdicts (body hashes / same-length misses / fallback / backup names and path checks / restore only writes staging) / composition declarations (block scalars / the three `disabled` semantics / merge by id / five entry kinds / five resolutions / only a missing bundle is bad / three count groups conserve) / the live-check script (read-only / never sends confirm:true) / the health timeline summary / the single source of the preflight list + loaded vs disk version** (581 checks, runs in the sandbox; since R29 five more: deliver only consumes the criteria / it performs no write action / the three-way verdict / a sandbox EPERM is reported apart from a red assertion; since R28 thirteen more: CSV escaping is the three RFC 4180 rules plus BOM / the facts have a single implementation (markdown only decorates) / CSV and markdown share the same picked set / tool and route are one chain / `pickBackupByName` matches full names / the write step carries the same backup / both CSV entries really have buttons; since R22.1 two more: the popup footer carries the cache age and the health summary carries `at`; since R23 fourteen more: the declaration-only signature / the signature folded into the snapshot fingerprint / the composition bucket / the one-sided-missing rule / the same wording in panel and export; since R24 four more: deduped+sorted bundleNames / clickable rows only for profile and asar / the jump clears filters / the cross-reference and badges; since R25 five more: the identity table in the signature / the drill-down naming ids / no invented detail on a one-sided miss / the same wording in panel and report / the history cap; since R27 fourteen more: reconciliation is a pure function / the three sources of a wasted deletion / in-group declarations are not violations / conservative when `presence` is missing / `planPath` limited to `reports/` / the verdict never enters state / single-source wording / probe V1–V15 and its registration)
-node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the reconciliation block (verdict and per-row reasons together / plan age / the wasted-deletion and stale-plan lists / still no delete button inside the card / absent until reconciled)** + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes / the acknowledged window / the "body edited" wording / the older-window timeline)** + **a "not reloaded yet" marker when the loaded version differs from the disk version** / selection batches / copy sync / **the three sync steps and its confirmation** / **the backup row and the restore confirmation (R28: earlier backups are selectable)** / export (R28: CSV sits next to markdown) / empty states / **the composition link and popup (overview / unresolved / conditionals / disabled / a gap banner only when bad / **R24 clickable rows that jump to the card and the in-bundles cross-reference** / **R25 change details naming the exact ids**)** (223 checks, no DSH needed)
+node dev/audit.mjs         # self-consistency: frozen defaults / tool contracts / rule coverage / dedupe / naming / gates / bilingual README flow + client style and behaviour contracts + single source of the staging verdict + the four load states + the probe invariants + **the removal plan (categories / grouping / alias keys / generate-only) + the removal simulation (pure function / per directory / revived identity) / the write plan bypasses the 60s drift cache / change tracking (pure functions / 12-char fingerprint / the first snapshot reports no additions / body hashes and the upgrade migration / acknowledgement baseline / the timeline's adjacent subtraction and baseline exclusion) / copy verdicts (body hashes / same-length misses / fallback / backup names and path checks / restore only writes staging) / composition declarations (block scalars / the three `disabled` semantics / merge by id / five entry kinds / five resolutions / only a missing bundle is bad / three count groups conserve) / the live-check script (read-only / never sends confirm:true) / the health timeline summary / the single source of the preflight list + loaded vs disk version** (697 checks, runs in the sandbox; since R29 five more: deliver only consumes the criteria / it performs no write action / the three-way verdict / a sandbox EPERM is reported apart from a red assertion; since R28 thirteen more: CSV escaping is the three RFC 4180 rules plus BOM / the facts have a single implementation (markdown only decorates) / CSV and markdown share the same picked set / tool and route are one chain / `pickBackupByName` matches full names / the write step carries the same backup / both CSV entries really have buttons; since R22.1 two more: the popup footer carries the cache age and the health summary carries `at`; since R23 fourteen more: the declaration-only signature / the signature folded into the snapshot fingerprint / the composition bucket / the one-sided-missing rule / the same wording in panel and export; since R24 four more: deduped+sorted bundleNames / clickable rows only for profile and asar / the jump clears filters / the cross-reference and badges; since R25 five more: the identity table in the signature / the drill-down naming ids / no invented detail on a one-sided miss / the same wording in panel and report / the history cap; since R27 fourteen more: reconciliation is a pure function / the three sources of a wasted deletion / in-group declarations are not violations / conservative when `presence` is missing / `planPath` limited to `reports/` / the verdict never enters state / single-source wording / probe V1–V15 and its registration)
+node dev/render-check.cjs  # UI: card content / search / insight bar / sorting (incl. size) / pagination / popup / size states / dependency chips / load chips and dimming / self-check button / preflight card / **removal-plan card (category chips, two-step confirm, no delete button inside) + the simulation block (safe and risky states, absent until simulated) + **the reconciliation block (verdict and per-row reasons together / plan age / the wasted-deletion and stale-plan lists / still no delete button inside the card / absent until reconciled)** + **the changes bar (only when there are changes / details only when expanded / absent for the first snapshot and for zero changes / the acknowledged window / the "body edited" wording / the older-window timeline)** + **a "not reloaded yet" marker when the loaded version differs from the disk version** / selection batches / copy sync / **the three sync steps and its confirmation** / **the backup row and the restore confirmation (R28: earlier backups are selectable)** / export (R28: CSV sits next to markdown) / empty states / **the composition link and popup (overview / unresolved / conditionals / disabled / a gap banner only when bad / **R24 clickable rows that jump to the card and the in-bundles cross-reference** / **R25 change details naming the exact ids**)** (264 checks, no DSH needed)
 node dev/preview.mjs       # layout: renders a static preview (real component tree + real CSS) for screenshotting in a browser
 ```
 
 Host side (no DSH restart needed):
 
 ```bash
-node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, five checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's copy-sync item / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **the reconciliation (the tool reads the plan back and stats every directory / four counts / all four text sections / the route answers directly and writes nothing by default)** + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section) + body hashes in the snapshot + the acknowledgement window (no confirm is rejected / baseline written / cleared to zero / health reports it) + the timeline in /state (total + items) + the health timeline summary + copy hash verdicts / the restore plan and confirm gate / a real restore + pre-restore backup + the backup list + the loaded version versus the disk version** / export write / copy-sync verdicts / skill_sync plan and confirm gate (308 checks under the host; in plain node 302 pass and 6 are SKIPs — the sandbox forbids spawning with pipes and app.asar cannot be read)
-node dev/live-check.mjs --base http://127.0.0.1:<GUI port>  # read-only check of the **running** panel (~0.2 s):
+node dev/hosttest.mjs      # real apply() against a fake ctx: routes / tool contracts / stats / tags / AI paths / gates / synchronous effect constraint / async apply return-value check / list item fields / recursive size + cache / size snapshot / batch sizes / dependency graph fields / load states vs the enabled flag / the export's load-paths line and "not loaded" section / **preflight route (dry, five checks) / /skillsync plan and confirm gate / staging verdicts and one-way copy / ship's copy-sync item / the removal plan (tool + /uninstall route + node_modules unchanged afterwards) + the simulation (whole plan must be safe / deleting the parent alone must report orphans / unknown names are not guessed / the route answers directly / the text spells out all three risk rows) + **the reconciliation (the tool reads the plan back and stats every directory / four counts / all four text sections / the route answers directly and writes nothing by default)** + **change tracking (snapshot on disk / no duplicate fingerprints / at most 20 / the exported report carries a change section) + body hashes in the snapshot + the acknowledgement window (no confirm is rejected / baseline written / cleared to zero / health reports it) + the timeline in /state (total + items) + the health timeline summary + copy hash verdicts / the restore plan and confirm gate / a real restore + pre-restore backup + the backup list + the loaded version versus the disk version** / export write / copy-sync verdicts / skill_sync plan and confirm gate (351 checks under the host; in plain node 345 pass and 6 are SKIPs — the sandbox forbids spawning with pipes and app.asar cannot be read)
+node dev/live-check.mjs --base http://127.0.0.1:<GUI port>  # read-only check of the **running** panel (~0.7 s, 21 checks):
                             # version match / tools and catalog present / timeline shape / drift carries hashes and backups /
                             # the restore plan is read-only / a restore apply without confirm is rejected. Never writes a file.
 node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks the profile and both composition files itself,
@@ -540,7 +646,13 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
-node dev/run-probes.mjs       # **the ten probes in one command** (ship's 5th item, 177 checks, about 3 s):
+node dev/run-probes.mjs       # **the fifteen probes in one command** (ship's 5th item, 426 invariants, about 6 s):
+node dev/probe-runtime.mjs    # ★ R35: runtime truth (31 invariants) — six fiber phases / subpath module names normalised to the
+                              #   package / several entries for one package prefer failed / unreadable => unknown (never active) /
+                              #   declared-absent only when the declaration actually loads / three issue classes counted apart.
+node dev/probe-actions.mjs    # ★ R35: card-action rules (44 invariants) — YAML entry-block slicing (top level + insert blocks +
+                              #   a stale line hint) / post-delete verification (one gone, nothing else moved) / idempotent disable /
+                              #   three Skill blockers / sibling paths are not "inside" / MCP bundle-layer refusal.
                               # understands both closing formats (`passed N / failed M` and "N invariants hold");
                               # under the sandbox it says "run this in the host" instead of looking like broken probes
 node dev/ship-checks.mjs      # the **single source** of the preflight list: ship runs it, POST /preflight{dry} reports it
@@ -593,6 +705,29 @@ open it with any static server and screenshot; locally it caught problems only v
 
 Why `dev/probe-gitops.mjs` exists: upload is the hardest part to verify in a sandbox (subprocess spawn is disabled),
 and real repos cannot be used for experiments — so it really runs once in a temporary repo, covering edge cases like "a new repo not yet committed for the first time".
+
+## Open-source notes (R35)
+
+This repository is arranged so that somebody else can clone it, install it, run it and self-check it:
+
+- **License**: MIT (see `LICENSE`). Commercial use, modification and redistribution are allowed; keep the copyright and
+  license notice.
+- **No telemetry, no uploads**: apart from the explicit actions you click — "Upload backup to GitHub", "Gap analysis",
+  "Security review", "AI classify / generate intros" — the plugin only reads the local machine. Statistics contain **only**
+  session ids, nicknames, timestamps, tool names and counts; **no conversation text at all**.
+- **No embedded secrets**: AI goes through the host `llm` service; uploads use the machine's `gh` / SSH credentials.
+  There are no tokens in the repository (the scanner fixtures use fake keys on purpose).
+- **Layout**: `index.js` (host entry / routes / tool registration) · `lib/` (decision layer, mostly pure functions) ·
+  `client.js` (the panel) · `dev/` (self-checks and probes). Decisions and execution are kept apart on purpose:
+  anything that can be pinned against synthetic data should not depend on "try it on the real machine".
+- **Self-checks**: run `node dev/ship.mjs` in the host (one command); before handing off, `node dev/deliver.mjs --base <GUI port>`.
+  The panel's "Self-check" button takes the same path.
+- **Contributing**: before a PR run `node dev/audit.mjs`, `node dev/render-check.cjs`, `node dev/hosttest.mjs` and
+  `node dev/run-probes.mjs`. A new rule needs a **pure-function probe** (see `dev/probe-actions.mjs` /
+  `dev/probe-runtime.mjs`); touching a write path requires coverage for "backup before write / verify after / rollback on
+  verification failure".
+- **Please do not add install logic here**: installing belongs to `dsh-plugin-installer` / `plugin_manager`;
+  the relationship is "it installs, I verify".
 
 ## License
 

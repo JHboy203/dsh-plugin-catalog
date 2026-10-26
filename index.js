@@ -478,6 +478,41 @@ export async function apply(ctx) {
 					return json(res, 200, await catalog.inspectPackage({ name }));
 				}
 
+				/* ── R35：运行期真相（只读）──
+				   声明层说会加载 ≠ Loader 里真在跑。这里把宿主 `listPlugins()` 的 fiberPhase 与
+				   声明层对账：failed / 声明会加载但 loader 里没有 / 声明与运行时打架。 */
+				if (path === "/runtime" && method === "GET") {
+					return json(res, 200, await catalog.runtimeReport({ fresh: url.searchParams.get("fresh") === "1" }));
+				}
+
+				/* ── R35：卡片动作（面板专用）──
+				   两段式：plan 只读、带一次性 token（5 分钟）；apply 必须 token + confirm:true。
+				   ★ 与 /removal/* 的分工：插件卸载仍走 R32 那份判据（这里是它的统一入口）；
+				     Skill 删除 = 移进回收站（可还原）；MCP 停用/删除 = 改组合文件（写前备份、写后校验）。
+				   ★ 这些动作**不注册成工具**：模型拿不到"删用户东西"的动作（边界见 README）。 */
+				if (path === "/action/plan" && method === "POST") {
+					const body = await readJsonBody(req);
+					return json(res, 200, await catalog.actionPlan({ id: body.id, op: body.op, requestedBy: body.requestedBy }));
+				}
+				if (path === "/action/apply" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (body.confirm !== true) return json(res, 400, { ok: false, error: "需要 confirm:true（两段式：先 /action/plan 拿 token）" });
+					return json(res, 200, await catalog.actionApply({ token: body.token, confirm: true }));
+				}
+				if (path === "/action/journal" && method === "GET") {
+					return json(res, 200, await catalog.actionJournal(Number(url.searchParams.get("limit")) || 10));
+				}
+				if (path === "/action/trash" && (method === "GET" || method === "POST")) {
+					if (method === "GET") return json(res, 200, await catalog.trashStatus());
+					const body = await readJsonBody(req);
+					if (String(body.action || "status") === "status") return json(res, 200, await catalog.trashStatus());
+					if (String(body.action) === "restore") {
+						if (body.confirm !== true) return json(res, 400, { ok: false, error: "还原要带 confirm:true" });
+						return json(res, 200, await catalog.trashRestore({ id: body.id, confirm: true }));
+					}
+					return json(res, 400, { ok: false, error: "unknown action" });
+				}
+
 				if (path === "/tags" && method === "POST") {
 					const body = await readJsonBody(req);
 					const action = String(body.action || "list");

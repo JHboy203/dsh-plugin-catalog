@@ -160,6 +160,20 @@ function findAll(node, predicate, out = []) {
 	return out;
 }
 
+/** 按钮/元素的**可见文字**（只看 children；不含 title 等属性）—— 断言按钮文案时用它。 */
+function labelOf(node) {
+	if (!node || !node.props) return "";
+	const children = node.props.children;
+	const list = Array.isArray(children) ? children : [children];
+	return list
+		.map((child) => {
+			if (typeof child === "string" || typeof child === "number") return String(child);
+			if (child && child.props) return labelOf(child);
+			return "";
+		})
+		.join("");
+}
+
 /** 递归调用所有函数组件（因为我们的 createElement 不做渲染）。 */
 function expand(node, depth = 0) {
 	if (depth > 30 || node === null || node === undefined || node === false) return node;
@@ -526,7 +540,7 @@ ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate
 
 /* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
 ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
-ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly/tagFilter），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly,tagFilter" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly/tagFilter + R35 的 density/hintDismissed），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly,tagFilter,density,hintDismissed" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
 
 /* R4：导出当前筛选 / 0 值档位置灰 */
 T.store.kind = "all";
@@ -2159,7 +2173,196 @@ T.store.data = data;
 T.store.kind = "all";
 T.store.pageSize = 24;
 
-/* ── 汇总 ── */
+/* ── R35：运行期真相 + 卡片底部操作区 ──
+   这一轮最容易被"看起来能点"骗过去的两件事：
+     · 卡片外层是 <button> 时，内层按钮会被浏览器甩出去（点起来像"没反应"）；
+     · 动作条没有 stopPropagation 时，点「卸载」会同时打开详情浮窗。
+   所以这里不只看类名，还要真的点一下：外层不能是 button、内层点击不能冒泡、确认按钮的可用性要对。 */
+{
+	/* ① 纯函数：文案与判据 */
+	ok(
+		"R35 运行期 chip：active 不占版面；failed / declared-absent 各有自己的词",
+		T.runtimeLabel({ kind: "plugin", runtimeState: "active" }) === "" &&
+			T.runtimeLabel({ kind: "plugin", runtimeState: "failed" }) === "运行期失败" &&
+			T.runtimeLabel({ kind: "plugin", runtimeState: "declared-absent" }) === "不在 loader" &&
+			T.runtimeLabel({ kind: "plugin", runtimeState: "active", runtimeIssue: "不一致" }).includes("不一致"),
+	);
+	ok(
+		"R35 运行期问题判定：failed / absent / runtimeIssue 三类都算，Skill 上伪造的不算",
+		T.hasRuntimeIssue({ kind: "plugin", runtimeState: "failed" }) &&
+			T.hasRuntimeIssue({ kind: "plugin", runtimeState: "declared-absent" }) &&
+			T.hasRuntimeIssue({ kind: "plugin", runtimeState: "active", runtimeIssue: "x" }) &&
+			!T.hasRuntimeIssue({ kind: "skill", runtimeState: "failed" }) &&
+			T.runtimeIssueCountOf([{ kind: "plugin", runtimeState: "failed" }, { kind: "plugin", runtimeState: "active" }, { kind: "skill", runtimeState: "failed" }]) === 1,
+	);
+	ok(
+		"R35 动作清单：插件给 停用/卸载、Skill 给 删除、MCP 给 删除条目；自己那条不给卸载",
+		(() => {
+			const plugin = T.cardActionsOf({ kind: "plugin", name: "dsh-x", enabled: true, realDir: "D:\\x" }).map((action) => action.label);
+			const self = T.cardActionsOf({ kind: "plugin", name: "dsh-plugin-catalog", enabled: true, realDir: "D:\\c" }).map((action) => action.label);
+			const skill = T.cardActionsOf({ kind: "skill", name: "s", realDir: "D:\\s" }).map((action) => action.label);
+			const mcp = T.cardActionsOf({ kind: "mcp", name: "m", mcpState: "on" }).map((action) => action.label);
+			return plugin.join(",") === "详情,复制路径,停用,卸载" && !self.includes("卸载") && skill.includes("删除") && mcp.includes("删除条目") && mcp.includes("停用");
+		})(),
+	);
+
+	/* ② 卡片外层必须是 div[role=button]，动作区在底部，点击不冒泡到卡片 */
+	let clicked = "";
+	let opened = 0;
+	let copied = 0;
+	let stopped = 0;
+	const cardTree = expand(
+		T.Card({
+			item: makeItem({ realDir: "D:\\信息库\\AI工作区\\DSH-Plugin\\dsh-screenshot" }),
+			tags: data.tags.all,
+			hits: [],
+			picking: false,
+			picked: false,
+			onPick: () => {},
+			action: null,
+			onAction: (_item, op) => {
+				clicked = op;
+			},
+			onDetail: () => {
+				opened += 1;
+			},
+			onCopy: () => {
+				copied += 1;
+			},
+		}),
+	);
+	ok("R35 卡片外层是 div[role=button] + tabIndex（不是 <button>：按钮里不能再嵌按钮）", cardTree.type === "div" && cardTree.props.role === "button" && cardTree.props.tabIndex === 0);
+	ok("R35 卡片底部有常显的操作区（不是 hover 才出现）", findAll(cardTree, (node) => String(node.props && node.props.className).split(/\s+/).includes("dpc-card-actions")).length === 1);
+	ok("R35 插件卡的动作齐全（详情 / 复制路径 / 停用 / 卸载）", ["详情", "复制路径", "停用", "卸载"].every((label) => textsOf(cardTree).join("").includes(label)));
+	ok("R35 卸载按钮点下去：只发动作、不打开详情、且 stopPropagation 被调用", (() => {
+		const button = findAll(cardTree, (node) => node.type === "button" && labelOf(node) === "卸载")[0];
+		if (!button) return false;
+		button.props.onClick({ stopPropagation: () => (stopped += 1) });
+		return clicked === "uninstall" && opened === 0 && stopped === 1;
+	})());
+	ok("R35 复制路径走自己的处理器（不冒泡、不改选项）", (() => {
+		const button = findAll(cardTree, (node) => node.type === "button" && labelOf(node) === "复制路径")[0];
+		if (!button) return false;
+		button.props.onClick({ stopPropagation: () => {} });
+		return copied === 1 && opened === 0;
+	})());
+
+	/* ③ 确认条三态：计划（可确认）/ 阻断（禁用）/ 结果 */
+	let applied = 0;
+	const plan = {
+		op: "uninstall",
+		label: "卸载",
+		available: true,
+		blockers: [],
+		warnings: [{ code: "runtime-active", text: "它现在正在跑：卸载会立刻把它提供的工具拿掉" }],
+		summary: "宿主会卸掉 dsh-x：去掉 profile 依赖与那条入口，并删掉 node_modules 里那份。",
+		effect: "立即生效",
+		target: "宿主 pluginManager.removeBundle(dsh-x)",
+	};
+	const planBox = expand(T.ActionPanel({ action: { id: "plugin:dsh-x", name: "dsh-x", op: "uninstall", busy: false, plan, token: "tok", expiresAt: Date.now() + 120000, error: null, result: null }, onCancel: () => {}, onApply: () => (applied += 1) }));
+	const planText = textsOf(planBox).join(" | ");
+	ok("R35 确认条：写清「步骤 1/2」+ 摘要 + 生效方式 + 目标 + 警告", planText.includes("步骤 1/2 · 看计划") && planText.includes("宿主会卸掉 dsh-x") && planText.includes("立即生效") && planText.includes("removeBundle") && planText.includes("它现在正在跑"));
+	const confirmButton = findAll(planBox, (node) => node.type === "button" && labelOf(node) === "确认卸载")[0];
+	ok("R35 拿到 token 后确认按钮可点，点一次真的发起执行", Boolean(confirmButton) && confirmButton.props.disabled === false && (confirmButton.props.onClick(), applied === 1));
+
+	const blockedBox = expand(
+		T.ActionPanel({
+			action: { id: "skill:s", name: "s", op: "delete", busy: false, plan: { op: "delete", available: false, blockers: [{ code: "host-plugin", text: "这个 Skill 随插件 dsh-x 一起安装：删它等于改安装包" }], warnings: [] }, token: null, result: null },
+			onCancel: () => {},
+			onApply: () => {},
+		}),
+	);
+	const blockedText = textsOf(blockedBox).join(" | ");
+	ok("R35 阻断态：原因原样摊开，确认按钮禁用（按钮灰着不如说清为什么）", blockedText.includes("随插件 dsh-x 一起安装") && findAll(blockedBox, (node) => node.type === "button" && labelOf(node) === "确认删除（进回收站）")[0].props.disabled === true);
+
+	const doneBox = expand(
+		T.ActionPanel({
+			action: { id: "skill:s", name: "s", op: "delete", busy: false, plan: null, token: null, result: { ok: true, text: "已把「s」移进回收站", backup: "D:\\trash\\skills\\t1" } },
+			onCancel: () => {},
+			onApply: () => {},
+		}),
+	);
+	const doneText = textsOf(doneBox).join(" | ");
+	ok("R35 结果态：说清做成了什么 + 备份/回收站位置，按钮变成「关闭」", doneText.includes("已把「s」移进回收站") && doneText.includes("D:\\trash\\skills\\t1") && doneText.includes("关闭"));
+
+	/* ④ 面板：运行期 chip / 头部横幅 / 洞察条 / 只看这些 */
+	const failedItem = makeItem({ id: "plugin:dsh-failed", name: "dsh-failed", runtimeState: "failed", runtimePhase: "failed", runtimeIssue: "fiberPhase=failed：apply 抛过错", runtimeDetail: "运行时：failed" });
+	T.store.data = {
+		...data,
+		entries: [failedItem],
+		runtime: { available: true, at: Date.now(), counts: { total: 3, active: 2, failed: 1, pending: 0, disabled: 0, nullPhase: 0 }, issues: { failed: 1, absent: 0, mismatch: 0, total: 1, names: { failed: ["dsh-failed"], absent: [], mismatch: [] } }, reason: "" },
+	};
+	T.store.query = "";
+	T.store.kind = "all";
+	T.store.source = "any";
+	T.store.usage = "any";
+	T.store.runtimeOnly = false;
+	T.store.pageSize = 0;
+	const runtimeTree = expand(render(T.Panel, {}));
+	const runtimeText = textsOf(runtimeTree).join(" | ");
+	ok("R35 卡片上有「运行期失败」chip（声明层看不见的那一类）", runtimeText.includes("运行期失败"));
+	ok("R35 面板横幅点名失败的插件，并给「只看这些」入口", runtimeText.includes("fiberPhase=failed") && runtimeText.includes("dsh-failed") && runtimeText.includes("只看这些"));
+	ok("R35 洞察条单列「运行期问题 1」（与用没用/报错是不同维度）", runtimeText.includes("运行期问题 1"));
+	ok("R35 点「只看这些」把 runtimeOnly 打开", (() => {
+		const button = findAll(runtimeTree, (node) => node.type === "button" && labelOf(node) === "只看这些")[0];
+		if (!button) return false;
+		button.props.onClick();
+		return T.store.runtimeOnly === true;
+	})());
+	T.store.runtimeOnly = false;
+	T.store.data = data;
+
+	/* ⑤ 筛选摘要 / 空态 / 密度 / 首次提示 */
+	T.store.query = "";
+	T.store.source = "self";
+	let filterTree = expand(render(T.Panel, {}));
+	let filterText = textsOf(filterTree).join(" | ");
+	ok("R35 筛选摘要：一行列出当前条件，每个都能单独摘掉", filterText.includes("筛选") && filterText.includes("来源 自写") && filterText.includes("清除全部"));
+	ok("R35 摘掉单个条件找回更多条目（来源回到全部）", (() => {
+		const chip = findAll(filterTree, (node) => node.type === "button" && String(node.props.className || "").includes("dpc-filter-chip"))[0];
+		if (!chip) return false;
+		chip.props.onClick();
+		return T.store.source === "any";
+	})());
+	T.store.query = "zzz-nothing-matches";
+	const emptyTree = expand(render(T.Panel, {}));
+	const emptyText = textsOf(emptyTree).join(" | ");
+	ok("R35 空态：给原因 + 一键清除筛选（不是一句「没有匹配的条目」）", emptyText.includes("没有匹配的条目") && emptyText.includes("关键词「zzz-nothing-matches」") && emptyText.includes("清除全部筛选"));
+	T.store.query = "";
+	T.store.density = "compact";
+	const compactTree = expand(render(T.Panel, {}));
+	ok("R35 密度：紧凑模式加 is-compact 类（隐藏英文原文、压缩行距）", findAll(compactTree, (node) => String(node.props && node.props.id) === "dpc-panel")[0].props.className.includes("is-compact"));
+	T.store.density = "comfortable";
+	T.store.hintDismissed = false;
+	const hintText = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	ok("R35 首次使用提示写明卡片底部能做什么，并可点「知道了」收起", hintText.includes("卡片底部") && hintText.includes("知道了"));
+	ok("R35 点「知道了」记住（hintDismissed 写回视图）", (() => {
+		const button = findAll(expand(render(T.Panel, {})), (node) => node.type === "button" && labelOf(node) === "知道了")[0];
+		if (!button) return false;
+		button.props.onClick();
+		return T.store.hintDismissed === true && !textsOf(expand(render(T.Panel, {}))).join(" ").includes("卡片底部可以直接");
+	})());
+
+	/* ⑥ 回收站浮层（Skill 删除的后悔药） */
+	let restored = "";
+	const trashTree = expand(
+		T.TrashModal({
+			trash: { root: "D:\\ws\\.dsh-plugin-catalog\\trash\\skills", restorable: 1, items: [{ id: "t1", name: "vex-ops", present: true, from: "D:\\ws\\.dsh\\skills\\vex-ops", to: "D:\\ws\\.dsh-plugin-catalog\\trash\\skills\\t1", at: Date.now() }] },
+			onClose: () => {},
+			onRestore: (id) => {
+				restored = id;
+			},
+		}),
+	);
+	const trashText = textsOf(trashTree).join(" | ");
+	ok("R35 回收站：列出名字 / 原位 / 现状，并说明「移动不是抹掉」", trashText.includes("vex-ops") && trashText.includes("D:\\ws\\.dsh\\skills\\vex-ops") && trashText.includes("移动而不是抹掉"));
+	ok("R35 回收站点「还原到原位」把 id 交回去（服务端会拒绝覆盖原位同名目录）", (() => {
+		const button = findAll(trashTree, (node) => node.type === "button" && labelOf(node) === "还原到原位")[0];
+		if (!button) return false;
+		button.props.onClick();
+		return restored === "t1";
+	})());
+}
 console.log("");
 console.log("dsh-plugin-catalog / render-check");
 console.log("  passed: " + passed);
