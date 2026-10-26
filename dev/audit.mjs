@@ -1151,7 +1151,51 @@ ok("摘要把「第一条快照」压成 0 处变化（不是 N 条新增），�
 
 /* ⑧ R19：变化追踪收口 —— Skill 正文哈希 + 「已看过」确认窗口 */
 ok("catalog 在读 SKILL.md 时顺手算正文哈希（不额外读文件），并抬了 CATALOG_VERSION", catalogSource.includes('createHash("sha1")') && catalogSource.includes("contentHash") && /export const CATALOG_VERSION = 10;/.test(catalogSource));
-ok("history 信号含 content（仅 Skill），v3 加了升级迁移规则（旧快照没哈希 / 没配置层签名都不算变化）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 3;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
+ok("history 信号含 content（仅 Skill）；v5 的迁移规则仍在（旧快照没哈希 / 没配置层签名都不算变化）", historySource.includes('content: entry?.kind === "skill"') && /export const HISTORY_VERSION = 5;/.test(historySource) && historySource.includes("export function compareEntries") && historySource.includes('String(left.content ?? "") !== ""'));
+
+/* ⑧b R34：history.json 的体积治理 —— **无损紧凑编码**（判据一行没动，只是存法变了） */
+const historyProbe34 = readFileSync(new URL("./probe-history.mjs", import.meta.url), "utf8");
+ok("v4 紧凑编码的三个入口都在（compactSnapshot / expandSnapshot / serializeHistory）", /export function compactSnapshot\(/.test(historySource) && /export function expandSnapshot\(/.test(historySource) && /export function serializeHistory\(/.test(historySource));
+ok("name/kind 由 id 推导（正常条目不写旁表），推不出来才进 n/k", historySource.includes("export function identityOfId(") && historySource.includes("if (name !== \"\" && name !== derived.name) names[id] = name;") && historySource.includes("if (kind !== \"\" && kind !== derived.kind) kinds[id] = kind;"));
+ok("两种形态都能读（v1–v3 对象 + v4 紧凑），坏条目只丢自己不抛", historySource.includes("if (stored.e && typeof stored.e === \"object\")") && historySource.includes("} else if (stored.entries && typeof stored.entries === \"object\")") && historySource.includes(".map(expandSnapshot).filter(Boolean)"));
+ok("service 写盘只走 serializeHistory（不许自己拼 {version, snapshots}）", serviceSource.includes("const file = serializeHistory([...history.snapshots, snapshot]);") && !/writeJson\(this\.historyFile\(\), \{ version: HISTORY_VERSION/.test(serviceSource));
+ok("读的时候顺便迁移旧编码（否则 983 KB 的旧文件要等到下次真有变化才瘦）", serviceSource.includes("if (raw && Number(raw.version) !== HISTORY_VERSION)") && serviceSource.includes("serializeHistory(this.historyCache.snapshots)"));
+ok("history.json 用**不缩进**的 compact 写（缩进白占 219 KB：623 KB → 404 KB）", /writeJsonCompact/.test(serviceSource) && readFileSync(new URL("../lib/store.mjs", import.meta.url), "utf8").includes("export async function writeJsonCompact("));
+ok("声明明细按龄淘汰（DECLS_KEEP=4）：更早的快照只留计数，下钻优雅降级", /export const DECLS_KEEP = 4;/.test(historySource) && historySource.includes("index < detailFrom") && historySource.includes("const { decls, bundles, ...rest } = compact.composition;"));
+ok("probe-history 覆盖 H45/H46（明细按龄淘汰 / 丢明细后只报计数差）", ["H45", "H46"].every((id) => historyProbe34.includes(id + " ")));
+ok("probe-history 覆盖 H38–H44（无损往返 / 旁表 / 旧格式 / 混装 / 体积预算 / 自带裁剪）", ["H38", "H39", "H40", "H41", "H42", "H43", "H44"].every((id) => historyProbe34.includes(id + " ")));
+
+/* ⑧c R34：目录快照「旧在哪」—— 事实变了（结论可能已错）vs 只是旧了（结论仍有效） */
+const freshnessSource = readFileSync(new URL("../lib/freshness.mjs", import.meta.url), "utf8");
+const reportsSource = readFileSync(new URL("../lib/reports.mjs", import.meta.url), "utf8");
+const retentionProbeSource = readFileSync(new URL("./probe-retention.mjs", import.meta.url), "utf8");
+const hostinfoProfileSource = readFileSync(new URL("../lib/hostinfo.js", import.meta.url), "utf8");
+ok("lib/freshness.mjs 是纯函数（不 import fs），判据只做比较", /export function staleOf\(/.test(freshnessSource) && !/from "node:fs/.test(freshnessSource) && !/import .*node:fs/.test(freshnessSource));
+ok("陈旧判据拆成 ageStale 与 factStale，reason 三态（profile / age / 空）", freshnessSource.includes("ageStale") && freshnessSource.includes("factStale") && freshnessSource.includes('reason: factStale ? "profile" : ageStale ? "age" : ""'));
+ok("事实变化有 1 秒容差（同一次操作不判两次）", freshnessSource.includes("FACT_TOLERANCE_MS = 1000") && freshnessSource.includes("profileTouchedAt > builtAt + FACT_TOLERANCE_MS"));
+ok("profile 的 mtime 由 hostinfo 读（三个文件、只 stat 不读内容）", hostinfoProfileSource.includes("export async function profileMutation()") && hostinfoProfileSource.includes('["package.json", "cordis.yml", "cordis.patch.yml"]') && !/readFile\(join\(dir, name\)\)/.test(hostinfoProfileSource.slice(hostinfoProfileSource.indexOf("export async function profileMutation"))));
+ok("service 用 staleOf 判、并在重建后**清掉** stale（否则标记永远为真、变成噪音）", serviceSource.includes("...staleOf({") && serviceSource.includes("this.catalogStale = false;") && serviceSource.includes("this.catalogAgeMs = 0;"));
+ok("自动重建三条闸门：只在 factStale / 不抢 busy / 60 秒节流", serviceSource.includes("if (stale.factStale && !this.busy && Date.now() - Number(this.catalogHealAt || 0) > 60 * 1000)") && serviceSource.includes('this.startJob("catalog"'));
+ok("/state 的 catalogMeta 带 staleReason 与 profileTouchedAt（面板/工具能说清「旧在哪」）", serviceSource.includes("staleReason: stale.reason") && serviceSource.includes("profileTouchedAt: stale.profileTouchedAt") && serviceSource.includes("autoRebuild"));
+ok("health 报 catalogMeta；catalog_list / catalog_uninstall / 导出都带同一句警告", serviceSource.includes("catalogMeta: await this.catalogStaleInfo()") && serviceSource.includes("async catalogStaleText()") && toolsSource.includes("await service.catalogStaleText()") && serviceSource.includes("这份快照可能已经过时"));
+ok("陈旧提示必须出现在**删除决策**那条路上（catalog_uninstall 的 plan）", /const staleText = await service\.catalogStaleText\(\);\s*\n\s*const lines = \[[\s\S]{0,400}?处置清单/.test(toolsSource) || (toolsSource.includes("处置清单（只生成、不执行）") && toolsSource.includes("★ 先重建目录再决定")));
+ok("probe-retention 覆盖 F1–F6 / W1–W4 / R1–R8", ["F1", "F2", "F3", "F4", "F5", "F6", "W1", "W2", "W3", "W4", "R1", "R2", "R3", "R4", "R5", "R6", "R6b", "R7", "R8"].every((id) => retentionProbeSource.includes(id + " ")));
+ok("lib/reports.mjs 把 catalog-filtered 单列（它叫 catalog-filtered-*.md，混进 catalog 会挤掉快照）", reportsSource.includes('"catalog-filtered": 10') && reportsSource.includes("以 `catalog-` 开头"));
+
+/* ⑧d R34：每周任务「全失败不许伪装成跑过了」 */
+ok("reportOutcome 在 lib/review.mjs（纯函数，0 仓不等于全失败）", /export function reportOutcome\(/.test(readFileSync(new URL("../lib/review.mjs", import.meta.url), "utf8")) && readFileSync(new URL("../lib/review.mjs", import.meta.url), "utf8").includes("rows.length > 0 && ok === 0"));
+ok("service 走 noteWeeklyOutcome：全失败不动 lastGapAt、只加 streak", serviceSource.includes("async noteWeeklyOutcome(") && serviceSource.includes("if (outcome.allFailed)") && serviceSource.includes("next[streakKey] = (Number(this.weekly?.[streakKey]) || 0) + 1;"));
+ok("三处调用都换成它（runGap / runSecurity / runGapWithProgress）", (serviceSource.match(/noteWeeklyOutcome\(/g) || []).length >= 4 && serviceSource.includes('await this.noteWeeklyOutcome("security", report)'));
+ok("weeklyTick 按连续失败次数指数退避（1h→24h 封顶），不是死 1 小时", serviceSource.includes("Math.min(24 * 60 * 60 * 1000, 60 * 60 * 1000 * 2 ** Math.min(streak, 5))") && serviceSource.includes("gapFailStreak"));
+ok("loadWeekly 显式读回 streak / failedAt（白名单式映射漏一个就永远读成 0）", readFileSync(new URL("../lib/review.mjs", import.meta.url), "utf8").includes("gapFailStreak: Number(raw?.gapFailStreak) || 0"));
+ok("health 与面板 state 都带 weeklyFail（连失败次数 + 上次成败条数）", serviceSource.includes("weeklyFail: {") && serviceSource.includes("gapOutcome: summarizeReport(this.weekly?.gap)") && toolsSource.includes("连续 ${health.weeklyFail.gap} 次全失败"));
+
+/* ⑧e R34：reports/ 保留策略 */
+ok("lib/reports.mjs 纯函数：五种前缀白名单 + 长的在前（uninstall-verify 不被吞）", /export const REPORT_KEEP = Object\.freeze\(\{/.test(reportsSource) && reportsSource.includes('Object.keys(REPORT_KEEP).sort((a, b) => b.length - a.length)'));
+ok("同时间戳的 md/json 归一组（按去扩展名的 stem 归并）", reportsSource.includes("function stemOf(") && reportsSource.includes("map.get(stem).push(name)"));
+ok("不认识的名字一律不碰（只清自己命名的报告）", reportsSource.includes('if (prefix === "") continue;'));
+ok("service 有 tidyReports（失败不算错）并在六个写盘点调用", serviceSource.includes("async tidyReports()") && (serviceSource.match(/this\.tidyReports\(\)/g) || []).length >= 6);
+ok("导出走 path: 指定位置时不清旧（那不是我们的目录）", serviceSource.includes("options.path && typeof options.path === \"string\" ? { removed: [] } : await this.tidyReports()"));
 ok("compareEntries 是 diff 与 sameSignal 的唯一判据（两处各写一份判据迟早会差）", historySource.includes("return !compareEntries(a, b).any;") && /const \{ changed, any \} = compareEntries\(old, entry\)/.test(historySource));
 ok("正文改动单列成 edited（reason=content），且与描述改动互斥（只报一行）", historySource.includes('reason: "content"') && historySource.includes("else if (changed.description)") && historySource.includes("正文已改"));
 ok("「已看过」基线单独存 history-ack.json（不改写 history.json），写回走原子写", serviceSource.includes('return join(this.dir, "history-ack.json")') && serviceSource.includes("await writeJson(this.ackFile(), ack)"));

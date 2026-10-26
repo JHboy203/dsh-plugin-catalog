@@ -25,6 +25,9 @@ export const PROBES = Object.freeze([
 	{ id: "mcp", label: "MCP 判据", file: "dev/probe-mcp.mjs" },
 	/* R32：单件卸载（换版本的协作方）—— 判据与执行链，全程用假宿主，不真卸 */
 	{ id: "removal", label: "单件卸载", file: "dev/probe-removal.mjs" },
+	/* R34：留存与「还新不新」—— 快照陈旧判据（事实 vs 年龄）/ 每周任务全失败不许伪装成跑过 /
+	   reports/ 保留策略（只动自己那五种前缀、md+json 同组、留最新 N 组） */
+	{ id: "retention", label: "留存与陈旧", file: "dev/probe-retention.mjs" },
 ]);
 
 /** 探针个数（文档里「11 个」的那个数）。 */

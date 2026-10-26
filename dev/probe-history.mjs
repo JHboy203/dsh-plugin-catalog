@@ -10,7 +10,7 @@
  * 全程**不碰磁盘**：目录是内存里的合成数据，不读也不写 history.json。
  */
 
-import { compareComposition, compareEntries, compositionDetailText, compositionSignalOf, describeChange, diffSnapshots, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
+import { compactSnapshot, compareComposition, compareEntries, compositionDetailText, compositionSignalOf, describeChange, diffSnapshots, expandSnapshot, fingerprintOf, HISTORY_VERSION, normalizeAck, normalizeHistory, pruneSnapshots, sameSignal, serializeHistory, signalOf, snapshotOf, summarizeChanges, timelineOf } from "../lib/history.mjs";
 import { signatureOf } from "../lib/composition.mjs";
 
 const results = [];
@@ -394,6 +394,156 @@ const signature = (text, bundles = ["b-one", "b-two"], file = "cordis.yml") => s
 	const text = compositionDetailText(item, 4);
 	ok("H37 明细截断到 4 条 + 「…等 N 条」", text.length === 5 && text[4].includes("等 2 条"), JSON.stringify(text));
 }
+
+/* ───────────────── R34：v4 紧凑编码（判据不动，只换存盘的形态） ─────────────────
+   ★ 这一组是**体积治理的自证**：编码必须是**无损**的（否则历史会悄悄丢字段），
+     推不出来的 name / kind 必须进旁表（否则界面上的名字会变成空或变成 id），
+     旧格式必须还能读（否则升级一次历史就全丢），并且真的要**瘦下来**（否则改了白改）。 */
+
+/* H38：无损往返 —— 展开(紧凑(x)) 与原快照逐字段相等（含 fingerprint 与 composition） */
+{
+	const original = snapshotOf(catalogOf(), {}, AT, signature(CORDIS_MAIN, ["b-one"]));
+	const round = expandSnapshot(compactSnapshot(original));
+	ok(
+		"H38 v4 编码无损：紧凑→展开 与原快照等价",
+		round.at === original.at &&
+			round.count === original.count &&
+			round.fingerprint === original.fingerprint &&
+			JSON.stringify(round.entries) === JSON.stringify(original.entries) &&
+			JSON.stringify(round.composition) === JSON.stringify(original.composition),
+		JSON.stringify({ a: Object.keys(original.entries).length, b: Object.keys(round.entries).length }),
+	);
+}
+
+/* H39：name / kind 由 id 推导（插件 plugin:<pkg>、Skill skill:<name>），正常条目**不写旁表** */
+{
+	const compact = compactSnapshot(snapshotOf(catalogOf(), {}, AT));
+	const expanded = expandSnapshot(compact);
+	ok(
+		"H39 v4：name/kind 由 id 推导，正常条目不带 n/k 旁表",
+		Array.isArray(compact.e["plugin:alpha"]) &&
+			compact.e["plugin:alpha"][0] === "1.0.0" &&
+			compact.n === undefined &&
+			compact.k === undefined &&
+			expanded.entries["plugin:alpha"].name === "alpha" &&
+			expanded.entries["plugin:alpha"].kind === "plugin" &&
+			expanded.entries["skill:gamma"].kind === "skill",
+		JSON.stringify({ row: compact.e["plugin:alpha"], n: compact.n, k: compact.k }),
+	);
+}
+
+/* H40：推不出来时必须进旁表 —— 名字与 id 后缀不同 / kind 与前缀不符 / 脏 id（无前缀） */
+{
+	const snapshot = {
+		at: AT,
+		count: 3,
+		entries: {
+			"plugin:alias-dir": { name: "real-package", kind: "plugin", version: "1.0.0", source: "self", loadState: "bundle", description: 0, content: "" },
+			"plugin:weird": { name: "weird", kind: "skill", version: "", source: "third", loadState: "dormant", description: 1, content: "abc123" },
+			"noprefix": { name: "裸 id", kind: "plugin", version: "", source: "pending", loadState: "", description: 0, content: "" },
+		},
+		fingerprint: "abcdefabcdef",
+	};
+	const compact = compactSnapshot(snapshot);
+	const round = expandSnapshot(compact);
+	ok(
+		"H40 v4：推不出来的 name/kind 进旁表，展开后一字不差",
+		compact.n?.["plugin:alias-dir"] === "real-package" &&
+			compact.k?.["plugin:weird"] === "skill" &&
+			compact.n?.["noprefix"] === "裸 id" &&
+			round.entries["plugin:alias-dir"].name === "real-package" &&
+			round.entries["plugin:weird"].kind === "skill" &&
+			round.entries["noprefix"].name === "裸 id" &&
+			round.entries["noprefix"].description === 0,
+		JSON.stringify({ n: compact.n, k: compact.k }),
+	);
+}
+
+/* H41：旧格式（v1–v3 对象形态）仍能读 —— 升级不能让老历史失效 */
+{
+	const legacy = { at: AT, count: 1, fingerprint: "123456789012", entries: { "plugin:alpha": { name: "alpha", kind: "plugin", version: "0.9.0", source: "self", loadState: "bundle", description: 0, content: "" } } };
+	const viaNormalize = normalizeHistory({ version: 3, snapshots: [legacy] });
+	const viaExpand = expandSnapshot(legacy);
+	ok(
+		"H41 旧格式（对象形态）仍能读，且缺 name/kind 时按 id 补",
+		viaNormalize.snapshots.length === 1 && viaNormalize.snapshots[0].entries["plugin:alpha"].version === "0.9.0" && viaExpand.entries["plugin:alpha"].name === "alpha" && HISTORY_VERSION === 5,
+		JSON.stringify({ version: HISTORY_VERSION, kept: viaNormalize.snapshots.length }),
+	);
+}
+
+/* H42：混装文件（老对象 + 新紧凑）同时可读；坏条目只丢自己，不抛 */
+{
+	const legacy = { at: AT - 1000, count: 1, fingerprint: "111111111111", entries: { "plugin:alpha": { name: "alpha", kind: "plugin", version: "1.0.0", source: "self", loadState: "bundle", description: 0, content: "" } } };
+	const compact = compactSnapshot(snapshotOf(catalogOf(), {}, AT));
+	const normalized = normalizeHistory({ version: 4, snapshots: [legacy, compact, { at: "坏" }, null] });
+	ok(
+		"H42 老对象 + 新紧凑混装可读；坏条目只丢自己（不抛）",
+		normalized.snapshots.length === 2 && normalized.snapshots[0].at === AT - 1000 && normalized.snapshots[1].entries["skill:gamma"].kind === "skill",
+		JSON.stringify(normalized.snapshots.map((row) => row.at)),
+	);
+}
+
+/* H43：**真的瘦了** —— 116 条 × 20 条快照必须落进 240 KB 预算（本机实测 983 KB → 目标 < 240 KB） */
+{
+	const plugins = Array.from({ length: 100 }, (_, index) => ({ id: "plugin:pkg-" + index, name: "pkg-" + index, source: "third", version: "0.1." + (index % 9), loadState: index % 3 === 0 ? "dormant" : "transitive" }));
+	const skills = Array.from({ length: 16 }, (_, index) => ({ id: "skill:sk-" + index, name: "sk-" + index, source: "self", hasDescription: true, contentHash: "0123456789ab" }));
+	const snapshots = Array.from({ length: 20 }, (_, index) => snapshotOf({ plugins, skills }, {}, AT + index * 1000, signature(CORDIS_MAIN, ["b-one"])));
+	const file = serializeHistory(snapshots);
+	const bytes = Buffer.byteLength(JSON.stringify(file), "utf8");
+	const legacyBytes = Buffer.byteLength(JSON.stringify({ version: 3, snapshots }), "utf8");
+	ok(
+		"H43 v4 真的更小：116 条 × 20 快照 < 240 KB，且比旧对象形态小一半以上",
+		bytes < 240 * 1024 && bytes * 2 < legacyBytes,
+		JSON.stringify({ compact: bytes, legacy: legacyBytes, ratio: Math.round((bytes / legacyBytes) * 100) + "%" }),
+	);
+}
+
+/* H44：serializeHistory 自己就会裁剪 —— service 不许自己拼文件对象，也就不会漏掉这一层 */
+{
+	const snapshots = Array.from({ length: 30 }, (_, index) => snapshotOf(catalogOf(), {}, AT + index * 1000));
+	const file = serializeHistory(snapshots);
+	const round = normalizeHistory(file);
+	ok(
+		"H44 serializeHistory 自带裁剪（30 → 20）且都是紧凑形态",
+		file.snapshots.length === 20 && round.snapshots.length === 20 && file.snapshots.every((row) => row.e && !row.entries) && round.snapshots.every((row) => row.entries && row.fingerprint !== undefined),
+		JSON.stringify({ file: file.snapshots.length, expanded: round.snapshots.length }),
+	);
+}
+
+
+/* H45：声明明细按龄淘汰 —— 只有最近 DECLS_KEEP 条带 decls/bundles，更早的只留指纹与计数；
+   「关掉 25 → 24」这类结论（counts）一条都不许丢 */
+{
+	const snapshots = Array.from({ length: 8 }, (_, index) => snapshotOf(catalogOf(), {}, AT + index * 1000, signature(CORDIS_MAIN, ["b-one"])));
+	const file = serializeHistory(snapshots, 20, 3);
+	const rows = file.snapshots;
+	const withDetail = rows.filter((row) => row.composition && Array.isArray(row.composition.decls));
+	const withCounts = rows.filter((row) => row.composition && row.composition.counts);
+	ok(
+		"H45 声明明细只留最近 3 条（更早只留计数），指纹与 counts 一条不丢",
+		withDetail.length === 3 &&
+			withCounts.length === 8 &&
+			rows.every((row) => typeof row.fp === "string" && row.fp.length === 12) &&
+			rows.slice(0, 5).every((row) => row.composition.bundles === undefined) &&
+			rows.slice(5).every((row) => Array.isArray(row.composition.decls) && Array.isArray(row.composition.bundles)),
+		JSON.stringify({ detail: withDetail.length, counts: withCounts.length, total: rows.length }),
+	);
+}
+
+/* H46：丢掉明细后**下钻优雅降级** —— 单边缺 decls 时只报计数差，不伪造条目 */
+{
+	const older = compositionSignalOf(signature(CORDIS_MAIN, ["b-one"]));
+	delete older.decls;
+	delete older.bundles;
+	const newer = compositionSignalOf(signature(CORDIS_OFF, ["b-one", "b-two"]));
+	const cmp = compareComposition({ composition: older }, { composition: newer });
+	ok(
+		"H46 更早的快照没有明细时，只报计数差（hasDetail=false，不假装「246 条新增」）",
+		Boolean(cmp) && cmp.hasDetail === false && cmp.declsAdded.length === 0 && cmp.bundlesAdded.length === 0 && cmp.changed.length > 0,
+		JSON.stringify({ hasDetail: cmp?.hasDetail, changed: cmp?.changed }),
+	);
+}
+
 
 const failed = results.filter((item) => !item.pass);
 if (process.argv.includes("--json")) {

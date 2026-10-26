@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 
 import { profileNodeModules } from "../lib/hostinfo.js";
 import { scanInstalledPackages } from "../lib/loadstate.mjs";
+/* R34：盘上的 history.json 是 v4 紧凑形态，断言前必须先展开（否则 `entries` 永远读不到） */
+import { normalizeHistory } from "../lib/history.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -43,6 +45,22 @@ const dataDir = process.env.DSH_CATALOG_DIR || join(tmpdir(), "dsh-catalog-hostt
 mkdirSync(join(dataDir, "cache"), { recursive: true });
 /* 关掉每周自动任务：自检不该调模型、也不该把"上次执行时间"写脏 */
 writeFileSync(join(dataDir, "settings.json"), JSON.stringify({ version: 1, settings: { weeklyGapAuto: false, windowDays: 90 } }), "utf8");
+/* ★ R34：种一份「上次缺口分析 12/12 全失败」的 weekly.json ——
+   旧口径会把 lastGapAt 写成刚跑过（等于把失败伪装成完成），health 里也看不出来。
+   这里先种进去，启动后断言 /health 与 catalog_health 都能说出「连续 N 次全失败」。 */
+const weeklySeedAt = Date.now() - 3 * 86400000;
+writeFileSync(
+	join(dataDir, "weekly.json"),
+	JSON.stringify({
+		lastGapAt: weeklySeedAt,
+		lastGapAttemptAt: weeklySeedAt,
+		gapFailStreak: 2,
+		gapFailedAt: weeklySeedAt + 1000,
+		gap: { ranAt: weeklySeedAt + 1000, repos: 12, results: Array.from({ length: 12 }, (_, index) => ({ name: "repo-" + index, ok: false, findings: [], error: 'cannot get property "llm" without inject' })) },
+		savedAt: weeklySeedAt,
+	}),
+	"utf8",
+);
 process.env.DSH_CATALOG_DIR = dataDir;
 
 /* ── 假宿主 ── */
@@ -1199,7 +1217,8 @@ ok(
 /* ── R17：变化追踪（自上次目录快照以来变了什么） ──
    判据落在磁盘上的 history.json：启动要落一条、重建不能重复落、/state 报得出来。 */
 const historyPath = join(dataDir, "history.json");
-const bootHistory = existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] };
+/* ★ R34：盘上是 v4 紧凑形态（`e` / `fp`）—— 断言走展开后的语义形态，别直接读 `entries` */
+const bootHistory = normalizeHistory(existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] });
 ok(
 	"变化追踪：第一次目录构建就落了一条快照（12 位指纹 + 条目表 + at）",
 	Array.isArray(bootHistory.snapshots) && bootHistory.snapshots.length >= 1 && /^[0-9a-f]{12}$/.test(String(bootHistory.snapshots[0].fingerprint || "")) && Object.keys(bootHistory.snapshots[0].entries || {}).length > 0 && Number(bootHistory.snapshots[0].at) > 0,
@@ -1215,7 +1234,10 @@ ok(
    ★ 这里**故意不跑重建**（一次全量重建 30 秒，会把 30 秒的自检拖成 97 秒）——
      追加判据本身由 probe-history 的 H2/H4/H15（指纹稳定性 + 无变化 diff 为空）与
      audit 的静态断言覆盖；这里只查落盘结果里有没有重复指纹。 */
-const historyAfter = existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] };
+/* ★ R34：盘上是 **v4 紧凑形态**（`e` / `fp`），断言必须先经 `normalizeHistory` 展开 ——
+   拿原始 JSON 去读 `entries` 会永远是 0 条，然后得出"快照是空的"这种假结论。 */
+const historyAfterRaw = existsSync(historyPath) ? JSON.parse(readFileSync(historyPath, "utf8")) : { snapshots: [] };
+const historyAfter = normalizeHistory(historyAfterRaw);
 const fingerprints = historyAfter.snapshots.map((item) => item.fingerprint);
 ok(
 	"历史里没有重复指纹（指纹没变就不追加，同一条不会被记两次）",
@@ -1394,6 +1416,70 @@ ok(
 );
 const healthAck = (await callRoute("/health")).json?.ack;
 ok("确认之后 /health.ack 报出确认时间与自那以来的计数", Boolean(healthAck) && Number(healthAck.at) > 0 && healthAck.since && healthAck.since.total === 0, JSON.stringify(healthAck && { at: healthAck.at, since: healthAck.since }));
+
+/* ── R34：留存与陈旧（目录快照旧在哪 / 每周任务不许伪装成跑过 / reports 保留策略） ── */
+
+/* ① 目录快照的陈旧判据：/state.catalogMeta 必须能说出「旧在哪」，而不是一个布尔量 */
+const catalogMeta = (await callRoute("/state")).json?.catalogMeta;
+ok(
+	"/state.catalogMeta：stale/staleReason/profileTouchedAt/autoRebuild 都在（说得出旧在哪）",
+	Boolean(catalogMeta) && typeof catalogMeta.stale === "boolean" && typeof catalogMeta.staleReason === "string" && typeof catalogMeta.profileTouchedAt === "number" && typeof catalogMeta.autoRebuild === "boolean",
+	JSON.stringify(catalogMeta && { stale: catalogMeta.stale, reason: catalogMeta.staleReason, touched: catalogMeta.profileTouchedAt }),
+);
+const healthCatalogMeta = (await callRoute("/health")).json?.catalogMeta;
+ok(
+	"/health.catalogMeta：builtAt / ageStale / factStale / ttlMs 分开给（事实变了 ≠ 只是旧了）",
+	Boolean(healthCatalogMeta) && Number.isInteger(Number(healthCatalogMeta.ttlMs)) && typeof healthCatalogMeta.ageStale === "boolean" && typeof healthCatalogMeta.factStale === "boolean",
+	JSON.stringify(healthCatalogMeta && { builtAt: healthCatalogMeta.builtAt, age: healthCatalogMeta.ageStale, fact: healthCatalogMeta.factStale }),
+);
+
+/* ② 每周任务：种进去的「12/12 全失败」必须能在 health / 工具文本里看见 */
+const healthWeeklyFail = (await callRoute("/health")).json?.weeklyFail;
+ok(
+	"/health.weeklyFail：连续失败次数 + 上次 0/12 成功（旧口径这里和成功长得一样）",
+	Boolean(healthWeeklyFail) && healthWeeklyFail.gap === 2 && healthWeeklyFail.gapOutcome?.allFailed === true && healthWeeklyFail.gapOutcome?.ok === 0 && healthWeeklyFail.gapOutcome?.repos === 12,
+	JSON.stringify(healthWeeklyFail && { streak: healthWeeklyFail.gap, outcome: healthWeeklyFail.gapOutcome && { ok: healthWeeklyFail.gapOutcome.ok, failed: healthWeeklyFail.gapOutcome.failed, allFailed: healthWeeklyFail.gapOutcome.allFailed } }),
+);
+const healthToolText = (await callTool("catalog_health", {})).text || "";
+ok("catalog_health 文本点名「连续 N 次全失败」并说明退避重试", healthToolText.includes("连续 2 次全失败") && healthToolText.includes("退避"), healthToolText.split("\n").filter((line) => line.includes("每周任务")).join(" | "));
+
+/* ③ history.json 落盘形态：v4 紧凑（`e` 数组表），而不是逐条对象（体积治理的自证） */
+const historyOnDisk = existsSync(join(dataDir, "history.json")) ? JSON.parse(readFileSync(join(dataDir, "history.json"), "utf8")) : { snapshots: [] };
+const historyFirst = historyOnDisk.snapshots[0] || {};
+ok(
+	"history.json 写成 v5 紧凑形态（`e` + `fp`，没有逐条的 entries 对象）",
+	historyOnDisk.version === 5 && Boolean(historyFirst.e) && typeof historyFirst.e === "object" && historyFirst.entries === undefined && typeof historyFirst.fp === "string",
+	JSON.stringify({ version: historyOnDisk.version, keys: Object.keys(historyFirst) }),
+);
+ok("history.json 的条目是数组（[version, source, loadState, description, content]）", Boolean(historyFirst.e) && Object.values(historyFirst.e).every((row) => Array.isArray(row) && row.length === 5));
+
+/* ④ reports/ 保留策略：造 14 份旧的 catalog-* + 2 份 uninstall-verify-*，导出一次后旧的该被清、别的组不许动 */
+const reportsDir = join(dataDir, "reports");
+mkdirSync(reportsDir, { recursive: true });
+const stemOfReport = (name) => String(name).replace(/\.[^.]+$/, "");
+const catalogStemsBefore = new Set(readdirSync(reportsDir).filter((name) => /^catalog-\d{8}-\d{4}\.(md|csv)$/.test(name)).map(stemOfReport));
+const fakeOld = Array.from({ length: 14 }, (_, index) => "catalog-202001" + String(index + 1).padStart(2, "0") + "-0000.md");
+for (const name of fakeOld) writeFileSync(join(reportsDir, name), "old", "utf8");
+const keepOther = ["uninstall-verify-20200101-0000.md", "uninstall-verify-20200102-0000.md", "my-own-notes.md"];
+for (const name of keepOther) writeFileSync(join(reportsDir, name), "keep", "utf8");
+const exportForTidy = await callTool("catalog_export", {});
+const reportsAfter = readdirSync(reportsDir);
+const catalogStemsAfter = new Set(reportsAfter.filter((name) => /^catalog-\d{8}-\d{4}\.(md|csv)$/.test(name)).map(stemOfReport));
+/* 期望留多少组：min(12, 清理前已有的组 + 这次新写的) —— 别把「之前已经导出过几次」写死 */
+const expectedStems = Math.min(12, catalogStemsBefore.size + 1 + fakeOld.length) === 12 ? 12 : Math.min(12, catalogStemsBefore.size + 1 + fakeOld.length);
+ok(
+	"reports/ 保留策略：catalog-* 只留最新 12 组，最旧的那些被清（新写的那份一定在）",
+	catalogStemsAfter.size === Math.min(12, catalogStemsBefore.size + 1 + fakeOld.length) &&
+		Number(exportForTidy?.tidied) > 0 &&
+		reportsAfter.includes(String(exportForTidy?.path || "").split(/[\\/]/).pop()) &&
+		!reportsAfter.includes("catalog-20200101-0000.md"),
+	JSON.stringify({ stemsBefore: catalogStemsBefore.size, stemsAfter: catalogStemsAfter.size, tidied: exportForTidy?.tidied, fake: fakeOld.length, expected: expectedStems }),
+);
+ok(
+	"reports/ 保留策略：别的前缀与别人的文件一个都不许动（uninstall-verify 不被 uninstall 吞）",
+	keepOther.every((name) => reportsAfter.includes(name)),
+	JSON.stringify(keepOther.filter((name) => !reportsAfter.includes(name))),
+);
 
 /* ── 越权请求被拒 ── */
 {
