@@ -1270,6 +1270,25 @@ ok("R33：紧凑视图只带层计数（49 份 patch 的路径不进 /state）",
 ok("R33：probe-composition 覆盖 C17–C22（insert / 分层合并 / 模型 / 计数守恒 / 紧凑视图 / 读不到的层）", ["C17", "C18", "C19", "C20", "C21", "C22"].every((id) => compositionProbeSource.includes(id + " ")));
 ok("R33：没有把「不展开 bundle patch 层」这句旧结论留在这三处", !toolsSource.includes("不展开 bundle 自带的 patch 层") && !clientSource.includes("不展开 bundle 自带的 patch 层") && !compositionSource.includes("不展开 bundle 自带的 patch 层"));
 
+/* ⑨c R33 收尾：把这一轮**临时敲的取证**固化成脚本 —— 否则下次宿主换模型又要重写一遍 node -e。
+   三条都只读；`inspect.mjs` 刻意用 node:http（fetch 会自动解压 / 退出撞 libuv 断言，本机都有先例）。 */
+const measureLayersSource = readFileSync(new URL("./measure-layers.mjs", import.meta.url), "utf8");
+const measureStorageSource = readFileSync(new URL("./measure-storage.mjs", import.meta.url), "utf8");
+const inspectCliSource = readFileSync(new URL("./inspect.mjs", import.meta.url), "utf8");
+ok(
+	"R33 取证：measure-layers 报「层 / 模型 / 旧判据对照」，且不 spawn 不写盘",
+	measureLayersSource.includes("collectCompositionLayers") && measureLayersSource.includes("legacyEntries") && measureLayersSource.includes("gap") && !/spawn|execFile|writeFile/.test(measureLayersSource),
+);
+ok(
+	"R33 取证：measure-storage 有 history 预算常量与「decls 是体积大头」的处置，且只读",
+	measureStorageSource.includes("240 * 1024") && measureStorageSource.includes("BUDGETS") && measureStorageSource.includes("decls") && !/writeFile|unlink|rmSync/.test(measureStorageSource),
+);
+ok(
+	"R33 取证：inspect.mjs 走 node:http（不是 fetch）+ 支持 --expect + 不写盘",
+	inspectCliSource.includes('from "node:http"') && !inspectCliSource.includes("fetch(") && inspectCliSource.includes("--expect") && !/writeFile|unlink/.test(inspectCliSource),
+);
+ok("三份取证脚本都写进 README（下一个人找得到，不然等于没做）", readmeZh.includes("measure-layers.mjs") && readmeZh.includes("measure-storage.mjs") && readmeZh.includes("inspect.mjs"));
+
 /* ⑨ R23：配置层变化进历史 —— 改 disabled / 加 bundle 时目录条目一个都没变，
    v2 只比条目信号，这类改动完全看不见。这一轮锁五件事：
      ① 签名只解析声明（不扫包、不读 asar），指纹取 id/name/disabledKind + bundles；

@@ -576,7 +576,22 @@ node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖
 node dev/run-probes.mjs       # **12 个探针串成一条**（发版体检的第 5 项，共 320 条，约 6 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
-node dev/probe-removal.mjs    # 单件卸载自检（R32）：47 条（声明形态 npm/link/file/git / 自己·宿主自带·不属于 profile
+node dev/inspect.mjs --base http://127.0.0.1:<GUI端口> --name dsh-diag
+                            # ★ R33：**装完核对的人工入口**（只读）。直接打 `GET /plugin-catalog/inspect?name=`，
+                            #   回答「这个包在目录眼里会不会被加载」：loaded / installed-not-loaded / not-installed /
+                            #   host-owned / self。--name 可逗号多个；--expect loaded 可当断言用。
+                            #   ★ 走 node:http 而不是 fetch（undici keep-alive 在 process.exit 会撞 libuv 断言；
+                            #     本机还有 undici 流断开打死宿主的先例）。
+node dev/measure-layers.mjs  # ★ R33：**组合层取证**（只读）。宿主每次换组合模型时先跑它：
+                            #   层清单（role / source profile|asar / 条目数）、模型（flat / bundle-layers / empty）、
+                            #   合并口径（解析 → 生效）、以及**旧判据（只读 profile 两份文件）会读到多少**的对照。
+                            #   rc.3 实测：43 层（纯 node）→ 54 条 vs 旧判据 24 条（差 125%）；宿主里是 51 层 → 232 条。
+                            #   退出码：0 = 层齐全或有如实原因（asar 在纯 node 读不到属正常）；1 = 明显读少了。
+node dev/measure-storage.mjs # ★ R33：**留存现状取证**（只读）。数据目录 7 份状态文件的体积/条数 +
+                            #   两份预算判定：`history.json`（240 KB）与 `cache/catalog.json`（2 MB）。
+                            #   实测：history.json **988 KB / 20 条 / 条均 49 KB → 超预算 4.1 倍**，
+                            #   原因是每条快照都存全量 decls → 处置写在输出里（紧凑编码或按字节裁剪）。
+node dev/probe-removal.mjs    # 单件卸载自检（R32/R33）：66 条（声明形态 npm/link/file/git / 自己·宿主自带·不属于 profile
                               # 三条阻断 / 加载态与依赖者只算警告 / 回执翻人话且 unknown-plugin 不算失败 /
                               # 「宿主回 applied 但依赖行还在」必须判失败 / 计划过期与 token 一次性 / 留痕 50 条封顶），
                               # 全程用假宿主，**不真卸载**
