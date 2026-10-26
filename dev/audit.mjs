@@ -932,7 +932,7 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.30.0 / r30.0", /"version": "0\.30\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r30.0"'));
+ok("版本号与构建戳同步抬到 0.31.0 / r31.0", /"version": "0\.31\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r31.0"'));
 
 
 ok(
@@ -962,6 +962,41 @@ ok(
 ok("六种处置分类冻结成一张表（界面与清单读同一份，不许各写一句）", Object.isFrozen(PROVENANCE) && Object.keys(PROVENANCE).length === 6);
 ok("链接的「可回收」恒为 0（删 junction 不省空间）", uninstallSource.includes("item.reclaimBytes = 0;") && uninstallProbeSource.includes("删链接不省空间"));
 ok("别名 / 同项目第二份不把包名列为可摘键（摘错会删掉正在加载的那份）", uninstallSource.includes('item.provenance === "duplicate" || item.provenance === "alias-only"') && uninstallSource.includes("keepKeys"));
+
+/* ②b R32：**单件卸载**（换版本的协作方）—— 与上面「处置清单」是两件事，别混：
+   清单批量清目录、只生成不执行；removal 把一个已装包交给宿主 removeBundle。
+   三条红线：① 不碰文件删除 ② 模型没有这个动作（无工具） ③ 两边都不硬依赖。 */
+const removalSource = readFileSync(new URL("../lib/removal.mjs", import.meta.url), "utf8");
+const indexSourceNow = readFileSync(new URL("../index.js", import.meta.url), "utf8");
+ok("单件卸载：只调宿主 removeBundle，源码里没有任何文件删除",
+	/removeBundle\(/.test(removalSource) &&
+	/* 先抹掉注释再判：模块头本来就写着「rmSync/unlink 一个都不许出现」，
+	   不抹注释会把规则说明本身当成违规（本仓踩过同一类静默误判）。 */
+	!/(rmSync|rmdirSync|unlinkSync|unlink\(|rmdir\(|await rm\(|\.rm\(|writeFile\()/.test(removalSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")));
+ok("单件卸载：判据是纯函数（planPackageRemoval），执行只做「复核 + 记一笔」",
+	/export function planPackageRemoval/.test(removalSource) && /export async function executePackageRemoval/.test(removalSource) &&
+	/cloneFacts|collectRemovalFacts/.test(removalSource));
+ok("单件卸载：拒绝自己卸自己 / 宿主自带作用域 / 不属于 profile 的包",
+	/CATALOG_PACKAGE/.test(removalSource) && /HOST_SCOPE/.test(removalSource) && /not-owned/.test(removalSource));
+ok("单件卸载：执行前复核版本（计划过期 → stale-plan，不拿旧事实动手）",
+	/code: "stale-plan"/.test(removalSource) && /before\.version/.test(removalSource));
+ok("单件卸载：结论以**依赖行**为准（宿主回 applied 但依赖还在 = 没卸掉）",
+	/verified: \{ removed: after\.removed === true/.test(removalSource) && /after\.removed === true/.test(removalSource));
+ok("单件卸载：每次真卸载都留痕（上限 50 条，成功与失败都记）",
+	/removal-journal\.json/.test(serviceSource) && /REMOVAL_JOURNAL_LIMIT/.test(removalSource) && /appendRemovalJournal/.test(serviceSource));
+ok("跨插件契约：通过 Cordis 服务暴露（ctx.provide + api 版本号），不是 HTTP",
+	/ctx\.provide\("pluginCatalog"/.test(indexSourceNow) && /api: REMOVAL_API/.test(indexSourceNow) && /removal: \{/.test(indexSourceNow));
+ok("跨插件契约：服务在 apply 的同步阶段声明（不能放在 await 之后）",
+	indexSourceNow.indexOf("ctx.provide(\"pluginCatalog\"") < indexSourceNow.indexOf("await catalog.init()"));
+ok("跨插件契约：没有注册成工具（模型拿不到「卸载别人插件」这个动作）",
+	!toolsSource.includes("removal") && !toolsSource.includes("uninstall_package"));
+ok("跨插件契约：面板行为不变（处置清单照旧只生成不执行）",
+	clientSource.includes("只生成、永不执行删除") && !clientSource.includes("/removal/apply"));
+ok("单件卸载：路由两条（plan / apply），apply 必须 token + confirm",
+	indexSourceNow.includes('path === "/removal/plan"') && indexSourceNow.includes('path === "/removal/apply"') &&
+	/body\.confirm !== true/.test(indexSourceNow));
+ok("单件卸载：探针已登记在清单里（不然 ship 不会跑它）",
+	readFileSync(new URL("./probe-list.mjs", import.meta.url), "utf8").includes("dev/probe-removal.mjs"));
 
 /* ③ 构造样本跑一遍分组与分类（不碰真机 profile） */
 const planNm = join(tmpRoot, "plan-nm");
@@ -1302,7 +1337,10 @@ const docTruth = (() => {
 	const skillUrl = new URL("../../../.dsh/skills/dsh-plugin-catalog/SKILL.md", import.meta.url);
 	const skillText = existsSync(skillUrl) ? readFileSync(skillUrl, "utf8") : "";
 	const liveCheckSource = readFileSync(new URL("./live-check.mjs", import.meta.url), "utf8");
-	const handoffUrl = new URL("../★交接文件·插件目录面板.md", import.meta.url);
+	/* ★ 2026-10-26 R32 修正：交接文件在 `DSH-Plugin\` 下（dev/ 的上两级），
+	   原路径少了一级 → `existsSync` 恒 false → 「三处共 N 条一致」这条**一直静默跳过**。
+	   一条永远为真的断言比没有断言更糟：它让人以为核对过了。 */
+	const handoffUrl = new URL("../../★交接文件·插件目录面板.md", import.meta.url);
 	const handoffText = existsSync(handoffUrl) ? readFileSync(handoffUrl, "utf8") : "";
 	/** 只数"真的会执行"的断言行（缩进的 ok( 才是判据，注释里的不算）。 */
 	const liveChecks = (liveCheckSource.match(/^\s*ok\(/gm) || []).length;

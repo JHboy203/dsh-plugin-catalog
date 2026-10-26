@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 import { profileNodeModules } from "../lib/hostinfo.js";
+import { scanInstalledPackages } from "../lib/loadstate.mjs";
 
 const results = [];
 function ok(name, condition, detail = "") {
@@ -1123,13 +1124,32 @@ ok(
 	nmBefore + " → " + countNmDirs(),
 );
 
-/* 单删父包 = 留孤儿：组内别名包还声明着它 —— 这正是清单要求「整组一起处置」的原因 */
-const simulateOne = await callTool("catalog_uninstall", { action: "simulate", packages: ["dsh-mnemon"] });
-ok(
-	"点名单删 dsh-mnemon：预演报「还有包声明它」，判有风险（组要整组处置）",
-	simulateOne?.ok === true && simulateOne?.verdict === "risky" && (simulateOne?.dangling || []).some((item) => item.dep === "dsh-mnemon"),
-	JSON.stringify(simulateOne && { verdict: simulateOne.verdict, dangling: simulateOne.dangling?.length, breaking: simulateOne.breaking?.length }),
-);
+/* 单删父包 = 留孤儿：组内别名包还声明着它 —— 这正是清单要求「整组一起处置」的原因。
+   ★ 这一条以前把包名写死成 dsh-mnemon，机器上没装它时就会红（R32 实测撞到）。
+     改成**当场找一个有依赖者的包**：判据写在行为上，不写在机型上。 */
+const scannedSim = await scanInstalledPackages(profileNodeModules()).catch(() => null);
+let withDependent = "";
+if (scannedSim && scannedSim.installed instanceof Map) {
+	for (const [dep] of scannedSim.installed) {
+		for (const [pkg, deps] of scannedSim.installed) {
+			if (pkg !== dep && Array.isArray(deps) && deps.includes(dep)) {
+				withDependent = dep;
+				break;
+			}
+		}
+		if (withDependent) break;
+	}
+}
+if (withDependent) {
+	const simulateOne = await callTool("catalog_uninstall", { action: "simulate", packages: [withDependent] });
+	ok(
+		"点名单删有依赖者的包（" + withDependent + "）：预演报「还有包声明它」，判有风险（组要整组处置）",
+		simulateOne?.ok === true && simulateOne?.verdict === "risky" && (simulateOne?.dangling || []).some((item) => item.dep === withDependent),
+		JSON.stringify(simulateOne && { verdict: simulateOne.verdict, dangling: simulateOne.dangling?.length, breaking: simulateOne.breaking?.length }),
+	);
+} else {
+	skip("点名单删有依赖者的包：预演报「还有包声明它」", "本机已装包里没有任何「被别的包声明」的 —— 是机型状态，不是判据坏了");
+}
 
 const simulateUnknown = await callTool("catalog_uninstall", { action: "simulate", packages: ["definitely-not-installed"] });
 ok(
@@ -1270,9 +1290,10 @@ ok(
 ok(
 	"配置层清单里的每一条都带 file + line（没有来源的条目无法复核）",
 	[...(stateComposition?.missing || []), ...(stateComposition?.conditional || []), ...(stateComposition?.disabled || [])].every((row) => typeof row.file === "string" && row.file !== "" && Number(row.line) > 0) &&
-		(stateComposition?.conditional || []).length > 0 &&
-		(stateComposition?.disabled || []).length > 0,
-	JSON.stringify({ conditional: stateComposition?.conditional?.length, disabled: stateComposition?.disabled?.length }),
+		/* ★ 以前还要求 conditional>0 且 disabled>0 —— 那是在断言这台机器的配置长什么样：
+		     换台机器/改一次 cordis.patch.yml 就红。判据只保留「有需要复核的行时必须带来源」。 */
+		((stateComposition?.conditional || []).length + (stateComposition?.disabled || []).length + (stateComposition?.missing || []).length > 0),
+	JSON.stringify({ conditional: stateComposition?.conditional?.length, disabled: stateComposition?.disabled?.length, missing: stateComposition?.missing?.length }),
 );
 ok(
 	"bundles 缺口口径守恒：已装 + 官方 asar + 真的缺 + 无法判定 = 声明数",

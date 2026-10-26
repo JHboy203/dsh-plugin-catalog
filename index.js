@@ -13,10 +13,11 @@
  * 即恢复官方界面。这条也写在 README 的「自救」一节里。
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { CatalogService } from "./lib/service.mjs";
+import { REMOVAL_API } from "./lib/removal.mjs";
 import { buildCatalogTools } from "./lib/tools.mjs";
 import { buildStamp, hostVersions, profileDir, dataDir as dataDirOf, workspaceRoot } from "./lib/hostinfo.js";
 import { loadSettings } from "./lib/settings.mjs";
@@ -25,6 +26,15 @@ import { shipCheckIds } from "./dev/ship-checks.mjs";
 
 const PREFIX = "/plugin-catalog";
 const MAX_JSON_BODY = 1 * 1024 * 1024;
+
+/** 本插件版本（跨插件契约里消费方要拿它判断"对面是哪一版"）。模块加载时读一次。 */
+const PLUGIN_VERSION = (() => {
+	try {
+		return JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version || "";
+	} catch {
+		return "";
+	}
+})();
 
 function service(ctx, key) {
 	try {
@@ -235,6 +245,41 @@ export async function apply(ctx) {
 		throw error;
 	}
 
+	/* ── R32：把「单件卸载」作为**跨插件能力**暴露出去 ──
+	 *
+	 * 为什么走 Cordis 服务而不是 HTTP：消费方（dsh-plugin-installer）在同一个宿主进程里 ——
+	 * 走服务没有端口发现、没有第二个鉴权面、也不会多一个失败环节。
+	 * ★ 与 ctx.effect 同一条纪律：**在 apply 的同步阶段声明**（前面不能有 await）。
+	 * ★ 门面先给出去，真正的 CatalogService 在下面才构造：所以方法一律经 `catalogRef` 转发，
+	 *   没准备好就明确回 not-ready，**不抛** —— 消费方据此降级，而不是崩在自己的 apply 里。
+	 * ★ 独立性的落点：本插件不 import 任何安装侧代码；没有消费方时它只是一个安静的能力，
+	 *   面板行为（处置清单「只生成不执行」）一点没变。 */
+	let catalogRef = null;
+	const removalNotReady = () => ({ ok: false, api: REMOVAL_API, code: "not-ready", error: "插件目录还没初始化完（init 未返回）" });
+	const removalDescribe = () => (catalogRef ? catalogRef.removalHost() : { ...removalNotReady(), canRemove: false });
+	const removalCall = async (method, arg) => (catalogRef && typeof catalogRef[method] === "function" ? await catalogRef[method](arg) : removalNotReady());
+	try {
+		if (typeof ctx.provide === "function") {
+			ctx.provide("pluginCatalog", {
+				name: "dsh-plugin-catalog",
+				version: PLUGIN_VERSION,
+				removal: {
+					api: REMOVAL_API,
+					describe: () => removalDescribe(),
+					plan: async (input) => await removalCall("removalPlan", input),
+					apply: async (input) => await removalCall("removalApply", input),
+					journal: async (limit) => await removalCall("removalJournal", limit),
+				},
+			});
+			mark(traceDir, "B2:provide-ok", "pluginCatalog v" + PLUGIN_VERSION);
+		} else {
+			mark(traceDir, "B2:provide-skip", "ctx.provide 不可用");
+		}
+	} catch (error) {
+		/* 声明失败不该让整个插件消失：面板与工具照旧，只是消费方会看到 not-ready */
+		mark(traceDir, "X:provide-threw", stackOf(error));
+	}
+
 	/* 实时工具 schema：归属判定与自检都要它 —— 取不到就退化为空表（不抛） */
 	const toolSchemas = () => {
 		const tools = service(ctx, "tools");
@@ -248,6 +293,7 @@ export async function apply(ctx) {
 	};
 
 	const catalog = new CatalogService({ ctx, toolSchemas });
+	catalogRef = catalog;
 	try {
 		await catalog.init();
 	} catch (error) {
@@ -400,6 +446,24 @@ export async function apply(ctx) {
 						return json(res, 200, started);
 					}
 					return json(res, 200, await catalog.writeUninstallReport({ confirm: body.confirm === true }));
+				}
+
+				/* R32：**单件卸载**（不是上面那个处置清单）。
+				   两段式：plan 只读、带 token 与 5 分钟有效期；apply 必须 token + confirm:true。
+				   平时由 dsh-plugin-installer 的升级流程**经服务**调用（不经这里），
+				   这两条路由留给排查与人工调用 —— 判据与执行跟服务是同一条代码路径。
+				   ★ 只调宿主 pluginManager.removeBundle()，**不删任何文件**。 */
+				if (path === "/removal/plan" && method === "POST") {
+					const body = await readJsonBody(req);
+					return json(res, 200, await catalog.removalPlan({ name: body.name, purpose: body.purpose, requestedBy: body.requestedBy }));
+				}
+				if (path === "/removal/apply" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (body.confirm !== true) return json(res, 400, { ok: false, error: "需要 confirm:true（两段式：先 /removal/plan 拿 token）" });
+					return json(res, 200, await catalog.removalApply({ token: body.token, confirm: true, requestedBy: body.requestedBy }));
+				}
+				if (path === "/removal/journal" && method === "GET") {
+					return json(res, 200, await catalog.removalJournal(Number(url.searchParams.get("limit")) || 10));
 				}
 
 				if (path === "/tags" && method === "POST") {

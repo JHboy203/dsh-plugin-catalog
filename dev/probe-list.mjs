@@ -23,6 +23,8 @@ export const PROBES = Object.freeze([
 	{ id: "handoff", label: "交接单", file: "dev/probe-handoff.mjs" },
 	{ id: "csv", label: "CSV 导出", file: "dev/probe-csv.mjs" },
 	{ id: "mcp", label: "MCP 判据", file: "dev/probe-mcp.mjs" },
+	/* R32：单件卸载（换版本的协作方）—— 判据与执行链，全程用假宿主，不真卸 */
+	{ id: "removal", label: "单件卸载", file: "dev/probe-removal.mjs" },
 ]);
 
 /** 探针个数（文档里「11 个」的那个数）。 */

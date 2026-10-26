@@ -363,6 +363,32 @@ Skill 的「自写」判据是：`.gh-upload/my-dsh-skills/`（自写集合仓�
   ⚠️ Electron 把 `app.asar` **当目录**，`openSync` 打开归档本身会失败；`lib/asar.mjs` 自动区分
   「virtual 模式（宿主里，走成员路径）」与「header 模式（纯 node）」，`/health` 会报当前模式。
 
+## 「插件安装」升级时的卸载协作（R32）
+
+宿主 0.2.1 的 `pluginManager.installBundle` **按包名判已装**，对已存在的包名一律回
+`already-installed`（原文：*uninstall it before installing another version*）。所以
+`dsh-plugin-installer` 的「检查更新 → 升级」只有一条路：**先卸载旧版，再装新版**。
+
+卸载这件事落在本插件，原因是**判据都在这儿**：谁声明依赖它、它现在会不会被加载、
+它是 npm 还是 `link:`、是不是宿主自带包。判据与执行分开写，就会出现「面板说安全、执行时指空」。
+
+| 层 | 是什么 | 边界 |
+|---|---|---|
+| `lib/removal.mjs` | 单个已装包的**计划 + 执行** | 只调宿主 `removeBundle()`，**不删任何文件**；计划带 5 分钟一次性 token；执行前复核版本与依赖声明（`stale-plan`）；执行后以**依赖行**为准（宿主回 applied 但依赖还在 = 没卸掉） |
+| Cordis 服务 `pluginCatalog.removal` | 跨插件契约（`api: 1`） | `ctx.provide` 在 apply 的同步阶段声明；消费方用 `ctx.get("pluginCatalog")` **可选**取用 |
+| 路由 `POST /plugin-catalog/removal/plan` · `/removal/apply` | 排查与人工调用 | `apply` 必须 token + `confirm:true`；与上面走同一条代码路径 |
+| 留痕 `data/removal-journal.json` | 每次真卸载记一条（最多 50 条，成功与失败都记） | 「为什么它不见了」查得到是谁、因为什么 |
+
+两边**都不硬依赖**：
+
+- 本插件不改「处置清单」的行为（批量清理目录仍然**只生成、永不执行**）。它只是多了一项
+  「单个包」的能力，**没有消费方时安静地待着**，面板与 13 个工具一个都不变；
+- `dsh-plugin-installer` 取不到这个服务时，升级会被**明确拒绝**并说清原因（不会排一队必然失败的任务）；
+  安装、回滚、诊断、Skill 安装等全部照常。
+
+判断「它到底会不会被加载」仍然只看 `catalog_list` 的 `loadState`；这里提供的是
+**动手那一步**，不是第二套判据。
+
 ## 发布到 GitHub（自写 / 混血）
 
 一个总按钮：「上传备份到 GitHub」→ **先出计划**（不动任何东西）→ 你确认后才推。
@@ -504,7 +530,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **11 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据**，共 237 条，约 3 秒） | 算失败 |
+| `probes` | **12 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载**，共 284 条，约 4 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -547,9 +573,13 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **11 个探针串成一条**（发版体检的第 5 项，共 237 条，约 2 秒）：
+node dev/run-probes.mjs       # **12 个探针串成一条**（发版体检的第 5 项，共 284 条，约 3 秒）：
                               # 兼容两种收尾格式（`passed N / failed M` 与「N 条不变式全部成立」）；
                               # 沙箱里 spawn 被拒时会明说「要在宿主里跑」，不会误判成探针坏了
+node dev/probe-removal.mjs    # 单件卸载自检（R32）：47 条（声明形态 npm/link/file/git / 自己·宿主自带·不属于 profile
+                              # 三条阻断 / 加载态与依赖者只算警告 / 回执翻人话且 unknown-plugin 不算失败 /
+                              # 「宿主回 applied 但依赖行还在」必须判失败 / 计划过期与 token 一次性 / 留痕 50 条封顶），
+                              # 全程用假宿主，**不真卸载**
 node dev/ship-checks.mjs      # 发版体检的**清单单一来源**：ship 真跑它、面板 POST /preflight{dry} 报它
                               # （此前两处各写一份 → 收进探针后 dry 仍只报四项，hosttest 抓到过）
 node dev/probe-simulate.mjs   # 删除预演自检：14 条（空删除不改态 / dormant 判安全 / transitive 会点名 /
