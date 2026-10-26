@@ -208,7 +208,10 @@ function auditFixture(overrides = {}) {
 {
 	const report = auditFixture();
 	const line = compactComposition(report).summary;
-	ok("C12 摘要里带两份文件的条目数、静态查不到与 bundles 缺口", line.includes("cordis.yml 9") && line.includes("静态查不到 1") && line.includes("bundles 1 →"), line);
+	/* ★ R35 修口径：这里数的是**所有**静态查不到的条目（含按路径挂载的文件），
+	   与 chip（byResolution.missing）和浮层清单（report.missing）同一个数。
+	   以前用 packages.missing（只数包）会出现「chip 说 2、摘要说 1」的自相矛盾。 */
+	ok("C12 摘要里带两份文件的条目数、静态查不到（全部条目，不是只数包）与 bundles 缺口", line.includes("cordis.yml 9") && line.includes("静态查不到 " + report.missing.length) && line.includes("bundles 1 →"), line);
 	const compact = compactComposition(report, 2);
 	ok("C12b 紧凑视图按 cap 截断列表，但计数仍是真实数字", compact.missing.length <= 2 && compact.counts.byResolution.missing === report.missing.length && compact.entries === undefined, `missing=${compact.missing.length} counts=${compact.counts.byResolution.missing}`);
 }
