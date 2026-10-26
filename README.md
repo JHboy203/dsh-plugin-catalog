@@ -321,7 +321,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
 | `catalog_classify` | AI 自动打标签（会读自定义标签的解释） |
 | `catalog_review` | 审一遍某个插件（缺口分析 + 安全审核，只出建议） |
 | `catalog_publish` | 上传备份：`plan` → `apply`（需 `planId` + `confirm`，可带 `ackRepos`）→ `public`（独立门禁） |
-| `catalog_export` | **导出快照**到 `<数据目录>/reports/`：`format=md`（默认）= 完整 Markdown 报告（清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现）；`format=csv` = **全部条目一行一条**的 12 列表格（带 BOM，Excel 直接打开） |
+| `catalog_export` | **导出快照**到 `<数据目录>/reports/`：`format=md`（默认）= 完整 Markdown 报告（清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现、**R35 起含「运行期（Loader 对账）」一节**）；`format=csv` = **全部条目一行一条**的 12 列表格（带 BOM，Excel 直接打开） |
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、**Skill 正文哈希覆盖率**、**「已看过」确认窗口**、AI 通道、asar 模式、**副本是否同步** |
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>`；`restore` 是反向撤销（把 staging 还原到备份，同样先出计划、`confirm:true` 才写，只动 staging）；**R28 起 `restore` 可加 `backup=<stamp>` 点名还原到更早的那一份**（计划里会列出最近 8 份可选，省略才是最近一份） |
 | `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`verify` **反向对账**：拿一份已存在的计划与今天的磁盘/声明事实比 —— 哪些目录真的没了、哪些**白删**（会被装回来 / 入口指空）、哪些计划已经过期（今天它已经会被加载 / 组外已有包声明它），可传 `planPath` 指定 `reports/` 下某一份；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`（`verify` 带 `confirm:true` 则写 `reports/uninstall-verify-*.md`）。**四个动作都不执行删除**（命令给人复制） |
