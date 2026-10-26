@@ -330,18 +330,27 @@ ok(
 /* R26：交接单工具（只读模式；写盘要显式 write:true） */
 const handoffTool = await callTool("catalog_handoff", {});
 ok(
-	"catalog_handoff 返回十项核对 + 结论 + 下一步（默认不写盘）",
+	"catalog_handoff 返回十一项核对 + 结论 + 下一步（默认不写盘）",
 	handoffTool.ok === true &&
 		["ok", "warn", "bad"].includes(handoffTool.verdict) &&
 		Array.isArray(handoffTool.checks) &&
-		handoffTool.checks.length === 10 &&
+		handoffTool.checks.length === 11 &&
 		typeof handoffTool.path === "string" &&
 		handoffTool.path === "" &&
 		handoffTool.text.includes("结论") &&
 		handoffTool.checks.some((check) => check.id === "version") &&
 		handoffTool.checks.some((check) => check.id === "mcp") &&
+		handoffTool.checks.some((check) => check.id === "freshness") &&
 		handoffTool.checks.some((check) => check.id === "ship"),
 	JSON.stringify({ verdict: handoffTool.verdict, checks: handoffTool.checks?.length, path: handoffTool.path }),
+);
+/* R34：交接单里的「快照新鲜度」必须带真实判据（不是空壳），且坏了要有下一步 */
+ok(
+	"catalog_handoff 的 freshness 项带 factStale/ageStale 与「先重建」的下一步",
+	["ok", "warn", "bad"].includes(handoffTool.checks.find((check) => check.id === "freshness")?.status) &&
+		(typeof handoffTool.freshness === "object" || handoffTool.freshness === null) &&
+		(handoffTool.freshness === null || typeof handoffTool.freshness.factStale === "boolean"),
+	JSON.stringify(handoffTool.freshness),
 );
 /* R18：运行中版本 vs 磁盘版本。自检进程读的就是磁盘代码，两者必须一致 ——
    这条同时在守护「LOADED_VERSION 有没有读到 package.json」：读不到会变成空串，stale 也会变 false，

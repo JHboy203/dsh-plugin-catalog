@@ -31,13 +31,37 @@ const GOOD = {
 	report: { path: "D:\\x\\reports\\catalog-20261025.md", at: NOW },
 	/* R30：MCP 是本机真实状态的一部分 —— 0 台也是"对齐"（本机就可能一台都没配） */
 	mcp: { line: "MCP：0 台服务器（官方 0 / 第三方 0 / 自己配置 0）", counts: { total: 0, withProblems: 0, bySource: { official: 0, third: 0, self: 0 } }, orphans: { calls: 0, servers: [] } },
+	/* R34：快照与 profile 一致（不旧） */
+	freshness: { factStale: false, ageStale: false, builtAt: NOW - 60000, profileTouchedAt: NOW - 120000 },
 };
 
-/* ── 1. 全部对齐 → ok，九项都在，没有「下一步」 ── */
+/* ── 1. 全部对齐 → ok，十一项都在，没有「下一步」 ── */
 {
 	const report = buildHandoff(GOOD);
-	ok("H1 全部对齐 → verdict=ok、10 项核对、没有下一步", report.verdict === "ok" && report.checks.length === 10 && report.next.length === 0 && report.counts.bad === 0, JSON.stringify({ verdict: report.verdict, checks: report.checks.length, next: report.next }));
+	ok("H1 全部对齐 → verdict=ok、11 项核对、没有下一步", report.verdict === "ok" && report.checks.length === 11 && report.next.length === 0 && report.counts.bad === 0, JSON.stringify({ verdict: report.verdict, checks: report.checks.length, next: report.next }));
 	ok("H1b 带版本号与表格的 Markdown", report.version === HANDOFF_VERSION && report.markdown.includes("# 交接单") && report.markdown.includes("| 项 | 状态 | 说明 |") && report.markdown.includes("可以直接换会话"), report.markdown.split("\n").slice(0, 3).join(" | "));
+}
+
+/* ── 1c. R34：快照事实变了 → **bad**，并且「先重建再交接」必须排在最前面 ──
+   理由：这张交接单自己的 loadState 全来自那份快照；它旧了，别的项会跟着一起错。 */
+{
+	const report = buildHandoff({ ...GOOD, freshness: { factStale: true, ageStale: true, builtAt: NOW - 3600000, profileTouchedAt: NOW - 60000 } });
+	const check = report.checks.find((item) => item.id === "freshness");
+	ok("H1c profile 比快照新 → 快照新鲜度 bad，下一步第一条是「先重建再交接」", report.verdict === "bad" && check.status === "bad" && check.detail.includes("可能已经错") && report.next[0].includes("重建") && report.freshness.factStale === true, check.detail);
+}
+
+/* ── 1d. R34：只是旧（事实没变）→ warn，不拦交接（结论仍然有效） ── */
+{
+	const report = buildHandoff({ ...GOOD, freshness: { factStale: false, ageStale: true, builtAt: NOW - 3600000, profileTouchedAt: NOW - 7200000 } });
+	const check = report.checks.find((item) => item.id === "freshness");
+	ok("H1d 只有年龄过期 → warn，不清零、不排「先重建」", report.verdict === "warn" && check.status === "warn" && !report.next.some((item) => item.includes("重建")), check.detail);
+}
+
+/* ── 1e. R34：读不到 mtime → warn，不能假装"一致" ── */
+{
+	const report = buildHandoff({ ...GOOD, freshness: null });
+	const check = report.checks.find((item) => item.id === "freshness");
+	ok("H1e 没有 freshness 输入 → warn（读不到就说读不到）", check.status === "warn" && check.detail.includes("读到") && check.detail.includes("mtime"), check.detail);
 }
 
 /* ── 2. 磁盘 vs 运行中不一致 → bad + 明确说重启（set_plugin 不重新 import） ── */
@@ -83,7 +107,7 @@ const GOOD = {
 /* ── 8. 空输入不炸（旧宿主 / 数据没准备好） ── */
 {
 	const report = buildHandoff({});
-	ok("H8 空输入不抛（verdict=warn，十项仍齐全）", report.verdict === "warn" && report.checks.length === 10 && typeof renderHandoff(report) === "string", JSON.stringify({ verdict: report.verdict }));
+	ok("H8 空输入不抛（verdict=warn，十一项仍齐全）", report.verdict === "warn" && report.checks.length === 11 && typeof renderHandoff(report) === "string", JSON.stringify({ verdict: report.verdict }));
 }
 
 /* ── 9. ship 报告解析不出数字 → warn（文件在 ≠ 体检过） ── */

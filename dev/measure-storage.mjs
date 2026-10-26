@@ -5,8 +5,12 @@
  *   因为每条都存 246 条 decls），而 SKILL 里写的是「~12 KB/条、20 条封顶 ≈240 KB」——
  *   差 4.7 倍。这类"文件悄悄变大"只会在某天打开面板变慢时被发现，所以固化成一条命令。
  *
+ * ★ R34 已处置（实测 **983,013 B → 167,275 B**）：条目改成五元数组（`name`/`kind` 由 id 推导）、
+ *   `composition.decls` 只留最近 4 条、写盘不缩进、读时自动迁移（`HISTORY_VERSION` 3 → 5）。
+ *   所以这条命令现在的期望是「**在 240 KB 预算内**」；再超就是又回退了（audit 有断言盯着编码还在）。
+ *
  * 输出：`<数据目录>` 下 6 份状态文件 + reports 目录的体积/条数，并对两份有预算的给结论：
- *   · `history.json` 预算 **240 KB**（20 条 × ~12 KB，R25 的估计）→ 超了就给"decls 紧凑化"的处置；
+ *   · `history.json` 预算 **240 KB**（20 条 × ~12 KB，R25 的估计；R34 实测 167 KB）→ 超了说明编码回退；
  *   · `cache/catalog.json` 预算 **2 MB**（条目快照，超过说明该抬 CATALOG_VERSION 或精简字段）。
  *
  * 用法：`node dev/measure-storage.mjs [--json]`；只读、不写盘、不联网。
@@ -101,7 +105,7 @@ const summary = {
 	over: over.map((row) => row.file),
 	reports,
 	hints: [
-		"history.json 超预算：decls 是唯一的体积大头（每条快照都存全量声明身份）→ 可做紧凑编码（id 短码 / 只存 hash 集合），或按字节而不是只按条数裁剪",
+		"history.json 超预算：先看是不是编码回退了（R34 之后应为 ~167 KB）—— 条目五元数组 / decls 只留最近 4 条 / 不缩进写；`probe-history` 的 H43/H45 与 audit 的三条编码断言会先红",
 		"cache/catalog.json 超预算：多半是条目字段又多了 → 抬 CATALOG_VERSION 前先看哪些字段能裁",
 		"体积数字只用于发现「异常增长」：别拿它当磁盘占用权威值（那是 catalog_health 的 sizes 口径）",
 	],
@@ -121,8 +125,10 @@ if (asJson) {
 	console.log("");
 	console.log("reports：" + reports.files + " 份 / " + fmt(reports.bytes) + (reports.latest ? " · 最新 " + reports.latest : ""));
 	console.log("");
-	console.log(verdict === "ok" ? "结论：都在预算内（history 预算按 R25 的 240 KB 估；实测口径见下）" : "结论：**" + over.map((row) => row.file).join("、") + " 超预算**");
-	for (const hint of summary.hints.slice(0, verdict === "ok" ? 1 : 3)) console.log("  · " + hint);
+	console.log(verdict === "ok" ? "结论：都在预算内（history 预算 240 KB；R34 编码之后实测 ~160 KB，条均 8 KB）" : "结论：**" + over.map((row) => row.file).join("、") + " 超预算**");
+	/* R34：没超预算时别再打「history.json 超预算：…」那种处置建议 —— 它读起来像"现在就有问题" */
+	const hints = verdict === "ok" ? summary.hints.slice(2) : summary.hints.slice(0, 3);
+	for (const hint of hints) console.log("  · " + hint);
 }
 
 process.exit(verdict === "ok" ? 0 : 1);

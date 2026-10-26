@@ -226,7 +226,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   「关掉 25 → 24，@deepseek-ai/dsh-hmr 关掉→启用，bundles +dsh-extra」；明细最多 4 条，多的写「…等 N 条」
   （完整名单在快照里，`HISTORY_VERSION` 不变）。
 - **交接单（R26）**：换会话前最容易漏看的不是数据，而是**几份既有结论的交叉核对** —— 运行中到底是哪一版、
-  最新 ship 有没有失败、工作区脏不脏、staging 旧不旧。`catalog_handoff` 把 10 项压成一张单子：
+  最新 ship 有没有失败、工作区脏不脏、staging 旧不旧、**目录快照还对得上现实吗**（R34：profile 比快照新就判 bad 并先让你重建）。`catalog_handoff` 把 11 项压成一张单子：
   版本（磁盘 vs 运行中，含「重启 DSH」而不是含糊的 stale）、工具数、配置层缺口、变化与确认、历史快照、
   staging、最新 ship、git 头部/脏文件/未推送、最新目录快照；`write:true` 才落 `reports/handoff-<时间戳>.md`。
   判断在 `lib/handoff.mjs`（纯函数，`dev/probe-handoff.mjs` 9 条合成数据探针），默认只读。
@@ -246,7 +246,7 @@ node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
   （运行期注入的虚拟模块看不见 —— 本机 `dsh-plugin-desktop` 就是这种）。
   只有 `bundles` 里点名却找不到才会占顶部公告位并说「宿主启用它们时会失败」。
   同一份数据还进 `catalog_health`（一行）、`catalog_composition` 工具、导出报告的「配置层（声明）」一节。
-另有一个 `catalog_handoff`（R26）：把「换会话之前」要对的 10 项压成一张交接单。
+另有一个 `catalog_handoff`（R26/R34）：把「换会话之前」要对的 11 项压成一张交接单。
   判据在 `lib/composition.mjs`（纯函数、不碰磁盘），`dev/probe-composition.mjs` 用合成文本钉 **C1–C14**。
 - **快捷键**：`/` 聚焦搜索、`Esc` 清空搜索（浮窗里 `Esc` 关闭浮窗）
 - **缓存自愈**：统计缓存超过 10 分钟且没有任务在跑时，面板自己起一次**增量**刷新（只重读变化的会话，实测 0.4~0.7 秒），不用记着点「刷新统计」；有任务在跑、或本挂载已经刷过，就不再触发 —— 否则会和 20 秒轮询叠成「一直在刷新」
@@ -517,7 +517,7 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
-**发版 / 交接前只跑这一条**（三层自检 + **13 个独立探针（348 条）** + 副本同步 + 版本一致性 + git，约 60 秒）：
+**发版 / 交接前只跑这一条**（三层自检 + **13 个独立探针（351 条）** + 副本同步 + 版本一致性 + git，约 60 秒）：
 
 ```bash
 node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
@@ -530,7 +530,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **13 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧**，共 348 条，约 6 秒） | 算失败 |
+| `probes` | **13 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧**，共 351 条，约 6 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -573,7 +573,7 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **13 个探针串成一条**（发版体检的第 5 项，共 348 条，约 6 秒）：
+node dev/run-probes.mjs       # **13 个探针串成一条**（发版体检的第 5 项，共 351 条，约 6 秒）：
 node dev/probe-retention.mjs  # ★ R34：留存与陈旧（19 条）。快照「旧在哪」拆成 factStale（profile 变了 ⇒ 结论可能已错、
                               #   值得重建）与 ageStale（只是旧 ⇒ 结论仍有效）；每周任务全失败不许伪装成跑过（0 仓 ≠ 全失败）；
                               #   reports/ 保留策略（只动自己五种前缀 / md+json 同组 / 留最新 N 组 / 脏输入不抛）。纯函数不碰盘
