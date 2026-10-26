@@ -16,7 +16,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = resolve(HERE, "..");
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf(`--${name}`);
@@ -25,6 +24,10 @@ function arg(name, fallback = null) {
   return fallback;
 }
 
+/* ★ R32：`--repo <绝对路径>` 可以提交**别的仓**（例如 Skill staging 的
+   `.gh-upload/my-dsh-skills`）。理由与这个脚本本身一样：沙箱写不了 `.git/index.lock`，
+   而 staging 仓没有自己的宿主侧提交脚本 —— 与其再抄一份，不如让这份能指定仓。 */
+const REPO = resolve(String(arg("repo", resolve(HERE, ".."))));
 const dryRun = !!arg("dry-run", false);
 const push = !!arg("push", false);
 const msgFile = arg("message-file", resolve(REPO, "..", "..", ".tools", "catalog-commit-msg.txt"));
