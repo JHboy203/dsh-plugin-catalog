@@ -592,7 +592,7 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + **15 independent probes (426 invariants)** + copy sync + version consistency + git, ~60–90 s):
+**Before shipping or handing off, run just this one** (three checks + **16 independent probes (454 invariants)** + copy sync + version consistency + git, ~60–90 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
@@ -605,7 +605,7 @@ Five checks:
 | `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
 | `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
 | `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
-| `probes` | **15 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules**, 426 invariants, ~6 s) | counts as failure |
+| `probes` | **16 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules** / **open-source release readiness**, 454 invariants, ~6 s) | counts as failure |
 | `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
 
 Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal
@@ -646,13 +646,24 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
-node dev/run-probes.mjs       # **the fifteen probes in one command** (ship's 5th item, 426 invariants, about 6 s):
+node dev/run-probes.mjs       # **the sixteen probes in one command** (ship's 5th item, 454 invariants, about 6 s):
 node dev/probe-runtime.mjs    # ★ R35: runtime truth (31 invariants) — six fiber phases / subpath module names normalised to the
                               #   package / several entries for one package prefer failed / unreadable => unknown (never active) /
                               #   declared-absent only when the declaration actually loads / three issue classes counted apart.
 node dev/probe-actions.mjs    # ★ R35: card-action rules (44 invariants) — YAML entry-block slicing (top level + insert blocks +
                               #   a stale line hint) / post-delete verification (one gone, nothing else moved) / idempotent disable /
                               #   three Skill blockers / sibling paths are not "inside" / MCP bundle-layer refusal.
+node dev/probe-release.mjs    # ★ R36: open-source release readiness (28 invariants) — version vs BUILD / package metadata
+                              #   (repository, keywords, engines, files) / bilingual README (clone, uninstall, open-source notes,
+                              #   every tool named, probe count) / secret and filename scan over the working tree (no git spawn,
+                              #   masked output) / shipped code carries no local absolute paths.
+node dev/runtime-live.mjs --base http://127.0.0.1:<GUI PORT>
+                              # ★ R36: live runtime truth (read-only). GET /plugin-catalog/runtime -> Loader counts / three issue
+                              #   classes / bundle health. `--expect-clean` exits 1 on any issue; `--json` for scripts.
+node dev/actions-live.mjs --base http://127.0.0.1:<GUI PORT>
+                              # ★ R36: live card-action gate check (plan only, never executes): unknown id -> unknown-entry /
+                              #   apply without confirm -> 400 / trash readable / a Skill delete plan carrying the trash path and a
+                              #   token, then the real token without confirm is still 400. The plan expires in 5 minutes.
                               # understands both closing formats (`passed N / failed M` and "N invariants hold");
                               # under the sandbox it says "run this in the host" instead of looking like broken probes
 node dev/ship-checks.mjs      # the **single source** of the preflight list: ship runs it, POST /preflight{dry} reports it
@@ -722,6 +733,9 @@ This repository is arranged so that somebody else can clone it, install it, run 
   anything that can be pinned against synthetic data should not depend on "try it on the real machine".
 - **Self-checks**: run `node dev/ship.mjs` in the host (one command); before handing off, `node dev/deliver.mjs --base <GUI port>`.
   The panel's "Self-check" button takes the same path.
+- **Before open-sourcing**: `node dev/probe-release.mjs` (version vs BUILD / package metadata / bilingual docs / tool table /
+  secret and absolute-path scan, 28 invariants). Two live read-only entries: `dev/runtime-live.mjs` (Loader reconciliation,
+  `--expect-clean` usable as an assertion) and `dev/actions-live.mjs` (action gates, **plan only, never executes**).
 - **Contributing**: before a PR run `node dev/audit.mjs`, `node dev/render-check.cjs`, `node dev/hosttest.mjs` and
   `node dev/run-probes.mjs`. A new rule needs a **pure-function probe** (see `dev/probe-actions.mjs` /
   `dev/probe-runtime.mjs`); touching a write path requires coverage for "backup before write / verify after / rollback on

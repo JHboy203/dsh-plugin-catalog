@@ -621,7 +621,7 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
-**发版 / 交接前只跑这一条**（三层自检 + **15 个独立探针（426 条）** + 副本同步 + 版本一致性 + git，约 60~90 秒）：
+**发版 / 交接前只跑这一条**（三层自检 + **16 个独立探针（454 条）** + 副本同步 + 版本一致性 + git，约 60~90 秒）：
 
 ```bash
 node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
@@ -634,7 +634,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **15 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧** / **运行期真相** / **卡片动作判据**，共 426 条，约 6 秒） | 算失败 |
+| `probes` | **16 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧** / **运行期真相** / **卡片动作判据** / **开源发版就绪**，共 454 条，约 6 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -677,13 +677,25 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **15 个探针串成一条**（发版体检的第 5 项，共 426 条，约 6 秒）：
+node dev/run-probes.mjs       # **16 个探针串成一条**（发版体检的第 5 项，共 454 条，约 6 秒）：
 node dev/probe-runtime.mjs    # ★ R35：运行期真相（31 条）。fiberPhase 六相位 / moduleName 带子路径按包名归一 /
                               #   同包多条取 failed 优先 / 读不到一律 unknown（绝不猜 active）/ declared-absent 只在
                               #   "声明会加载"时成立 / 三类问题分开数 / 摘要读不到要如实说。纯函数不碰盘、不碰宿主
 node dev/probe-actions.mjs    # ★ R35：卡片动作判据（44 条）。YAML 条目块切分（顶层 + insert 块 + 行号提示失效）/
                               #   删后校验（目标少一条、别的不少、总数只少 1）/ 停用幂等 / Skill 三阻断（随插件安装 /
                               #   没目录 / 不在已知根）/ 路径前缀不误判兄弟目录 / MCP bundle 层阻断 / 已关掉不重复写
+node dev/probe-release.mjs    # ★ R36：开源发版就绪（28 条）。版本↔BUILD / 包元数据（repository·keywords·engines·files）/
+                              #   双语 README（GitHub 安装·卸载·开源说明·工具表逐个点名·探针数）/
+                              #   密钥与文件名扫描（工作树、不 spawn git、只给掩码）/ 交付代码不写死本机绝对路径
+node dev/runtime-live.mjs --base http://127.0.0.1:<GUI端口>
+                              # ★ R36：**运行期真相的真机取证**（只读）。打 `GET /plugin-catalog/runtime`：
+                              #   Loader 计数 / 三类问题 / bundle 健康（missing·error·可选未装）。
+                              #   `--expect-clean` 有任何问题退出码 1；`--json` 给脚本读
+node dev/actions-live.mjs --base http://127.0.0.1:<GUI端口>
+                              # ★ R36：**卡片动作的真机闸门核验**（只出计划、绝不执行）。四件事：
+                              #   未知 id → unknown-entry / apply 不带 confirm → 400 / 回收站可读 /
+                              #   对一条 Skill 出删除计划（含回收站与 token），再拿真 token 发一次不带 confirm
+                              #   的 apply 仍 400。★ 计划 5 分钟后自动过期，脚本不执行它
 node dev/probe-retention.mjs  # ★ R34：留存与陈旧（19 条）。快照「旧在哪」拆成 factStale（profile 变了 ⇒ 结论可能已错、
                               #   值得重建）与 ageStale（只是旧 ⇒ 结论仍有效）；每周任务全失败不许伪装成跑过（0 仓 ≠ 全失败）；
                               #   reports/ 保留策略（只动自己五种前缀 / md+json 同组 / 留最新 N 组 / 脏输入不抛）。纯函数不碰盘
@@ -775,6 +787,9 @@ audit 会核对 `dev/` 顶层的每个 `probe-*.mjs` 都在这两张表之一 �
   `dev/`（自检与探针）。**判据与执行分开**是刻意的：能在合成数据上钉死的，就不靠"在真机上试一下"。
 - **自检**：宿主里跑 `node dev/ship.mjs`（一条命令）；换手前跑 `node dev/deliver.mjs --base <GUI端口>`。
   面板头部「自检」按钮走同一条路。
+- **开源前自查**：`node dev/probe-release.mjs`（版本↔BUILD / 包元数据 / 双语文档 / 工具表 / 密钥与绝对路径扫描，28 条）；
+  真机侧两条只读入口 `dev/runtime-live.mjs`（Loader 对账，`--expect-clean` 可当断言）与
+  `dev/actions-live.mjs`（动作闸门，**只出计划不执行**）。
 - **贡献**：提 PR 前请跑 `node dev/audit.mjs`、`node dev/render-check.cjs`、`node dev/hosttest.mjs`、
   `node dev/run-probes.mjs`。新增判据请配一个**纯函数探针**（写法见 `dev/probe-actions.mjs` / `dev/probe-runtime.mjs`）；
   动写盘路径的，必须同时覆盖"写前备份 / 写后校验 / 校验失败回滚"。

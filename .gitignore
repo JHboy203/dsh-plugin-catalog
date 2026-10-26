@@ -1,9 +1,17 @@
 # 运行期产物，不入库
 node_modules/
 .cache/
+.state/
 data/
+.dsh-plugin-catalog/
 *.log
 .tmp*
+*.bak-*
+*.tmp-*
 
 # 本机绝对路径清单（如有导出物）
 *.local.json
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db

@@ -33,6 +33,9 @@ export const PROBES = Object.freeze([
 	/* R35：卡片动作判据 —— YAML 条目块切分/删除校验/停用幂等/Skill 可逆删除/MCP 阻断，
 	   合成文本，全程不碰真实 profile 与 Skill 目录 */
 	{ id: "actions", label: "卡片动作判据", file: "dev/probe-actions.mjs" },
+	/* R36：开源发版就绪 —— 版本↔BUILD / 包元数据 / 双语文档与工具表 / 探针清单 /
+	   密钥与绝对路径扫描（工作树、不 spawn、掩码输出） */
+	{ id: "release", label: "开源发版就绪", file: "dev/probe-release.mjs" },
 ]);
 
 /** 探针个数（文档里「11 个」的那个数）。 */
