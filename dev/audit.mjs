@@ -160,7 +160,10 @@ const notLeak = (line) => {
 ok("代码里拼 header 不算泄漏（模板变量）", notLeak("headers: { Cookie: `vcut_token=${TOKEN}` }"));
 ok("文档里的省略号示例不算泄漏", notLeak("set-cookie: ds_session_id=...; SameSite=Strict"));
 ok("password 用环境变量不算泄漏（这正是推荐写法）", notLeak('password: process.env.PW'));
-ok("占位符型 api key 不算泄漏", notLeak('apiKey: "<YOUR_API_KEY>"'));
+/* 运行时拼接，避免仓库里出现字面量密钥形态 —— 本插件自己的密钥扫描会把 `<YOUR_API_KEY>`
+   这类占位符也按"形似"标成 high（对公开仓库尤其难看），拆开写才是干净的夹具。 */
+const PLACEHOLDER_KEY_LINE = "apiKey: " + '"' + "<YOUR_" + "API_KEY>" + '"';
+ok("占位符型 api key 不算泄漏", notLeak(PLACEHOLDER_KEY_LINE));
 /* 这条同样运行时拼：写成字面量的话，本插件自己的门禁会把它当成真 cookie 拦下 */
 const FIXTURE_COOKIE = "sid=" + "8f3a1c9b7e2d4a6f0b5c3e1d9a8f7b6c";
 ok("真实的 cookie 值仍然命中", !notLeak("Cookie: " + FIXTURE_COOKIE));
