@@ -16,7 +16,7 @@ supports custom tags + AI classification, weekly gap analysis and security revie
 
 > **The official plugin entry is kept and not hidden.** This plugin is an **independent client-side plugin**: disabling it restores the official interface (see "Self-rescue" at the end).
 >
-> The embedded review/publish Agent **is also registered as tools** (`catalog_*`), so it can be invoked in an ordinary session with one sentence:
+> The embedded review/publish Agent **is also registered as tools** (`catalog_*`, 14 of them), so it can be invoked in an ordinary session with one sentence:
 > "review dsh-screenshot", "publish the dsh-catalog repo", "list my self-written plugins".
 
 ---
@@ -78,9 +78,9 @@ mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-plugin-catalog
 
 The "Plugin Catalog" icon in the sidebar means success.
 
-> ⚠️ **Do not install with `dsh plugin add` / `pnpm add` / `npm install`.** `dsh plugin` simply forwards its
-> arguments to pnpm; pnpm recomputes the whole tree and hoists a second `@deepseek-ai/dsh-tools` into the
-> profile, which **shadows the host's copy** — every tool call then fails with
+> ⚠️ **Do not use pnpm-style commands (`dsh plugin add` / `pnpm add` / `npm install`) to install it.**
+> `dsh plugin` simply forwards its arguments to pnpm; pnpm recomputes the whole tree and hoists a second
+> `@deepseek-ai/dsh-tools` into the profile, which **shadows the host's copy** — every tool call then fails with
 > `Cannot read properties of undefined (reading 'prepare')`, or the next startup fails to load plugins
 > (`does not provide an export named 'CallId'`). This has recurred three times on this machine.
 >

@@ -17,7 +17,7 @@ DSH 侧栏「插件目录」：把本机的 **插件与 Skill** 摊成卡片，�
 
 > **官方插件入口保留不隐藏。** 本插件是**独立的客户端插件**：禁用它即恢复官方界面（见文末「自救」）。
 >
-> 内嵌的审核/发布 Agent **同时注册为工具**（`catalog_*`，共 9 个），普通会话里一句话就能调起：
+> 内嵌的审核/发布 Agent **同时注册为工具**（`catalog_*`，共 14 个），普通会话里一句话就能调起：
 > 「审一遍 dsh-screenshot」「开放 dsh-catalog 仓」「列出我的自写插件」。
 
 ---
@@ -78,7 +78,7 @@ mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-plugin-catalog
 
 侧栏出现「插件目录」图标即成功。
 
-> ⚠️ **不要用 `dsh plugin add` / `pnpm add` / `npm install` 装它。**
+> ⚠️ **不要用 pnpm 系命令（`dsh plugin add` / `pnpm add` / `npm install`）装它。**
 > `dsh plugin` 只是把参数原样转发给 pnpm；pnpm 会重算整棵树、把 `@deepseek-ai/dsh-tools`
 > 再 hoist 一份到 profile 里，那一份会**遮蔽宿主的** —— 后果是每次工具调用都报
 > `Cannot read properties of undefined (reading 'prepare')`，或下次启动时插件批量加载失败
