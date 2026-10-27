@@ -2,6 +2,14 @@
 
 [English](README.en.md)
 
+> **状态：开发版，非最终版本。** 这是「边用边改」放出来的版本：功能与界面会**不定期更新**，
+> 配置项、命令与数据目录都可能变。装之前请确认下一节的 DSH 版本区间，装完先跑一次自检。
+>
+> **Status: development build — not a final release.** Released as-is from daily use; features and UI
+> **change from time to time** (settings, commands and the data directory may change too). Check the DSH
+> version range below before installing, and run the self-checks after you do.
+
+![插件目录面板 · 卡片 / 洞察条 / 来源四分类 / 体积与调用统计](docs/panel.png)
 
 DSH 侧栏「插件目录」：把本机的 **插件与 Skill** 摊成卡片，按来源四分类（官方 / 自写 / 第三方 / 混血），
 用**会话事件日志**统计最近 90 天每个工具的调用次数、报错、耗时与涉及会话（子代理单独标出），
@@ -14,6 +22,18 @@ DSH 侧栏「插件目录」：把本机的 **插件与 Skill** 摊成卡片，�
 
 ---
 
+## 支持的 DSH 版本
+
+> 装之前先对一下版本。**版本不对时不会"凑合能用"**：轻则面板能打开但按钮点了没反应，重则整个插件树加载失败。
+
+| 项 | 值 |
+|---|---|
+| 声明区间 | `>=0.2.1-rc.1 <0.3.0` —— 写在 `package.json` 的 `engines.dsh`，宿主按它判兼容 |
+| 实测通过 | `0.2.1-rc.2` / `0.2.1-rc.3`（Windows 11 · `desktop` profile · Node 24.21） |
+| 为什么不能更低 | 用到 `pluginManager.listPlugins / removeBundle / setBundleEnabled`；且 DSH `0.2.1` 起 `ctx.tools.register()` 要求 `output` 契约 —— 更低的宿主上这些 API 还不存在 |
+| `0.3.x` 及以上 | **未验证**。面板可能能打开，但运行期对账 / 卡片动作会失效；宿主升级后请先跑一次 `node dev/probe-release.mjs` |
+| Node | `>=20`（`engines.node`） |
+
 ## 适用 profile
 
 - `desktop`（本机实测环境：DSH `0.2.x`，Windows）
@@ -22,35 +42,65 @@ DSH 侧栏「插件目录」：把本机的 **插件与 Skill** 摊成卡片，�
 
 ## 安装
 
-从本地目录安装（**不要用 pnpm**，它会给 profile 埋一份陈旧的 `@deepseek-ai/dsh-tools`，
-导致下次启动插件批量加载失败）：
+三步装完，**不需要任何本机脚本**（Windows / macOS / Linux 都一样）。
 
 ```bash
-node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "<插件目录>"
+# 0) 先确认宿主版本在上一节的区间里
+dsh --version
+
+# 1) 克隆到**工作区**（不要直接克隆进 profile/node_modules —— 那份会被后续 install 覆盖掉）
+git clone https://github.com/JHboy203/dsh-plugin-catalog.git "<你的工作区>/DSH-Plugin/dsh-plugin-catalog"
 ```
 
-装完**必须完全重启 DSH**（`dsh.profile.bundles` 与 `cordis.patch.yml` 都是启动期读的）。
-
-从 GitHub 安装（开源版，私有/公开仓都适用）：
+2) 把目录链进 profile（`<profile>` 默认 `desktop`）：
 
 ```bash
-# 1) 克隆到工作区（不要直接克隆进 profile/node_modules）
-git clone https://github.com/<you>/dsh-plugin-catalog.git "D:/你的工作区/DSH-Plugin/dsh-plugin-catalog"
-# 2) 用本机的安装脚本装成 junction（同样不要用 pnpm，理由见上）
-node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "D:/你的工作区/DSH-Plugin/dsh-plugin-catalog"
-# 3) 完全退出并重启 DSH；侧栏出现「插件目录」即成功
+# macOS / Linux
+ln -s "<你的工作区>/DSH-Plugin/dsh-plugin-catalog" ~/.dsh/profiles/<profile>/node_modules/dsh-plugin-catalog
+# Windows（普通 cmd 即可，不需要管理员）
+mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-plugin-catalog" "<你的工作区>\DSH-Plugin\dsh-plugin-catalog"
 ```
 
-**环境要求**：DSH `0.2.1+`（用到 `pluginManager.listPlugins/removeBundle/setBundleEnabled`）、Node 24、Windows / macOS / Linux 均可（路径按平台分隔符处理）。
-**没有** `.tools/dsh-plugin-install.cjs` 的机器：把目录放进 `profile/node_modules/dsh-plugin-catalog`（junction 或实体目录都行），
-再把包名加进 `profile/package.json` 的 `dsh.profile.bundles`，重启 DSH。
-**卸载**：面板卡片底部「卸载」（走宿主 `removeBundle`），或从 `dsh.profile.bundles` 去掉包名后删除目录。
+3) 改 `<profile>/package.json` 两处，然后**完全退出并重启 DSH**：
 
-装完检查一下有没有埋雷：
+```jsonc
+{
+  "dependencies": {
+    "dsh-plugin-catalog": "link:<你的工作区>/DSH-Plugin/dsh-plugin-catalog"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [ /* …原有条目…, "dsh-plugin-catalog" */ ]
+    }
+  }
+}
+```
+
+侧栏出现「插件目录」图标即成功。
+
+> ⚠️ **不要用 `dsh plugin add` / `pnpm add` / `npm install` 装它。**
+> `dsh plugin` 只是把参数原样转发给 pnpm；pnpm 会重算整棵树、把 `@deepseek-ai/dsh-tools`
+> 再 hoist 一份到 profile 里，那一份会**遮蔽宿主的** —— 后果是每次工具调用都报
+> `Cannot read properties of undefined (reading 'prepare')`，或下次启动时插件批量加载失败
+> （`does not provide an export named 'CallId'`）。这个坑在本机复发过三次。
+>
+> 本机若已有 `.tools/dsh-plugin-install.cjs`（作者工作区里的辅助脚本，**不在本仓内**），
+> 它就是上面三步的自动化版：`node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "<目录>"`。
+> **没有它也能按上面的手做装。**
+
+装完**必须完全重启 DSH**：`dsh.profile.bundles` 与 `cordis.patch.yml` 都是启动期读的。
+
+**平台**：Windows / macOS / Linux 均可（路径按平台分隔符处理；本机只在 Windows 11 实测）。
+**卸载**：面板卡片底部「卸载」（走宿主 `removeBundle`，**不动文件**），或从 `dsh.profile.bundles` 去掉包名后删除链接目录。
+
+装完检查一下有没有埋雷 —— 工具调用报 `prepare`、或下次启动插件批量加载失败，基本都是
+`<profile>/node_modules/@deepseek-ai/dsh-tools` 里多了一份（它会遮蔽宿主那份）。有这个目录就先移走再重启：
 
 ```bash
-node .tools/dsh_doctor.py            # 只体检
-node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
+# macOS / Linux
+ls ~/.dsh/profiles/<profile>/node_modules/@deepseek-ai
+# Windows
+dir "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
 ```
 
 ## 用法

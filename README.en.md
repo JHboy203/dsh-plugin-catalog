@@ -1,10 +1,14 @@
 # dsh-plugin-catalog · Plugin Catalog Panel
 
-[中文](README.md)
+[中文](README.md) · [English](README.en.md)
 
+> **Status: development build — not a final release.** Released as-is from daily use; features and UI
+> **change from time to time** (settings, commands and the data directory may change too). Check the DSH
+> version range below before installing, and run the self-checks after you do.
+>
+> **状态：开发版，非最终版本。** 功能与界面会不定期更新，配置项、命令与数据目录都可能变。
 
-[English](README.en.md)
-
+![Plugin Catalog · cards / insight chips / four source classes / size and call stats](docs/panel.png)
 
 DSH sidebar "Plugin Catalog": lays out the local **plugins and Skills** as cards, classified into four source categories (official / self-written / third-party / hybrid),
 uses the **session event log** to tally the last 90 days of each tool's call count, errors, duration and involved sessions (subagents marked separately),
@@ -17,6 +21,19 @@ supports custom tags + AI classification, weekly gap analysis and security revie
 
 ---
 
+## Supported DSH versions
+
+> Check the version before installing. **A mismatched version does not "sort of work"**: at best the panel
+> opens but its buttons do nothing, at worst the whole plugin tree fails to load.
+
+| Item | Value |
+|---|---|
+| Declared range | `>=0.2.1-rc.1 <0.3.0` — `engines.dsh` in `package.json`; the host uses it for compatibility checks |
+| Tested | `0.2.1-rc.2` / `0.2.1-rc.3` (Windows 11 · `desktop` profile · Node 24.21) |
+| Why not lower | needs `pluginManager.listPlugins / removeBundle / setBundleEnabled`; and since DSH `0.2.1`, `ctx.tools.register()` requires the `output` contract — neither exists on older hosts |
+| `0.3.x` and above | **Not verified.** The panel may open, but runtime reconciliation / card actions can break; after a host upgrade run `node dev/probe-release.mjs` first |
+| Node | `>=20` (`engines.node`) |
+
 ## Applicable profile
 
 - `desktop` (the locally tested environment: DSH `0.2.x`, Windows)
@@ -25,36 +42,66 @@ supports custom tags + AI classification, weekly gap analysis and security revie
 
 ## Installation
 
-Install from a local directory (**do not use pnpm**, it will bury a stale `@deepseek-ai/dsh-tools` in the profile,
-causing batch plugin loading to fail on the next startup):
+Three steps, cross-platform, **no local helper script required**.
 
 ```bash
-node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "<插件目录>"
+# 0) check the host version against the range above
+dsh --version
+
+# 1) clone into your **workspace** (not into profile/node_modules — that copy gets overwritten by later installs)
+git clone https://github.com/JHboy203/dsh-plugin-catalog.git "<your-workspace>/DSH-Plugin/dsh-plugin-catalog"
 ```
 
-After installing you **must fully restart DSH** (`dsh.profile.bundles` and `cordis.patch.yml` are both read at startup).
-
-Install from GitHub (the open-source path; works for private and public repos):
+2) Link the directory into the profile (`<profile>` is `desktop` by default):
 
 ```bash
-# 1) Clone into your workspace (not into profile/node_modules)
-git clone https://github.com/<you>/dsh-plugin-catalog.git "D:/your-workspace/DSH-Plugin/dsh-plugin-catalog"
-# 2) Install as a junction with the local installer (again: no pnpm, see above)
-node .tools/dsh-plugin-install.cjs install dsh-plugin-catalog "D:/your-workspace/DSH-Plugin/dsh-plugin-catalog"
-# 3) Fully quit and restart DSH; the "Plugin Catalog" icon in the sidebar means success
+# macOS / Linux
+ln -s "<your-workspace>/DSH-Plugin/dsh-plugin-catalog" ~/.dsh/profiles/<profile>/node_modules/dsh-plugin-catalog
+# Windows (plain cmd is enough, no admin)
+mklink /J "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\dsh-plugin-catalog" "<your-workspace>\DSH-Plugin\dsh-plugin-catalog"
 ```
 
-**Requirements**: DSH `0.2.1+` (uses `pluginManager.listPlugins/removeBundle/setBundleEnabled`), Node 24, and Windows / macOS / Linux
-(paths are handled per platform). Without `.tools/dsh-plugin-install.cjs`, drop the directory into `profile/node_modules/dsh-plugin-catalog`
-(a junction or a real copy both work), add the package name to `dsh.profile.bundles` in `profile/package.json`, and restart DSH.
-**Uninstall**: the "uninstall" action at the bottom of a card (which goes through `removeBundle`), or remove the name from
-`dsh.profile.bundles` and delete the directory.
+3) Edit `<profile>/package.json` in two places, then **fully quit and restart DSH**:
 
-After installing, check whether any mines were buried:
+```jsonc
+{
+  "dependencies": {
+    "dsh-plugin-catalog": "link:<your-workspace>/DSH-Plugin/dsh-plugin-catalog"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [ /* …existing entries…, "dsh-plugin-catalog" */ ]
+    }
+  }
+}
+```
+
+The "Plugin Catalog" icon in the sidebar means success.
+
+> ⚠️ **Do not install with `dsh plugin add` / `pnpm add` / `npm install`.** `dsh plugin` simply forwards its
+> arguments to pnpm; pnpm recomputes the whole tree and hoists a second `@deepseek-ai/dsh-tools` into the
+> profile, which **shadows the host's copy** — every tool call then fails with
+> `Cannot read properties of undefined (reading 'prepare')`, or the next startup fails to load plugins
+> (`does not provide an export named 'CallId'`). This has recurred three times on this machine.
+>
+> If your workspace happens to contain `.tools/dsh-plugin-install.cjs` (the author's helper, **not shipped
+> in this repo**), it is the automated version of the three steps above. Without it, just do them by hand.
+
+After installing you **must fully restart DSH**: `dsh.profile.bundles` and `cordis.patch.yml` are both read at startup.
+
+**Platform**: Windows / macOS / Linux (paths are handled per platform; only Windows 11 was actually tested).
+**Uninstall**: the "uninstall" action at the bottom of a card (host `removeBundle`, **no files touched**), or drop the
+name from `dsh.profile.bundles` and delete the link directory.
+
+After installing, check for the usual landmine — tool calls failing with `prepare`, or plugin loading failing on
+the next start, almost always means a second `@deepseek-ai/dsh-tools` sits under the profile (it shadows the
+host's copy). If that directory exists, move it away and restart:
 
 ```bash
-node .tools/dsh_doctor.py            # 只体检
-node .tools/dsh_doctor.py --fix      # 有 dsh-tools 覆盖就移走
+# macOS / Linux
+ls ~/.dsh/profiles/<profile>/node_modules/@deepseek-ai
+# Windows
+dir "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
 ```
 
 ## Usage

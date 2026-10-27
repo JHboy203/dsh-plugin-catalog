@@ -33,7 +33,7 @@ const CORDIS = [
 	"    args:",
 	"      - '-y'",
 	"      - '@modelcontextprotocol/server-filesystem'",
-	"      - 'D:/信息库/AI工作区'",
+	"      - 'D:/ws'",
 	"    env:",
 	"      API_TOKEN: 'sk-should-never-leak'",
 	"      LOG_LEVEL: debug",
@@ -74,7 +74,7 @@ const CORDIS = [
 	const report = extractMcp({ files: [{ file: "cordis.yml", text: CORDIS }], at: 1 });
 	const fs = report.servers.find((server) => server.serverName === "filesystem");
 	ok("M1 stdio 条目解析出 serverName/transport/command/args", Boolean(fs) && fs.transport === "stdio" && fs.command === "npx" && fs.args.length === 3, JSON.stringify(fs && { t: fs.transport, c: fs.command, a: fs.args }));
-	ok("M1b args 里的引号被剥掉、路径原样保留", Boolean(fs) && fs.args[2] === "D:/信息库/AI工作区", fs ? fs.args[2] : "missing");
+	ok("M1b args 里的引号被剥掉、路径原样保留", Boolean(fs) && fs.args[2] === "D:/ws", fs ? fs.args[2] : "missing");
 	ok("M1c env 只留键名（顺序保持）", Boolean(fs) && fs.envKeys.join(",") === "API_TOKEN,LOG_LEVEL", fs ? fs.envKeys.join(",") : "missing");
 	ok("M1d 位置是 config 所在的那份文件与行号", Boolean(fs) && fs.file === "cordis.yml" && fs.line === 2, fs ? fs.file + ":" + fs.line : "missing");
 }

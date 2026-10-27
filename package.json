@@ -39,6 +39,7 @@
     "url": "https://github.com/JHboy203/dsh-plugin-catalog/issues"
   },
   "engines": {
+    "dsh": ">=0.2.1-rc.1 <0.3.0",
     "node": ">=20"
   },
   "dsh": {
