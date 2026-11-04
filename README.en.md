@@ -639,7 +639,7 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + **16 independent probes (454 invariants)** + copy sync + version consistency + git, ~60–90 s):
+**Before shipping or handing off, run just this one** (three checks + **16 independent probes (464 invariants)** + copy sync + version consistency + git, ~60–90 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
@@ -652,7 +652,7 @@ Five checks:
 | `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
 | `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
 | `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
-| `probes` | **16 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules** / **open-source release readiness**, 454 invariants, ~6 s) | counts as failure |
+| `probes` | **16 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules** / **open-source release readiness**, 464 invariants, ~6 s) | counts as failure |
 | `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
 
 Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal
@@ -693,7 +693,7 @@ node dev/probe-loadstate.mjs  # independent recomputation of load paths: walks t
                               # any violation exits 1; --json
 node dev/probe-uninstall.mjs  # self-check of the removal plan: four invariants (I8 coverage and no overlap / I9 size accounting /
                               # I10 pinned-key safety / I11 never hitting a live load path); any violation exits 1; --json
-node dev/run-probes.mjs       # **the sixteen probes in one command** (ship's 5th item, 454 invariants, about 6 s):
+node dev/run-probes.mjs       # **the sixteen probes in one command** (ship's 5th item, 464 invariants, about 6 s):
 node dev/probe-runtime.mjs    # ★ R35: runtime truth (31 invariants) — six fiber phases / subpath module names normalised to the
                               #   package / several entries for one package prefer failed / unreadable => unknown (never active) /
                               #   declared-absent only when the declaration actually loads / three issue classes counted apart.

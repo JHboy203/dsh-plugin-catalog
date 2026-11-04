@@ -20,7 +20,10 @@ const GOOD = {
 	now: NOW,
 	build: { version: "0.26.0", at: NOW, stale: false, newestFile: "lib/handoff.mjs" },
 	loaded: { version: "0.26.0", at: NOW },
-	tools: 13,
+	tools: 14,
+	/* R37：工具数与「定义数」对账；ship 报告也必须比代码新（否则只代表过去） */
+	expectedTools: 14,
+	sourceTouchedAt: NOW - 3600000,
 	composition: { line: "配置层：2 条", verdict: "ok", counts: { effective: 2 } },
 	changes: { baselineAt: NOW - 1000, counts: { total: 2, composition: 0 } },
 	ack: { at: NOW - 500, entries: 10 },
@@ -132,6 +135,37 @@ const GOOD = {
 	ok("H10 配置问题 2 台 → warn，并点名「MCP」这一项", problems.verdict === "warn" && check.status === "warn", JSON.stringify({ verdict: problems.verdict, status: check.status }));
 	ok("H10b 孤儿调用 → warn，且 detail 里写出服务器名", orphans.verdict === "warn" && orphans.checks.find((item) => item.id === "mcp").detail.includes("gone"), JSON.stringify(orphans.checks.find((item) => item.id === "mcp")));
 	ok("H10c 0 台（本机没配 MCP）不判失败", buildHandoff(GOOD).verdict === "ok", buildHandoff(GOOD).verdict);
+}
+
+/* ── 11. R37：工具数不再写死常量 —— 注册数少于定义数才 warn（写死会让加工具后永远 warn） ── */
+{
+	const short = buildHandoff({ ...GOOD, tools: 13, expectedTools: 14 });
+	const check = short.checks.find((item) => item.id === "tools");
+	ok(
+		"H11 注册 13 / 定义 14 → warn，并写出两个数（不再写死「预期 13」）",
+		check.status === "warn" && check.detail.includes("注册 13 个") && check.detail.includes("工具定义 14 个"),
+		check.detail,
+	);
+	const aligned = buildHandoff({ ...GOOD, tools: 14, expectedTools: 14 });
+	ok("H11b 注册 14 / 定义 14 → ok（加工具后不会被旧常量拖成 warn）", aligned.checks.find((item) => item.id === "tools").status === "ok", aligned.checks.find((item) => item.id === "tools").detail);
+	const unknown = buildHandoff({ ...GOOD, tools: 14, expectedTools: undefined });
+	ok("H11c 没拿到定义数 → warn 且明说无法对账，不假装 ok", unknown.checks.find((item) => item.id === "tools").status === "warn" && unknown.checks.find((item) => item.id === "tools").detail.includes("无法对账"), unknown.checks.find((item) => item.id === "tools").detail);
+}
+
+/* ── 12. R37：ship 报告早于代码改动 → warn + 重跑（"全绿"只代表跑它的那一刻） ── */
+{
+	const old = buildHandoff({ ...GOOD, ship: { ...GOOD.ship, at: NOW - 86400000 }, sourceTouchedAt: NOW - 3600000 });
+	const check = old.checks.find((item) => item.id === "ship");
+	ok(
+		"H12 报告比代码旧 → ship 项 warn，写明「早于最后一次产品代码改动」并排「重跑」",
+		old.verdict === "warn" && check.status === "warn" && check.detail.includes("早于最后一次产品代码改动") && old.next.some((item) => item.includes("重跑") && item.includes("dev/ship.mjs")),
+		check.detail,
+	);
+	const fresh = buildHandoff({ ...GOOD, ship: { ...GOOD.ship, at: NOW }, sourceTouchedAt: NOW - 86400000 });
+	ok("H12b 报告比代码新 → ok（不许把正常情况也判 warn）", fresh.checks.find((item) => item.id === "ship").status === "ok", fresh.checks.find((item) => item.id === "ship").detail);
+	/* 失败仍然优先：过期只是"没验过现在这一版"，不能盖过报告里真有的失败 */
+	const both = buildHandoff({ ...GOOD, ship: { ...GOOD.ship, at: NOW - 86400000, failed: 1 }, sourceTouchedAt: NOW - 3600000 });
+	ok("H12c 报告过期 + 真有失败 → 仍然 bad（bad 优先于过期）", both.checks.find((item) => item.id === "ship").status === "bad", both.checks.find((item) => item.id === "ship").detail);
 }
 
 const failed = results.filter((item) => !item.pass);

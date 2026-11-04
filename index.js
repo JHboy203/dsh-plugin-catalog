@@ -616,8 +616,12 @@ export async function apply(ctx) {
 	/* ───────── 工具（同一套能力） ───────── */
 	const tools = service(ctx, "tools");
 	const failures = [];
+	/* ★ R37：定义只构建一次，并把"应该注册几个"交给 service —— 交接单拿它与实际注册数对账。
+	   此前 handoff 里写死「预期 13」，加第 14 个工具后每次都误报 warn。 */
+	const definitions = buildCatalogTools({ service: catalog });
+	catalog.expectedToolCount = definitions.length;
 	if (tools && typeof tools.register === "function") {
-		for (const definition of buildCatalogTools({ service: catalog })) {
+		for (const definition of definitions) {
 			try {
 				toolDisposers.push(tools.register(definition));
 			} catch (error) {

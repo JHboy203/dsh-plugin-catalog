@@ -718,10 +718,15 @@ ok("catalog_list 不再用「未启用」这个错口径", !listToolWithDep.text
 	ok("catalog_list loadState=loaded：一条 dormant 都没有，且没有 Skill（Skill 没有加载态）", loadedItems.length > 0 && loadedItems.every((item) => item.loadState !== "dormant" && item.kind !== "skill"), `命中 ${loadedItems.length} 条`);
 	const allList = await callTool("catalog_list", { limit: 200 });
 	const allItems = allList.items || [];
+	/* ★ R37：MCP 是第三类条目（R30），它既没有 dormant 也没有 loaded —— 旧断言只加了 Skill，
+	   整机装了 MCP 之后恒少 2 条（2026-11-04 实测：4 + 57 + 62 = 123 / 全部 125）。 */
+	const skillCount = allItems.filter((item) => item.kind === "skill").length;
+	const mcpCount = allItems.filter((item) => item.kind === "mcp").length;
 	ok(
-		"两种过滤是分区：dormant + loaded + 非插件条目 = 全部（不重不漏）",
-		dormantItems.length + loadedItems.length + allItems.filter((item) => item.kind === "skill").length === allItems.length,
-		`${dormantItems.length} + ${loadedItems.length} + Skill ${allItems.filter((item) => item.kind === "skill").length} = ${dormantItems.length + loadedItems.length + allItems.filter((item) => item.kind === "skill").length} / 全部 ${allItems.length}`,
+		"两种过滤是分区：dormant + loaded + 非插件条目（Skill / MCP）= 全部（不重不漏，且没有第四类）",
+		dormantItems.length + loadedItems.length + skillCount + mcpCount === allItems.length &&
+			allItems.every((item) => item.kind === "plugin" || item.kind === "skill" || item.kind === "mcp"),
+		`${dormantItems.length} + ${loadedItems.length} + Skill ${skillCount} + MCP ${mcpCount} = ${dormantItems.length + loadedItems.length + skillCount + mcpCount} / 全部 ${allItems.length}`,
 	);
 	ok("文本点明这个过滤的用途（怎么删看 catalog_uninstall）", dormantList.text.includes("catalog_uninstall") && dormantList.text.includes("不会被加载"), dormantList.text.split("\n")[1] || "");
 }

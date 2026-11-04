@@ -242,6 +242,48 @@ const CORDIS = [
 	ok("M12f 已经关掉的那台：片段前会先说一句「现在就是关的」（幂等，不吓人）", renderDisablePatch({ entryId: "mcp-x", serverName: "x", file: "cordis.yml", line: 3, state: "off", disabledRaw: "true" }).text.includes("现在已经是关掉的"));
 }
 
+/* ── M13 — R37：`- insert:` 块里相邻两条（真机 rail12306 / context7 的形态）──
+   条目缩进是 4，旧扫描器只认"列 0 的 - "为块结束 → 第一条读到了第二条的 config，
+   于是面板报「2 条重名」假警报、rail12306 整个消失。 */
+{
+	const text = [
+		"- insert:",
+		"    - id: mcp-rail12306",
+		"      name: '@deepseek-ai/dsh-mcp-client'",
+		"      config:",
+		"        serverName: rail12306",
+		"        transport: stdio",
+		"        command: 'D:/Node.js/node.exe'",
+		"        args:",
+		"          - 'D:/mcp/12306-mcp/build/index.js'",
+		"    - id: mcp-context7",
+		"      name: '@deepseek-ai/dsh-mcp-client'",
+		"      config:",
+		"        serverName: context7",
+		"        transport: stdio",
+		"        command: 'D:/Node.js/node.exe'",
+		"        args:",
+		"          - 'D:/mcp/context7-mcp/dist/index.js'",
+	].join("\n");
+	const lines = text.split("\n");
+	const first = scanMcpBlock(lines, 1);
+	const second = scanMcpBlock(lines, 9);
+	ok(
+		"M13 insert 块第一条只读自己的 config（不吞下一条的 serverName / args）",
+		first.serverName === "rail12306" && first.args.length === 1 && first.args[0].includes("12306-mcp"),
+		JSON.stringify({ name: first.serverName, args: first.args }),
+	);
+	ok(
+		"M13b insert 块第二条仍读得到自己的 config",
+		second.serverName === "context7" && second.args.length === 1 && second.args[0].includes("context7-mcp"),
+		JSON.stringify({ name: second.serverName, args: second.args }),
+	);
+	const report = extractMcp({ files: [{ file: "cordis.patch.yml", text }] });
+	const names = report.servers.map((server) => server.serverName).join(",");
+	ok("M13c 相邻两条 → 两台不同服务器（不是 2 个同名）", report.servers.length === 2 && names === "context7,rail12306", names);
+	ok("M13d 没有 duplicate 假警报", !report.problems.some((problem) => problem.code === "duplicate"), JSON.stringify(report.problems.map((problem) => problem.code)));
+}
+
 const failed = results.filter((result) => !result.pass);
 if (process.argv.includes("--json")) {
 	console.log(JSON.stringify({ version: 1, results }, null, 2));
