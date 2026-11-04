@@ -2362,6 +2362,34 @@ T.store.pageSize = 24;
 		button.props.onClick();
 		return restored === "t1";
 	})());
+
+	/* ⑦ R37：动作留痕浮层（只读 —— 面板动作 + 单件卸载） */
+	const journalTree = expand(
+		T.JournalModal({
+			journal: {
+				actionsFile: "D:\\ws\\.dsh-plugin-catalog\\actions-journal.json",
+				removalsFile: "removal-journal.json（同数据目录）",
+				actions: [
+					{ at: 1760000000000, kind: "plugin", op: "disable", name: "dsh-x", ok: true, code: "applied", target: "dsh.profile.bundles" },
+					{ at: 1760000000000, kind: "skill", op: "delete", name: "vex-ops", ok: false, code: "blocked" },
+				],
+				removals: [{ at: 1760000000000, name: "dsh-old", from: "0.1.0", purpose: "replace", application: "applied", ok: true }],
+			},
+			onClose: () => {},
+		}),
+	);
+	const journalText = textsOf(journalTree).join(" | ");
+	ok(
+		"R37 动作留痕：面板动作与单件卸载分成两段，成功/失败、名字与目标都摊开",
+		journalText.includes("dsh-x") && journalText.includes("dsh-old") && journalText.includes("成功") && journalText.includes("失败") && journalText.includes("dsh.profile.bundles") && journalText.includes("面板动作"),
+		journalText.slice(0, 200),
+	);
+	ok("R37 动作留痕：空态说清去哪看，且整块只有一个「关闭」按钮（没有写动作）", (() => {
+		const empty = expand(T.JournalModal({ journal: { actions: [], removals: [], actionsFile: "a.json", removalsFile: "r.json" }, onClose: () => {} }));
+		const labels = findAll(empty, (node) => node.type === "button").map(labelOf);
+		return textsOf(empty).join(" ").includes("还没有从面板做过动作") && labels.length === 1 && labels[0] === "关闭";
+	})());
+	ok("R37 工具条有「动作留痕」入口（只读的留痕入口不该只活在接口里）", textsOf(expand(render(T.Panel, {}))).join(" ").includes("动作留痕"));
 }
 console.log("");
 console.log("dsh-plugin-catalog / render-check");

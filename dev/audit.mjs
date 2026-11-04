@@ -1193,8 +1193,11 @@ ok("两条入口都调自愈（面板 /state 与交接单 —— 交接单最容
 ok("交接单有「快照新鲜度」这一项：factStale 判 bad 并把「先重建」排到下一步最前", readFileSync(new URL("../lib/handoff.mjs", import.meta.url), "utf8").includes('"freshness"') && readFileSync(new URL("../lib/handoff.mjs", import.meta.url), "utf8").includes("if (factStale) next.push("));
 ok("/state 的 catalogMeta 带 staleReason 与 profileTouchedAt（面板/工具能说清「旧在哪」）", serviceSource.includes("staleReason: stale.reason") && serviceSource.includes("profileTouchedAt: stale.profileTouchedAt") && serviceSource.includes("autoRebuild"));
 ok("health 报 catalogMeta；catalog_list / catalog_uninstall / 导出都带同一句警告", serviceSource.includes("catalogMeta: await this.catalogStaleInfo()") && serviceSource.includes("async catalogStaleText()") && toolsSource.includes("await service.catalogStaleText()") && serviceSource.includes("这份快照可能已经过时"));
+/* ★ R37：陈旧**文案**收进 freshness 纯函数 —— 2026-10-31 的 fmtT bug 只在 factStale 那一刻炸，
+   以前只有"源码里有没有这句话"的静态断言，跑不到那一支。现在由 probe-retention F7–F9 单测。 */
+ok("R37 陈旧文案在 freshness 纯函数里（factStale / age / 不旧三支可单测），service 只传格式化器", freshnessSource.includes("export function staleTextOf(") && serviceSource.includes("return staleTextOf(info, fmtLocalTime);") && !/function fmtT\\b/.test(freshnessSource));
 ok("陈旧提示必须出现在**删除决策**那条路上（catalog_uninstall 的 plan）", /const staleText = await service\.catalogStaleText\(\);\s*\n\s*const lines = \[[\s\S]{0,400}?处置清单/.test(toolsSource) || (toolsSource.includes("处置清单（只生成、不执行）") && toolsSource.includes("★ 先重建目录再决定")));
-ok("probe-retention 覆盖 F1–F6 / W1–W4 / R1–R8", ["F1", "F2", "F3", "F4", "F5", "F6", "W1", "W2", "W3", "W4", "R1", "R2", "R3", "R4", "R5", "R6", "R6b", "R7", "R8"].every((id) => retentionProbeSource.includes(id + " ")));
+ok("probe-retention 覆盖 F1–F9 / W1–W4 / R1–R8", ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "W1", "W2", "W3", "W4", "R1", "R2", "R3", "R4", "R5", "R6", "R6b", "R7", "R8"].every((id) => retentionProbeSource.includes(id + " ")));
 ok("lib/reports.mjs 把 catalog-filtered 单列（它叫 catalog-filtered-*.md，混进 catalog 会挤掉快照）", reportsSource.includes('"catalog-filtered": 10') && reportsSource.includes("以 `catalog-` 开头"));
 
 /* ⑧d R34：每周任务「全失败不许伪装成跑过了」 */
@@ -1447,6 +1450,14 @@ ok("R35 面板：卡片上的运行期 chip + 「运行期问题 N」筛选 + �
 ok("R35 面板：密度（紧凑）/ 吸顶工具条 / 空态可清除 / 首次使用提示 —— 四个都是「看 133 条」的习惯问题", clientSource.includes('state.density === "compact" ? " is-compact" : ""') && cssSource.includes(".dpc-toolbar-sticky{") && clientSource.includes("dpc-empty-title") && clientSource.includes("hintDismissed"));
 ok("R35 面板：回收站浮层能还原（Skill 删除的后悔药在界面上，不只在文件里）", clientSource.includes("function TrashModal(props)") && clientSource.includes('post("/action/trash", { action: "restore", id, confirm: true })') && clientSource.includes("还原到原位"));
 ok("R35 新类名都有样式定义", [".dpc-card-actions{", ".dpc-act{", ".dpc-act.is-danger{", ".dpc-actionbox{", ".dpc-actionbox-block{", ".dpc-runtime.is-bad{", ".dpc-trash-row{", ".dpc-panel.is-compact .dpc-card{"].every((needle) => cssSource.includes(needle)));
+/* R37：动作留痕（只读）—— R35 之前只有接口没有入口；这里同时钉「只读」：openJournal 走两个 GET，不许 post。 */
+ok("R37 面板：动作留痕入口 + 浮层（工具条按钮 / 两段清单 / 空态）", clientSource.includes("function JournalModal(props)") && clientSource.includes("动作留痕") && clientSource.includes("还没有从面板做过动作") && clientSource.includes("没有单件卸载记录"));
+ok("R37 面板：留痕入口是只读的（两个 GET，没有 post/写盘）", (() => {
+	const at = clientSource.indexOf("async function openJournal");
+	const fn = at >= 0 ? clientSource.slice(at, at + 900) : "";
+	return fn.includes('api("/action/journal?limit=20")') && fn.includes('api("/removal/journal?limit=20")') && !fn.includes('post("/');
+})());
+ok("R37 留痕新类名都有样式定义", [".dpc-journal-row{", ".dpc-journal-head{", ".dpc-journal-name{", ".dpc-journal-title{"].every((needle) => cssSource.includes(needle)));
 ok("R35 两个新探针都登记在 probe-list（没挂链的探针等于没写）", PROBES.some((probe) => probe.id === "runtime") && PROBES.some((probe) => probe.id === "actions") && runtimeProbeSource.includes("R1 ") && /process\.exit\(/.test(runtimeProbeSource) && actionsProbeSource.includes("A1 ") && /process\.exit\(/.test(actionsProbeSource));
 ok("R35 动作名冻结且计划有效期是 5 分钟（与 R32 单件卸载同一口径）", ACTION_OPS.join(",") === "uninstall,disable,enable,delete,remove" && ACTION_PLAN_TTL_MS === 5 * 60 * 1000);
 ok("R35 Skill 删除的阻断判据覆盖三件真事：随插件安装 / 没有目录 / 不在已知根下", planSkillDelete({ kind: "skill", realDir: "D:\\x", hostPlugin: "p" }, {}).blockers.some((b) => b.code === "host-plugin") && planSkillDelete({ kind: "skill", realDir: "" }, {}).blockers.some((b) => b.code === "no-dir") && planSkillDelete({ kind: "skill", realDir: "C:\\x" }, { roots: ["D:\\skills"] }).blockers.some((b) => b.code === "outside-roots"));

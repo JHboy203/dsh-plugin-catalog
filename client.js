@@ -169,6 +169,9 @@ window.__ModuleLoader__.load({
 			action: null,
 			/* R35：回收站（Skill 删除后可还原）。同样不持久化。 */
 			trash: null,
+			/* R37：动作留痕（只读）。面板做过的写盘动作 + 跨插件的单件卸载。
+			   ★ 不持久化：它是「现在查一下上一任动过什么」，不是在面板里常驻的状态。 */
+			journal: null,
 			/* R35：密度。看 133 条时"紧凑"比"舒适"有用 —— 它是使用习惯，进视图持久化。 */
 			density: "comfortable",
 			/* R35：首次使用的引导提示（点过就记住；它只占一行，但能让人发现卡片底部的操作） */
@@ -2889,6 +2892,78 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R37：动作留痕（只读）──
+		   面板做过的写盘动作（卸载 / 停用 / 删 Skill / 改 MCP）与跨插件的单件卸载都留了痕；
+		   R35 之前**只有接口没有入口** —— 换会话时看不到"上一任动过什么"，只能翻 json。
+		   ★ 这里只读：没有任何按钮会改文件；token 也不会出现在这里（服务端只回条目）。 */
+		function JournalModal(props) {
+			const journal = props.journal || {};
+			const actions = journal.actions || [];
+			const removals = journal.removals || [];
+			const row = (key, item, title, detail) =>
+				h(
+					"div",
+					{ key, className: "dpc-journal-row" },
+					h(
+						"div",
+						{ className: "dpc-journal-head" },
+						h("span", { className: item.ok === true ? "dpc-ok" : "dpc-warn" }, item.ok === true ? "成功" : "失败"),
+						h("span", { className: "dpc-journal-name" }, title),
+						h("span", { className: "dpc-muted" }, detail),
+					),
+				);
+			return h(
+				"div",
+				{ className: "dpc-overlay", onClick: props.onClose },
+				h(
+					"div",
+					{ className: "dpc-modal", onClick: (event) => event.stopPropagation() },
+					h(
+						"div",
+						{ className: "dpc-modal-head" },
+						h("span", { className: "dpc-modal-title" }, "动作留痕"),
+						h("span", { className: "dpc-muted" }, "面板动作 " + actions.length + " 条 · 单件卸载 " + removals.length + " 条"),
+						h("span", { className: "dpc-grow" }),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onClose }, "关闭"),
+					),
+					h(
+						"div",
+						{ className: "dpc-modal-body" },
+						h(
+							"div",
+							{ className: "dpc-muted" },
+							"面板做过的写盘动作与单件卸载（只读，没法从这里改回去）。完整文件：",
+							h("code", { className: "dpc-path" }, journal.actionsFile || "actions-journal.json"),
+							" / ",
+							h("code", { className: "dpc-path" }, journal.removalsFile || "removal-journal.json"),
+						),
+						h("div", { className: "dpc-journal-title" }, "面板动作（最近 " + actions.length + " 条）"),
+						actions.length === 0
+							? h("div", { className: "dpc-note" }, "还没有从面板做过动作 —— 卸载 / 停用 / 删 Skill / 改 MCP 都会记在这里。")
+							: actions.map((item, index) =>
+									row(
+										"a" + index,
+										item,
+										String(item.kind || "?") + " · " + String(item.op || "?") + " · " + String(item.name || item.id || "?"),
+										(item.at ? fmtDateTime(item.at) : "") + (item.code ? " · " + item.code : "") + (item.target ? " · " + item.target : ""),
+									),
+								),
+						h("div", { className: "dpc-journal-title" }, "单件卸载留痕（最近 " + removals.length + " 条）"),
+						removals.length === 0
+							? h("div", { className: "dpc-note" }, "没有单件卸载记录 —— 换插件版本时那一步卸载会记在这里。")
+							: removals.map((item, index) =>
+									row(
+										"r" + index,
+										item,
+										String(item.name || "?") + (item.from ? "@" + item.from : ""),
+										(item.at ? fmtDateTime(item.at) : "") + (item.purpose ? " · " + item.purpose : "") + (item.application ? " · " + item.application : "") + (item.code ? " · " + item.code : ""),
+									),
+								),
+					),
+				),
+			);
+		}
+
 		function Panel() {
 			const state = useStore();
 			const data = state.data;
@@ -2973,6 +3048,24 @@ window.__ModuleLoader__.load({
 				} catch (error) {
 					set({ notice: "还原失败：" + String((error && error.message) || error) });
 				}
+			}
+			/* R37：动作留痕（只读）—— 面板动作 + 单件卸载；两个都是 GET，失败不该挡住面板 */
+			async function openJournal() {
+				set({ journal: { busy: true, actions: [], removals: [], actionsFile: "", removalsFile: "" } });
+				const [actions, removals] = await Promise.all([api("/action/journal?limit=20").catch(() => null), api("/removal/journal?limit=20").catch(() => null)]);
+				if (!actions && !removals) {
+					set({ journal: null, notice: "读动作留痕失败：接口没有返回（宿主半边可能还没重载）" });
+					return;
+				}
+				set({
+					journal: {
+						busy: false,
+						actions: (actions && actions.items) || [],
+						removals: (removals && removals.items) || [],
+						actionsFile: (data && data.actions && data.actions.journalFile) || "actions-journal.json",
+						removalsFile: "removal-journal.json（同数据目录）",
+					},
+				});
 			}
 
 			/* R15：标签 id → ? 的索引。筛选要按维度分组判定，不能只看 id 在不在。 */
@@ -3484,6 +3577,16 @@ window.__ModuleLoader__.load({
 							},
 							"回收站",
 						),
+						/* R37：动作留痕 —— 面板做的写盘动作与单件卸载都留了痕，给一个只读入口 */
+						h(
+							"button",
+							{
+								className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+								onClick: openJournal,
+								title: "动作留痕（只读）：面板做过的卸载 / 停用 / 删 Skill / 改 MCP，以及换插件版本时那一步单件卸载",
+							},
+							"动作留痕",
+						),
 						h(
 							"button",
 							{
@@ -3983,6 +4086,8 @@ window.__ModuleLoader__.load({
 				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }), onJump: jumpToCard }) : null,
 				/* R35：回收站（Skill 删除可还原） */
 				state.trash ? h(TrashModal, { trash: state.trash, onClose: () => set({ trash: null }), onRestore: restoreTrashItem }) : null,
+				/* R37：动作留痕（只读） */
+				state.journal ? h(JournalModal, { journal: state.journal, onClose: () => set({ journal: null }) }) : null,
 			);
 		}
 
@@ -4431,6 +4536,12 @@ window.__ModuleLoader__.load({
   border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
 .dpc-trash-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px}
 .dpc-trash-name{font-weight:600;word-break:break-all}
+/* ── R37：动作留痕（只读） ── */
+.dpc-journal-title{margin-top:12px;font-size:12px;font-weight:650;color:var(--dpc-ink)}
+.dpc-journal-row{display:flex;flex-direction:column;gap:2px;padding:9px 11px;margin-top:6px;border-radius:10px;
+  border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-journal-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px}
+.dpc-journal-name{font-weight:600;word-break:break-all}
 /* ── R35：工具条吸顶（面板自己是滚动容器，sticky 才有意义） ── */
 .dpc-toolbar-sticky{position:sticky;top:0;z-index:5;
   background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 88%,transparent);backdrop-filter:blur(10px);
@@ -4559,6 +4670,8 @@ window.__ModuleLoader__.load({
 			CardActions,
 			ActionPanel,
 			TrashModal,
+			/* R37：动作留痕（只读） */
+			JournalModal,
 			toolHits,
 			hotkeyOf,
 			copyText,

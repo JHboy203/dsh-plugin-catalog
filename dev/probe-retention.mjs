@@ -16,7 +16,7 @@
  * 全程**不碰磁盘**（纯函数 + 合成名字/数字）。
  */
 
-import { DEFAULT_TTL_MS, FACT_TOLERANCE_MS, staleOf } from "../lib/freshness.mjs";
+import { DEFAULT_TTL_MS, FACT_TOLERANCE_MS, staleOf, staleTextOf } from "../lib/freshness.mjs";
 import { reportOutcome, summarizeReport } from "../lib/review.mjs";
 import { planReportPrune, REPORT_KEEP, reportPrefixOf } from "../lib/reports.mjs";
 
@@ -64,6 +64,18 @@ const AT = 1760000000000;
 {
 	const info = staleOf({ builtAt: AT, ageMs: undefined, profileTouchedAt: AT });
 	ok("F6 ageMs 缺失 → null + 不旧（不抛、不 Infinity）", info.ageMs === null && info.stale === false, JSON.stringify(info));
+}
+
+/* F7–F9（R37）：**文案本身也要能单测** —— factStale 那一支曾经调了不存在的 `fmtT()`，
+   只在"快照真过期"那一刻抛，平时怎么点都复现不出来。用确定性格式化器把三支各跑一遍。 */
+{
+	const time = (ms) => "T" + Number(ms);
+	const fact = staleTextOf({ factStale: true, ageStale: true, builtAt: AT, profileTouchedAt: AT + 5000 }, time);
+	ok("F7 factStale → 文案带两个时间与「先重建」，且用的是传入的格式化器（不再引用未定义函数）", fact.includes("T" + AT) && fact.includes("T" + (AT + 5000)) && fact.includes("先重建") && fact.includes("可能已经不准"), fact.slice(0, 60));
+	const age = staleTextOf({ factStale: false, ageStale: true, ageMs: 10 * 60 * 1000, ttlMs: DEFAULT_TTL_MS }, time);
+	ok("F8 只是旧 → 文案说「仍然有效」，且没有「先重建」", age.includes("仍然有效") && !age.includes("先重建") && age.includes("10 分钟前"), age);
+	const fresh = staleTextOf({ factStale: false, ageStale: false }, time);
+	ok("F9 不旧 → 空串（不许硬塞一行）", fresh === "", JSON.stringify(fresh));
 }
 
 /* ─────────── ② 每周任务「到底成了几条」（reportOutcome） ─────────── */
