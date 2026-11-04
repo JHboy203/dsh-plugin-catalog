@@ -9,7 +9,7 @@
  * ② `lib/review.mjs` 的 `reportOutcome`：一次全量跑**成功了几条**。旧口径只要跑完就写
  *    `lastGapAt`，于是本机 2026-10-21 那次 **12/12 全失败**在 health 里和成功一模一样，
  *    还白等 7 天才重试。
- * ③ `lib/reports.mjs`：`reports/` 的保留策略 —— 只动自己那五种前缀、md/json 同组、
+ * ③ `lib/reports.mjs`：`reports/` 的保留策略 —— 只动自己那六种前缀、md/json 同组、
  *    留最新 N 组。判错就是**删别人的文件**或**删掉正在用的那份 json**。
  *
  * 用法：`node dev/probe-retention.mjs [--json]`；破任一不变式退出码 1。
@@ -157,10 +157,17 @@ const AT = 1760000000000;
 {
 	const values = Object.values(REPORT_KEEP);
 	ok(
-		"R6 默认保留表：五种前缀、都是正整数，catalog-filtered 单列",
-		Object.keys(REPORT_KEEP).length === 5 && values.every((value) => Number.isInteger(value) && value > 0) && Object.hasOwn(REPORT_KEEP, "catalog-filtered") && Object.hasOwn(REPORT_KEEP, "catalog"),
+		"R6 默认保留表：六种前缀、都是正整数，catalog-filtered 与 uninstall-measured 各自单列",
+		Object.keys(REPORT_KEEP).length === 6 && values.every((value) => Number.isInteger(value) && value > 0) && Object.hasOwn(REPORT_KEEP, "catalog-filtered") && Object.hasOwn(REPORT_KEEP, "catalog") && Object.hasOwn(REPORT_KEEP, "uninstall-measured"),
 		JSON.stringify(REPORT_KEEP),
 	);
+}
+
+/* R6c（R38）：uninstall-measured 必须与 uninstall 分家 —— 否则删前实测那份会把真正的处置计划挤掉 */
+{
+	const names = ["uninstall-20260101-0000.json", "uninstall-20260102-0000.json", "uninstall-measured-20260101-0000.json", "uninstall-measured-20260102-0000.json"];
+	const plan = planReportPrune(names, { keep: { uninstall: 1, "uninstall-measured": 1 } });
+	ok("R6c uninstall-measured 独立成组：实测计划不会挤掉处置计划", plan.groups.length === 2 && plan.keep.length === 2 && plan.drop.length === 2, JSON.stringify(plan.groups));
 }
 
 /* R6b：catalog-filtered 与 catalog 各占一组 —— 两批文件互不挤占名额 */

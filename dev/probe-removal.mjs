@@ -28,6 +28,7 @@ import {
 	describeRemovalHost,
 	executePackageRemoval,
 	inspectPackageState,
+	planBundleRowWriteBack,
 	planPackageRemoval,
 	readRemovalJournal,
 	specKind,
@@ -248,6 +249,18 @@ ok("API: INSPECT_CODES 是冻结白名单", Array.isArray(INSPECT_CODES) && Obje
 		eq("rowDropped: 卸载后 bundles 还在 → false（不用写回）", kept.rowDropped, false);
 		eq("rowDropped: 文案说「没有变化」", kept.restore.text.includes("没有变化"), true);
 	}
+}
+
+/* ── R38：装完核对 → 补入口行（纯判据；真写盘在 hosttest 用临时 profile 验） ── */
+{
+	const dormant = { name: "dsh-y", installed: true, bundleRow: false, loadState: "dormant", via: "" };
+	eq("repair: 已装 + 不在 bundles + 不加载 → write-back", planBundleRowWriteBack(dormant).code, "write-back");
+	ok("repair: write-back 文案点名 dsh.profile.bundles", planBundleRowWriteBack(dormant).summary.includes("dsh.profile.bundles"), planBundleRowWriteBack(dormant).summary);
+	eq("repair: 已经在 bundles → already（幂等，不写盘）", planBundleRowWriteBack({ ...dormant, bundleRow: true }).code, "already");
+	eq("repair: 没装 → not-installed（先装再补）", planBundleRowWriteBack({ ...dormant, installed: false }).code, "not-installed");
+	eq("repair: 已通过依赖链加载 → loaded-otherwise（不许重复挂载）", planBundleRowWriteBack({ ...dormant, loadState: "transitive", via: "x" }).code, "loaded-otherwise");
+	eq("repair: 自己 → self（不自动写自己的入口）", codes(planBundleRowWriteBack({ ...dormant, name: "dsh-plugin-catalog" }).blockers), ["self"]);
+	eq("repair: 宿主自带 → host-owned", codes(planBundleRowWriteBack({ ...dormant, name: "@deepseek-ai/dsh-x" }).blockers), ["host-owned"]);
 }
 
 const passed = checks.filter((item) => item.ok).length;

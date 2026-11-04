@@ -196,6 +196,20 @@ ok(
 	JSON.stringify(guarded.json && { ok: guarded.json.ok, error: guarded.json.error }),
 );
 
+/* R38：补入口行 —— 只读核对要带 repair 计划；写回不带 confirm 必须 400（这条请求不写盘） */
+const inspectSelf = await getJson("/inspect?name=dsh-plugin-catalog");
+ok(
+	"/inspect: read-only verdict + repair plan (self is blocked, never auto-written)",
+	inspectSelf.status === 200 && inspectSelf.json?.repair && inspectSelf.json.repair.code === "self" && Array.isArray(inspectSelf.json.repair.blockers),
+	JSON.stringify({ status: inspectSelf.status, code: inspectSelf.json?.code, repair: inspectSelf.json?.repair?.code }),
+);
+const repairGate = await postJson("/inspect/repair", { name: "dsh-plugin-catalog" });
+ok(
+	"repair gate: write-back without confirm is rejected (nothing written)",
+	repairGate.status === 400 && repairGate.json?.ok === false && /confirm/.test(String(repairGate.json?.error || "")),
+	JSON.stringify(repairGate.json && { status: repairGate.status, error: repairGate.json.error }),
+);
+
 const failed = results.filter((item) => !item.pass);
 for (const item of results) console.log(`${item.pass ? "  ok" : "  FAIL"}  ${item.name}${item.pass || !item.detail ? "" : "  [" + item.detail + "]"}`);
 console.log(`\nlive-check: passed ${results.length - failed.length} / failed ${failed.length}`);

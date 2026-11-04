@@ -265,7 +265,7 @@ export async function apply(ctx) {
 				version: PLUGIN_VERSION,
 				/* ★ R33 能力协商：消费方**按能力取用**，别按版本号猜字段。
 				   `removal` 仍是 api 数；旧消费方只认它也没问题（>= 1 就可用）。 */
-				capabilities: { removal: REMOVAL_API, inspect: 1 },
+				capabilities: { removal: REMOVAL_API, inspect: 1, repair: 1 },
 				removal: {
 					api: REMOVAL_API,
 					describe: () => removalDescribe(),
@@ -274,6 +274,9 @@ export async function apply(ctx) {
 					journal: async (limit) => await removalCall("removalJournal", limit),
 					/* api 2：装完核对（纯读；缺了它消费方自己降级，不影响卸载） */
 					inspect: async (input) => await removalCall("inspectPackage", input),
+					/* R38：装完核对发现"装上了但没有任何入口"时，补 dsh.profile.bundles 那一行。
+					   按函数在不在协商（`typeof === "function"`）；旧消费方不调就完全不受影响。 */
+					repairBundleRow: async (input) => await removalCall("repairBundleRow", input),
 				},
 				inspect: async (input) => await removalCall("inspectPackage", input),
 			});
@@ -476,6 +479,13 @@ export async function apply(ctx) {
 					const body = method === "POST" ? await readJsonBody(req) : {};
 					const name = String(body.name || url.searchParams.get("name") || "").trim();
 					return json(res, 200, await catalog.inspectPackage({ name }));
+				}
+				/* R38：装完核对之后**唯一**的写回入口（补 dsh.profile.bundles 一行）。
+				   两段式：没有 confirm:true 一律 400；写盘走 dispose.ensureBundleRow（备份 / 原子写 / 校验 / 回滚）。 */
+				if (path === "/inspect/repair" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (body.confirm !== true) return json(res, 400, { ok: false, error: "需要 confirm:true（会改 profile/package.json）" });
+					return json(res, 200, await catalog.repairBundleRow({ name: body.name, confirm: true, requestedBy: body.requestedBy }));
 				}
 
 				/* ── R35：运行期真相（只读）──

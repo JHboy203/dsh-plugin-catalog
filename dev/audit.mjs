@@ -542,11 +542,11 @@ ok("滚动落盘有节流（300ms 内不重复写 localStorage）", /if \(now - 
    跟随 junction 会走出 profile 甚至成环；导出必须由服务端定路径，不能让调用方指定。 */
 const routeSource = readFileSync(new URL("../index.js", import.meta.url), "utf8");
 ok("路由 /size 与 /export 都注册了", routeSource.includes('path === "/size" && method === "GET"') && routeSource.includes('path === "/export" && method === "POST"'));
-ok("体积是懒算（dirSize + 5 分钟缓存 / 2 万文件 / 1.5 秒三道闸门）", serviceSource.includes("export async function dirSize(dir)") && /SIZE_TTL_MS = 5 \* 60 \* 1000/.test(serviceSource) && /SIZE_MAX_FILES = 20000/.test(serviceSource) && /SIZE_BUDGET_MS = 1500/.test(serviceSource));
+ok("体积是懒算（dirSize + 5 分钟缓存 / 2 万文件 / 1.5 秒三道闸门）", serviceSource.includes("export async function dirSize(dir, options = {})") && /SIZE_TTL_MS = 5 \* 60 \* 1000/.test(serviceSource) && /SIZE_MAX_FILES = 20000/.test(serviceSource) && /SIZE_BUDGET_MS = 1500/.test(serviceSource));
 ok("体积不跟随符号链接 / junction（只推入真目录）", serviceSource.includes("if (entry.isDirectory())") && serviceSource.includes("queue.push(join(current, entry.name))"));
 ok(
-	"构建目录 / 列表都不算体积（dirSize 只在 entrySize / entrySizes / computeSizes 三处）",
-	(serviceSource.match(/await dirSize\(/g) || []).length === 3 &&
+	"构建目录 / 列表都不算体积（dirSize 只有 entrySize / entrySizes / computeSizes + R38 的 measureDirs 四处）",
+	(serviceSource.match(/await dirSize\(/g) || []).length === 4 &&
 		!serviceSource.slice(serviceSource.indexOf("listEntries() {"), serviceSource.indexOf("totalsOf(plugins, skills")).includes("dirSize(") &&
 		/async computeSizes\(options = \{\}\)[\s\S]{0,2000}?await dirSize\(/.test(serviceSource),
 );
@@ -1056,9 +1056,9 @@ ok("清单里写明「不会执行任何删除」+ 复核命令", fixtureMd.incl
 ok("service 有 runUninstall，并把结论存进 lastUninstall（不靠 job 那一格）", serviceSource.includes("async runUninstall({ onProgress } = {})") && serviceSource.includes("this.lastUninstall = plan;"));
 ok("写盘要 confirm:true（闸在服务端）", serviceSource.includes("async writeUninstallReport({ confirm } = {})") && serviceSource.includes('if (confirm !== true) return { ok: false, error: "写盘必须带 confirm:true'));
 ok("state 与 health 都带 uninstall 摘要（面板读 state、catalog_health 读 health）", serviceSource.includes("uninstall: this.uninstallSummary()") && serviceSource.includes("uninstall: this.lastUninstall"));
-ok("体积走注入的 sizeOf（service 里 dirSize 调用点还是三处，懒算闸门没被打开）", serviceSource.includes("sizeOf: (dir) => dirSize(dir)") && (serviceSource.match(/await dirSize\(/g) || []).length === 3);
+ok("体积走注入的 sizeOf（service 里 dirSize 调用点是四处 = 三处懒算 + R38 实测；构建/列表仍一次都没有）", serviceSource.includes("sizeOf: (dir) => dirSize(dir)") && (serviceSource.match(/await dirSize\(/g) || []).length === 4);
 ok("路由 POST /uninstall：plan 起后台任务、apply+confirm 才写盘", indexSource.includes('if (path === "/uninstall" && method === "POST")') && indexSource.includes("catalog.writeUninstallReport({ confirm: body.confirm === true })"));
-ok("工具 catalog_uninstall 存在且声明了 output（0.2.1 起漏了会整插件失活）", toolsSource.includes('name: "catalog_uninstall"') && toolsSource.includes("action: { type: \"string\", enum: [\"plan\", \"write\", \"simulate\", \"verify\"]"));
+ok("工具 catalog_uninstall 存在且声明了 output（0.2.1 起漏了会整插件失活）", toolsSource.includes('name: "catalog_uninstall"') && toolsSource.includes("action: { type: \"string\", enum: [\"plan\", \"write\", \"simulate\", \"verify\", \"measure\"]"));
 ok("工具没有在 description 里许诺「帮你删」（只生成清单）", toolsSource.includes("只生成、绝不执行删除") && !toolsSource.includes("catalog_uninstall 会删除"));
 
 /* ⑤ 探针：I7 在 loadstate 探针、I8–I11 在 uninstall 探针 */
@@ -1099,7 +1099,7 @@ ok("对账是纯函数：计划进结论出，函数体不碰磁盘（目录在�
 ok("「白删」的三条来源都在：bundles / 未关掉的配置条目 / profile 依赖键", uninstallSource.includes("const bundleSet = new Set(bundles)") && uninstallSource.includes("item && !item.disabled") && uninstallSource.includes("profileKeySet.has(member.pkg)"));
 ok("组内互相声明不算失守（计划按弱连通分量分组，整组一起走）", uninstallSource.includes("const memberNames = new Set()") && uninstallSource.includes("!memberNames.has(from)") && verifyProbeSource.includes("V9"));
 ok("presence 缺失时保守判「还在」（不凭缺项宣布目录消失）", uninstallSource.includes("typeof input?.presence === \"function\" ? input.presence : () => true") && verifyProbeSource.includes("V11"));
-ok("服务端对账每次重扫依赖图 + 逐个 stat 计划成员（不吃缓存）", serviceSource.includes("async verifyUninstall({ planPath } = {})") && serviceSource.includes("scanInstalledPackages(nodeModules)") && serviceSource.includes("existsSync(join(nodeModules, dirName))"));
+ok("服务端对账每次重扫依赖图 + 逐个 stat 计划成员（不吃缓存）", serviceSource.includes("async verifyUninstall({ planPath, measure } = {})") && serviceSource.includes("scanInstalledPackages(nodeModules)") && serviceSource.includes("existsSync(join(nodeModules, dirName))"));
 ok("planPath 只许 reports/ 下的一份（不许把数据目录外的 JSON 读进报告）", serviceSource.includes("planPath 只能是 reports/ 下的一份计划") && serviceSource.includes("resolve(reports, wanted)"));
 ok("对账结论**不进** /state（一份过期的「已删干净」会替人背书下一次动手）", !serviceSource.includes("this.lastVerify") && clientSource.includes("verify: null"));
 ok("路由：verify 分支默认只读，confirm:true 才落报告", indexSource.includes('body.action === "verify"') && indexSource.includes("catalog.verifyUninstall({ planPath })") && indexSource.includes("catalog.writeVerifyReport({ confirm: true, planPath })"));
@@ -1145,7 +1145,7 @@ ok("deliver 把「沙箱 spawn 被拒」与「断言红了」分开报（否则�
 ok("对账的措辞只在 uninstall.mjs 一处定义（面板/工具/报告共用）", uninstallSource.includes("export const VERIFY_REASON") && uninstallSource.includes("export const VERIFY_VERDICT") && toolsSource.includes("import { VERIFY_REASON, VERIFY_VERDICT }"));
 ok("报告渲染把「白删 / 计划过期 / 逐成员 / 边界」四节都写出来", uninstallSource.includes("export function renderVerifyReport") && uninstallSource.includes("删了等于白删（最要紧）") && uninstallSource.includes("## 逐成员"));
 ok("面板：VerifyBlock 结论与原因同时出现，且按钮不含「删除」字样", clientSource.includes("function VerifyBlock(props)") && clientSource.includes("对账（不动盘）") && clientSource.includes("白删（会被装回来 / 入口指空）：") && clientSource.includes("对账不改任何东西"));
-ok("probe-verify 覆盖 V1–V15 且破一条就非零退出", ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14", "V15"].every((id) => verifyProbeSource.includes(id + " ")) && verifyProbeSource.includes("process.exit(1)"));
+ok("probe-verify 覆盖 V1–V18b 且破一条就非零退出", ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17", "V18", "V18b"].every((id) => verifyProbeSource.includes(id + " ")) && verifyProbeSource.includes("process.exit(1)"));
 ok("对账探针进了发版体检（probe-list 注册了 probe-verify）", probeListSource.includes('id: "verify"') && probeListSource.includes("dev/probe-verify.mjs") && runProbesSource.includes('from "./probe-list.mjs"'));
 
 /* ⑧ R17：变化追踪（自上次快照以来变了什么） */
@@ -1209,9 +1209,17 @@ ok("loadWeekly 显式读回 streak / failedAt（白名单式映射漏一个就�
 ok("health 与面板 state 都带 weeklyFail（连失败次数 + 上次成败条数）", serviceSource.includes("weeklyFail: {") && serviceSource.includes("gapOutcome: summarizeReport(this.weekly?.gap)") && toolsSource.includes("连续 ${health.weeklyFail.gap} 次全失败"));
 
 /* ⑧e R34：reports/ 保留策略 */
-ok("lib/reports.mjs 纯函数：五种前缀白名单 + 长的在前（uninstall-verify 不被吞）", /export const REPORT_KEEP = Object\.freeze\(\{/.test(reportsSource) && reportsSource.includes('Object.keys(REPORT_KEEP).sort((a, b) => b.length - a.length)'));
+ok("lib/reports.mjs 纯函数：六种前缀白名单 + 长的在前（uninstall-verify / uninstall-measured 不被吞）", /export const REPORT_KEEP = Object\.freeze\(\{/.test(reportsSource) && reportsSource.includes('Object.keys(REPORT_KEEP).sort((a, b) => b.length - a.length)'));
 ok("同时间戳的 md/json 归一组（按去扩展名的 stem 归并）", reportsSource.includes("function stemOf(") && reportsSource.includes("map.get(stem).push(name)"));
 ok("不认识的名字一律不碰（只清自己命名的报告）", reportsSource.includes('if (prefix === "") continue;'));
+
+/* ⑧f R38：装完核对 → 补入口行 + 删前称重（真值来源；两条都先定边界再写代码） */
+ok("R38 补入口行判据是纯函数，service 只调它（不另写一套）", removalSource.includes("export function planBundleRowWriteBack(") && serviceSource.includes("const plan = planBundleRowWriteBack(facts);"));
+ok("R38 写回只有一个入口：POST /inspect/repair 必须 confirm:true，写盘走 dispose.ensureBundleRow", indexSource.includes('path === "/inspect/repair" && method === "POST"') && indexSource.includes("if (body.confirm !== true) return json(res, 400") && serviceSource.includes("await ensureBundleRow({ profilePackageFile: file, name, at })"));
+ok("R38 跨插件能力按函数协商（门面有 repairBundleRow + capabilities.repair + removalHost.repair）", indexSource.includes('repairBundleRow: async (input) => await removalCall("repairBundleRow", input)') && indexSource.includes("repair: 1") && serviceSource.includes('repair: typeof this.repairBundleRow === "function"'));
+ok("R38 删前称重：measure 动作 + verify 可注入 measured（只作用在还在盘上的成员）", toolsSource.includes('"measure"') && serviceSource.includes("async measureUninstall({ planPath, confirm } = {})") && serviceSource.includes("measured: measured || undefined") && uninstallSource.includes("const measured = input?.measured instanceof Map"));
+ok("R38 实测计划单独成组，且 byteSource 说清「计划值 vs 删前逐成员实测」", reportsSource.includes('"uninstall-measured": 8') && uninstallSource.includes('byteSource: reclaimedBytesReal !== null ? "measured" : "plan"') && uninstallSource.includes("measuredBytes: Number(member.measuredBytes)"));
+ok("R38 新判据都有探针钉（probe-removal 的 repair 六条 / probe-verify 的 V16–V18）", readFileSync(new URL("./probe-removal.mjs", import.meta.url), "utf8").includes("repair: 已装 + 不在 bundles") && verifyProbeSource.includes("V16 measured 只作用于还在盘上的成员"));
 ok("service 有 tidyReports（失败不算错）并在六个写盘点调用", serviceSource.includes("async tidyReports()") && (serviceSource.match(/this\.tidyReports\(\)/g) || []).length >= 6);
 ok("导出走 path: 指定位置时不清旧（那不是我们的目录）", serviceSource.includes("options.path && typeof options.path === \"string\" ? { removed: [] } : await this.tidyReports()"));
 ok("compareEntries 是 diff 与 sameSignal 的唯一判据（两处各写一份判据迟早会差）", historySource.includes("return !compareEntries(a, b).any;") && /const \{ changed, any \} = compareEntries\(old, entry\)/.test(historySource));

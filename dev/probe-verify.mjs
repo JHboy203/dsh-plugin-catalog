@@ -42,6 +42,7 @@ function verify(plan, present, input = {}) {
 		bundles: input.bundles || [],
 		compositions: input.compositions || [],
 		profileDeps: input.profileDeps || {},
+		measured: input.measured || undefined,
 		now: NOW,
 	});
 }
@@ -181,6 +182,32 @@ function verify(plan, present, input = {}) {
 		"V15 边界四条齐全（声明层面 / 只 stat 计划里的目录 / 组内不算失守 / 不改任何东西）",
 		(result.boundaries || []).length === 4 && /声明/.test(text) && /组内/.test(text) && /不改任何东西|不删目录/.test(text),
 		JSON.stringify(result.boundaries),
+	);
+}
+
+/* ── V16–V18（R38）：实测字节 —— 只有"还在盘上"的成员能实测；已消失的只能信删前计划 ── */
+{
+	const plan = makePlan([member("a", "a", 1000), member("b", "b", 2000)]);
+	const measured = new Map([["a", 1500]]);
+	const result = verify(plan, ["a", "b"], { measured });
+	ok(
+		"V16 measured 只作用于还在盘上的成员：remainingBytesReal=1500，计划值仍是 3000",
+		result.counts.remainingBytesReal === 1500 && result.counts.remainingBytes === 3000 && result.counts.measuredStill === 1 && result.byteSource === "plan",
+		JSON.stringify(result.counts),
+	);
+	const gone = verify(plan, [], { measured });
+	ok("V17 已消失成员即使传了 measured 也不回填（没有东西可量）", gone.counts.remainingBytesReal === null && gone.counts.measuredStill === 0, JSON.stringify(gone.counts));
+	const refreshed = verify(makePlan([member("a", "a", 1000, { measuredBytes: 1000 })], { measuredAt: AT }), [], {});
+	ok(
+		"V18 已删成员都带删前实测 → byteSource=measured（已回收=实测值）",
+		refreshed.byteSource === "measured" && refreshed.measuredAt === AT && refreshed.counts.reclaimedBytesReal === 1000 && refreshed.counts.measuredGone === 1,
+		JSON.stringify({ source: refreshed.byteSource, at: refreshed.measuredAt, real: refreshed.counts.reclaimedBytesReal }),
+	);
+	const unmeasured = verify(makePlan([member("a", "a", 1000)], { measuredAt: AT }), [], {});
+	ok(
+		"V18b 只有 plan.measuredAt、成员没实测 → 仍按计划值（不许拿时间戳冒充真值）",
+		unmeasured.byteSource === "plan" && unmeasured.counts.reclaimedBytesReal === null && unmeasured.counts.measuredGone === 0,
+		JSON.stringify({ source: unmeasured.byteSource, real: unmeasured.counts.reclaimedBytesReal }),
 	);
 }
 

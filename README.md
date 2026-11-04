@@ -374,7 +374,7 @@ dir "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
 | `catalog_export` | **导出快照**到 `<数据目录>/reports/`：`format=md`（默认）= 完整 Markdown 报告（清单、来源分布、调用 Top、仓库与 git 状态、待标记来源、归属覆盖率、每周发现、**R35 起含「运行期（Loader 对账）」一节**）；`format=csv` = **全部条目一行一条**的 12 列表格（带 BOM，Excel 直接打开） |
 | `catalog_health` | 自检：跑的是哪一版、路径解析、统计覆盖、归属覆盖率、**Skill 正文哈希覆盖率**、**「已看过」确认窗口**、AI 通道、asar 模式、**副本是否同步** |
 | `catalog_skill_sync` | Skill 的**两份副本**：`plan` 列出 staging 旧了的那几个（发布推的是 staging，它旧了等于发旧版）；`apply` + `confirm:true` 做**单向 live → staging**，写前把被覆盖文件备份成 `SKILL.md.bak-<时间戳>`；`restore` 是反向撤销（把 staging 还原到备份，同样先出计划、`confirm:true` 才写，只动 staging）；**R28 起 `restore` 可加 `backup=<stamp>` 点名还原到更早的那一份**（计划里会列出最近 8 份可选，省略才是最近一份） |
-| `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`verify` **反向对账**：拿一份已存在的计划与今天的磁盘/声明事实比 —— 哪些目录真的没了、哪些**白删**（会被装回来 / 入口指空）、哪些计划已经过期（今天它已经会被加载 / 组外已有包声明它），可传 `planPath` 指定 `reports/` 下某一份；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`（`verify` 带 `confirm:true` 则写 `reports/uninstall-verify-*.md`）。**四个动作都不执行删除**（命令给人复制） |
+| `catalog_uninstall` | **「不会被加载」的处置清单**：`plan` 按弱连通分量分组，给可回收体积、分类（实体 / 被 profile 钉住 / 链接 / 同项目第二份）与步骤；`simulate` 在内存里把这些目录摘掉、重算加载态，回答「删完会不会有入口指空 / 还有谁声明着它们」（可传 `packages` 点名包名或目录名）；`verify` **反向对账**：拿一份已存在的计划与今天的磁盘/声明事实比 —— 哪些目录真的没了、哪些**白删**（会被装回来 / 入口指空）、哪些计划已经过期（今天它已经会被加载 / 组外已有包声明它），可传 `planPath` 指定 `reports/` 下某一份；`measure` **删前称重**：把还在盘上的成员按现在量一遍（绕过体积缓存），`confirm:true` 落一份带 `measuredBytes` 的 `reports/uninstall-measured-*.json` —— **`verify` 只有在「每个已删成员都带删前实测」时，`byteSource` 才是 `measured`（已回收才是真值）**，否则仍是计划值并写明；`verify` 还可加 `measure:true` 顺带量还在盘上的（`remainingBytesReal`）；`write` + `confirm:true` 写成 `reports/uninstall-*.md|.json`（`verify` 带 `confirm:true` 则写 `reports/uninstall-verify-*.md`）。**五个动作都不执行删除**（命令给人复制） |
 | `catalog_composition` | **配置层（声明）**：两份组合文件的顶层条目 —— 从哪份文件来、挂的是包/子路径/`file://`/分组/只按 id、包在 profile 还是官方 asar、`disabled: true` 关掉的、`!!js` 条件启用的（原文，不求值）；并核对 `dsh.profile.bundles` 里有没有点名却找不到的包。`view=overview` 给计数与缺口，`entries` / `disabled` / `conditional` 给清单。**不展开 bundle 自带的 patch 层**，只读 |
 
 ## MCP 分类（R30）
@@ -671,7 +671,7 @@ inject requirement*），本插件的 `lib/ai.mjs::readService()` 就是这么�
 
 ## 自检
 
-**发版 / 交接前只跑这一条**（三层自检 + **16 个独立探针（467 条）** + 副本同步 + 版本一致性 + git，约 60~90 秒）：
+**发版 / 交接前只跑这一条**（三层自检 + **16 个独立探针（479 条）** + 副本同步 + 版本一致性 + git，约 60~90 秒）：
 
 ```bash
 node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头部「自检」按钮走同一条路
@@ -684,7 +684,7 @@ node dev/ship.mjs          # 结论写进 .cache/ship-<时间戳>.md；面板头
 | `audit` | 自洽契约（默认值/工具契约/样式与行为契约） | 算失败 |
 | `render` | 界面渲染（真渲染组件树后断言） | 算失败 |
 | `hosttest` | 宿主行为（假 ctx 真跑 `apply()` 与路由） | 算失败 |
-| `probes` | **16 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧** / **运行期真相** / **卡片动作判据** / **开源发版就绪**，共 467 条，约 6 秒） | 算失败 |
+| `probes` | **16 个独立探针**（加载路径 / 处置清单 / 删除预演 / **处置对账** / 批量打标 / 变化追踪 / 副本判据 / **配置层** / **交接单** / **CSV 导出** / **MCP 判据** / **单件卸载** / **留存与陈旧** / **运行期真相** / **卡片动作判据** / **开源发版就绪**，共 479 条，约 6 秒） | 算失败 |
 | `staging` | **副本同步**：`<ws>/.dsh/skills` 与 staging 里同名 `SKILL.md` 有几个不一致 | **只报不拦** |
 
 `probes` 这一项是 R18 补的：这几个探针以前只写在交接文件里（「有人记得就跑」），
@@ -727,7 +727,7 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
-node dev/run-probes.mjs       # **16 个探针串成一条**（发版体检的第 5 项，共 467 条，约 6 秒）：
+node dev/run-probes.mjs       # **16 个探针串成一条**（发版体检的第 5 项，共 479 条，约 6 秒）：
 node dev/probe-runtime.mjs    # ★ R35：运行期真相（31 条）。fiberPhase 六相位 / moduleName 带子路径按包名归一 /
                               #   同包多条取 failed 优先 / 读不到一律 unknown（绝不猜 active）/ declared-absent 只在
                               #   "声明会加载"时成立 / 三类问题分开数 / 摘要读不到要如实说。纯函数不碰盘、不碰宿主

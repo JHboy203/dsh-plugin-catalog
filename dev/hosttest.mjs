@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 
 import { profileNodeModules } from "../lib/hostinfo.js";
 import { scanInstalledPackages } from "../lib/loadstate.mjs";
+/* R38：补入口行的写盘层（备份 / 原子写 / 写后校验 / 回滚）—— 用临时 profile 验，不碰真 profile */
+import { ensureBundleRow } from "../lib/dispose.mjs";
 /* R34：盘上的 history.json 是 v4 紧凑形态，断言前必须先展开（否则 `entries` 永远读不到） */
 import { normalizeHistory } from "../lib/history.mjs";
 
@@ -1633,6 +1635,30 @@ ok(
 	} finally {
 		restoreEnv();
 		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+/* ── R38：补入口行（只加不减 / 幂等 / 坏 JSON 不碰 / 留备份） ── */
+{
+	const dir = mkdtempSync(join(tmpdir(), "dsh-catalog-bundlerow-"));
+	try {
+		const file = join(dir, "package.json");
+		writeFileSync(file, JSON.stringify({ name: "profile", dsh: { profile: { bundles: ["a"] } } }, null, 2), "utf8");
+		const first = await ensureBundleRow({ profilePackageFile: file, name: "b" });
+		const list1 = JSON.parse(readFileSync(file, "utf8")).dsh.profile.bundles;
+		const backupOk = Boolean(first.backup) && existsSync(first.backup);
+		const second = await ensureBundleRow({ profilePackageFile: file, name: "b" });
+		const list2 = JSON.parse(readFileSync(file, "utf8")).dsh.profile.bundles;
+		const bad = join(dir, "bad.json");
+		writeFileSync(bad, "not json", "utf8");
+		const refused = await ensureBundleRow({ profilePackageFile: bad, name: "c" });
+		ok(
+			"R38 补入口行：追加一行 + 留备份 / 幂等不重复 / 坏 JSON 明确拒绝且原文件不动",
+			first.ok === true && first.changed === true && list1.join(",") === "a,b" && backupOk && second.ok === true && second.changed === false && list2.length === 2 && refused.ok === false && readFileSync(bad, "utf8") === "not json",
+			JSON.stringify({ first, second, refused: refused.code || refused.error }),
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 }
 
