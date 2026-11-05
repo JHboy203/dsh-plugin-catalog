@@ -5089,7 +5089,9 @@ window.__ModuleLoader__.load({
 .dpc-modal-title{font-weight:650;font-size:15px;word-break:break-all;letter-spacing:.1px}
 .dpc-grow{flex:1}
 .dpc-modal-body{padding:16px 18px 22px;overflow:auto;display:flex;flex-direction:column;gap:12px}
-.dpc-stats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(96px,1fr))}
+/* R40：7 格（多了一格「磁盘体积」）—— 96px + 10px 间距在 780 宽的浮窗里差一点点放不下，
+   会掉成一格独占一行。92px + 8px 正好一行排满 7 格。 */
+.dpc-stats{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(92px,1fr))}
 .dpc-stat{padding:10px 12px;border-radius:12px;border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
 .dpc-stat-value{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.25}
 .dpc-stat-label{font-size:11px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:3px}
