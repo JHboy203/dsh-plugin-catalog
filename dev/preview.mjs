@@ -69,6 +69,8 @@ new Function("window", "document", "fetch", "setTimeout", "clearTimeout", "conso
 	console,
 );
 const T = exported.__test;
+/* 预览页自己拼几个夹具组件时用（与 client 里的 h 同一套语义） */
+const h = (type, props, ...children) => ReactStub.createElement(type, props, ...children);
 
 /* 触发 apply() 以注入 CSS（slots 只记录、不渲染） */
 T.apply({
@@ -268,11 +270,50 @@ ${capturedCss}
 <body><div class="frame"><div class="frame-head">${escapeHtml(title)}</div>${bodyHtml}</div></body></html>`;
 }
 
+const repoFixture = {
+	ok: true,
+	name: "dsh-screenshot",
+	kind: "plugin",
+	publishable: true,
+	repoUrl: "https://github.com/JHboy203/dsh-plugin-catalog",
+	repo: { owner: "JHboy203", name: "dsh-plugin-catalog", url: "https://github.com/JHboy203/dsh-plugin-catalog", slug: "JHboy203/dsh-plugin-catalog" },
+	stats: {
+		private: false,
+		archived: false,
+		stars: 128,
+		forks: 14,
+		watchers: 37,
+		watchersAlias: 128,
+		openIssues: 3,
+		sizeKb: 1938,
+		pushedAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+		createdAt: "2026-10-21T06:28:05Z",
+		license: "MIT",
+		topics: ["dsh", "dsh-plugin", "windows", "screenshot", "ocr", "long-screenshot"],
+		description: "DSH 侧栏插件目录",
+		defaultBranch: "main",
+		hasIssues: true,
+		releases: 3,
+		downloads: 2194,
+		latestRelease: { tag: "v0.39.0", publishedAt: new Date(Date.now() - 26 * 3600 * 1000).toISOString(), downloads: 742 },
+		clones: { count: 131, uniques: 56 },
+		views: { count: 402, uniques: 188 },
+		trafficDenied: false,
+		contributors: 2,
+		contributorsCapped: false,
+	},
+};
+
 const cases = [
 	{ file: "preview-panel.html", title: "面板列表（真实组件树 + 真实 CSS，沙箱预览）", setup: () => { T.store.data = state; T.store.loading = false; T.store.error = null; T.store.open = null; T.store.plan = null; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; return T.Panel({}); } },
 	{ file: "preview-search.html", title: "搜索「vision」+ 排序「名称」", setup: () => { T.store.data = state; T.store.query = "vision"; T.store.sort = "name"; return T.Panel({}); } },
-	{ file: "preview-modal.html", title: "条目浮窗（动作入口在标题右侧 + 来源判定 / 标签两个按钮）", setup: () => { T.store.data = state; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; T.store.changesCollapsed = true; T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 5 }; T.store.detail = detail; return T.EntryModal({ showActions: true, onAction: () => {} }); } },
+	/* R40：下拉菜单真的打开了是什么样（用户报"四个下拉打开全是空白"之后，这一页是它的回归证据） */
+	{ file: "preview-menu.html", title: "头部下拉打开（刷新 ▾）—— 菜单底色/文字色必须都取自主题", setup: () => { T.store.data = state; T.store.open = null; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; T.store.menu = "refresh"; return T.Panel({}); } },
+	{ file: "preview-modal.html", title: "条目浮窗（动作入口在标题右侧 + 来源判定 / 标签两个按钮）", setup: () => { T.store.data = state; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; T.store.changesCollapsed = true; T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 5 }; T.store.detail = detail; T.store.repo = repoFixture; T.store.repoLoading = false; T.store.repoError = null; return T.EntryModal({ showActions: true, onAction: () => {} }); } },
 	{ file: "preview-settings.html", title: "设置浮窗（右上角 ⚙ 打开；只改显示偏好）", setup: () => { T.store.data = state; T.store.prefsOpen = true; return T.SettingsModal({ onClose: () => {} }); } },
+	/* R40：GitHub 创作者面板单独一页（浮窗里它在最下面，截图截不全） */
+	{ file: "preview-repo.html", title: "仓库与操作（Star / Fork / 关注 / 克隆 / 浏览 / Release 下载）", setup: () => { T.store.data = state; return h("div", { className: "dpc-panel", style: { height: "auto" } }, h("div", { className: "dpc-block" }, h("div", { className: "dpc-block-title" }, "仓库与操作"), h(T.RepoBlock, { item: { name: "dsh-screenshot", createdAt: Date.now() - 86400000 * 15, repoUrl: repoFixture.repoUrl, source: "self" }, repo: repoFixture, loading: false, error: null, publishable: true, onRefresh: () => {}, onUpload: () => {}, onGap: () => {}, reportBusy: false }))); } },
+	{ file: "preview-repo-empty.html", title: "仓库与操作（还没有远端仓 / 读不到，三种原因分开说）", setup: () => { T.store.data = state; return h("div", { className: "dpc-panel", style: { height: "auto" } }, ["no-repo", "not-github", "repo-unreachable"].map((reason) => h("div", { className: "dpc-block", key: reason }, h("div", { className: "dpc-block-title" }, "仓库与操作 · " + reason), h(T.RepoBlock, { item: { name: "dsh-xxx", createdAt: Date.now(), repoUrl: reason === "no-repo" ? "" : "https://gitlab.com/someone/repo", source: "self" }, repo: null, loading: false, error: reason, publishable: true, onRefresh: () => {}, onUpload: () => {}, onGap: () => {}, reportBusy: false })))); } },
 	{ file: "preview-plan.html", title: "上传计划浮窗（密钥命中 + 确认放行）", setup: () => { T.store.plan = plan; T.store.open = null; T.store.detail = null; return T.PlanModal({}); } },
 ];
 

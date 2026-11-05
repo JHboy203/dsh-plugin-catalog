@@ -12,6 +12,17 @@
  */
 
 import { request } from "node:http";
+import { readFileSync } from "node:fs";
+
+/* 版本断言从**磁盘的 package.json** 取，不写死 —— 每次提版本都要手改探针，
+   改漏了就会在升级当天报一条假红（R40 提 0.40.0 时正是这条先红）。 */
+const diskVersion = (() => {
+	try {
+		return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version || "";
+	} catch {
+		return "";
+	}
+})();
 
 const args = process.argv.slice(2);
 const baseIndex = args.indexOf("--base");
@@ -69,7 +80,7 @@ const statePlain = await httpJson("GET", "/state", undefined, { "accept-encoding
 const state = (statePlain && statePlain.json) || (stateGzip && stateGzip.json) || null;
 
 ok("L1 /state 返回 200 且有 entries", Boolean(statePlain && statePlain.status === 200 && state && Array.isArray(state.entries) && state.entries.length > 0), statePlain ? "status " + statePlain.status : "请求失败");
-ok("L2 构建戳与运行中版本一致（磁盘 0.39.0 那套）", Boolean(state && state.build && /^0\.39\./.test(String(state.build.version || "")) && state.build.stale !== true), state && state.build ? JSON.stringify(state.build) : "no build");
+ok("L2 构建戳与运行中版本一致（磁盘 " + (diskVersion || "?") + "）", Boolean(state && state.build && diskVersion !== "" && String(state.build.version || "") === diskVersion && state.build.stale !== true), state && state.build ? JSON.stringify(state.build) : "no build");
 
 /* ── 体积预算：toolHints 不许漏回 /state ── */
 const entries = (state && state.entries) || [];

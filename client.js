@@ -25,15 +25,17 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r39.0";
+		const BUILD = "r40.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
-			official: { label: "官方", cls: "official" },
-			self: { label: "自写", cls: "self" },
-			third: { label: "第三方", cls: "third" },
-			hybrid: { label: "混血", cls: "hybrid" },
-			pending: { label: "待标记", cls: "pending" },
+			official: { label: "官方", short: "官方", cls: "official" },
+			self: { label: "自写", short: "自写", cls: "self" },
+			/* R40：卡片上只用两字缩写（「第三方」三个字在 300px 的卡头里太占地方），
+			   完整名在 tooltip 里；列表筛选与详情页仍然显示全名。 */
+			third: { label: "第三方", short: "三方", cls: "third" },
+			hybrid: { label: "混血", short: "混血", cls: "hybrid" },
+			pending: { label: "待标记", short: "待定", cls: "pending" },
 		};
 
 		const SORTS = [
@@ -104,6 +106,11 @@ window.__ModuleLoader__.load({
 			/* 浮窗里的磁盘体积：懒算，打开一个条目才问一次 */
 			size: null,
 			sizeError: null,
+			/* R40：浮窗里的 GitHub 仓数据（Star / Fork / Watch / 克隆 / 浏览 / 下载）——
+			   同样懒算（打开才问），服务端 10 分钟缓存；repoError 是"读不到"的原因，不能写成 0 */
+			repo: null,
+			repoLoading: false,
+			repoError: null,
 			tagBusy: false,
 			notice: null,
 			plan: null,
@@ -471,17 +478,34 @@ window.__ModuleLoader__.load({
 			}
 		}
 
+		/** R40：仓数据单算一路（要联网、可能慢），失败只影响「仓库与操作」那一块。 */
+		async function loadRepo(id, refresh) {
+			set({ repoLoading: true, repoError: null, repo: null });
+			try {
+				const result = await api("/repo?id=" + encodeURIComponent(id) + (refresh ? "&refresh=1" : ""));
+				if (!store.open || store.open.id !== id) return;
+				if (result && result.ok) set({ repo: result, repoLoading: false, repoError: null });
+				else set({ repo: result || null, repoLoading: false, repoError: String((result && (result.reason || result.error)) || "unknown") });
+			} catch (error) {
+				if (!store.open || store.open.id !== id) return;
+				set({ repo: null, repoLoading: false, repoError: String((error && error.message) || error) });
+			}
+		}
+
 		function openEntry(item) {
 			/* R39：会话每页 5 条（用户要求，默认值）—— 详情页里会话块只是旁证 */
 			const size = Number(store.sessionsPageSize) || 5;
-			set({ open: { id: item.id, page: 1, pageSize: size }, detail: null, size: null, sizeError: null });
+			set({ open: { id: item.id, page: 1, pageSize: size }, detail: null, size: null, sizeError: null, repo: null, repoLoading: false, repoError: null });
 			loadDetail(item.id, 1, size);
 			/* R30：MCP 服务器没有目录可量（它是组合文件里的声明），别去问 /size */
 			if (item.kind !== "mcp") loadSize(item.id);
+			/* R40：仓数据总要问一次 —— 没有远端仓时服务端会说 `no-repo`，那一块才知道该给什么引导
+			   （不这么写的话，"没有仓"会表现为"这一块什么都不显示"） */
+			loadRepo(item.id);
 		}
 
 		function closeEntry() {
-			set({ open: null, detail: null, size: null, sizeError: null });
+			set({ open: null, detail: null, size: null, sizeError: null, repo: null, repoLoading: false, repoError: null });
 		}
 
 		/** 选中 / 取消选中一个条目（选择模式下点卡片走这里）。 */
@@ -1200,8 +1224,10 @@ window.__ModuleLoader__.load({
 		/* ── 来源徽章 / 标签 ── */
 
 		function SourceBadge(props) {
-			const meta = SOURCE_META[props.source] || { label: props.source, cls: "third" };
-			return h("span", { className: "dpc-src dpc-src-" + meta.cls, title: (props.why || []).join("；") }, meta.label);
+			const meta = SOURCE_META[props.source] || { label: props.source, short: props.source, cls: "third" };
+			/* R40：卡头里用缩写 + 更小的胶囊（占地小一半），完整名与判定依据留在 tooltip 里 */
+			const text = props.compact ? meta.short || meta.label : meta.label;
+			return h("span", { className: "dpc-src dpc-src-" + meta.cls + (props.compact ? " is-compact" : ""), title: (props.why || []).join("；") || meta.label }, text);
 		}
 
 		function TagChips(props) {
@@ -1423,79 +1449,78 @@ window.__ModuleLoader__.load({
 					},
 					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的完整介绍与调用明细" + (props.showActions === false ? "（操作入口在详情里）" : "；底部的按钮可直接停用 / 卸载"),
 				},
+				/* R40：卡头只留「来源 + 名字 + 类型/加载态 + 调用数」。
+				   报错 / 工作区较旧 / 待确认 / 依赖 / 运行期这些长短不一的徽标全部下沉到
+				   卡片底部左侧的状态行 —— 一排卡的头不再被它们撑开，名字与调用数能对齐成一条线。 */
 				h(
 					"div",
 					{ className: "dpc-card-head" },
 					picked ? h("span", { className: "dpc-pick-badge", "aria-label": "已选中" }, "✓") : null,
-					h(SourceBadge, { source: item.source, why: item.sourceWhy }),
-					h("span", { className: "dpc-name" }, item.name),
+					h(SourceBadge, { source: item.source, why: item.sourceWhy, compact: true }),
+					h("span", { className: "dpc-name", title: item.name }, item.name),
 					item.kind === "skill" ? h("span", { className: "dpc-kind" }, "Skill") : null,
 					/* R12：会不会被加载 —— 只有宿主给出 loadState 才敢下结论 */
 					loadLabel(item) ? h("span", { className: "dpc-load" + (isConfigLoaded(item) ? " is-config" : ""), title: loadTitle(item) }, loadLabel(item)) : null,
-					/* R35：运行期真相 —— 声明层看不见的那三类（fiberPhase=failed / 不在 loader / 打架）。
-					   没有问题时**不占版面**：133 张卡不该每张顶一个绿标。 */
-					runtimeLabel(item) ? h("span", { className: "dpc-runtime " + runtimeTone(item), title: runtimeTitle(item) }, runtimeLabel(item)) : null,
-					driftLabel(drift) ? h("span", { className: "dpc-drift", title: driftDetail(drift) }, driftLabel(drift)) : null,
-					item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
-					hasErrors(item)
-						? h("span", { className: "dpc-err", title: "报错 " + (item.errors || 0) + " 次 / 调用 " + (item.calls || 0) + " 次（" + Math.round(errorRate(item) * 100) + "%）" }, "报错 " + fmtNumber(item.errors || 0))
-						: null,
-					/* 体积：量得到才显示。显示不出来不是 bug —— 官方包在 asar 里、或还没量（面板顶部有「量体积」）。
-					   带「+」的是超过预算只算了一部分的条目，数字是下限。 */
-					props.size
-						? h(
-								"span",
-								{
-									className: "dpc-size",
-									title: props.sizeTruncated
-										? "超过 1.5 秒 / 2 万文件预算，只算到这里（实际只会更大）"
-										: item.inAsar
-											? "在官方 asar 里，体积记在 DSH 安装包内"
-											: "这个目录在磁盘上占 " + props.size + " 字节",
-								},
-								fmtBytes(props.size) + (props.sizeTruncated ? "+" : ""),
-							)
-						: null,
-					/* R9：依赖关系 —— 「删了会弄坏谁」必须在卡片上就看得见，不能等点开浮窗 */
-					depLabel(item)
-						? h(
-								"span",
-								{
-									className: "dpc-dep" + (Number(item.dependentCount) > 0 ? "" : " is-orphan"),
-									title:
-										Number(item.dependentCount) > 0
-											? "被这些包依赖：" +
-												(item.dependents || []).join("、") +
-												(Number(item.dependentCount) > (item.dependents || []).length ? " 等 " + item.dependentCount + " 个" : "") +
-												" —— 删它会让它们直接坏掉"
-											: "profile 里没有任何包的 package.json 声明依赖它（嵌套只展开了一层）。这是候选，动之前用 npm ls / pnpm why 确认",
-								},
-								depLabel(item),
-							)
-						: null,
 					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "从没被调用过" : "总调用次数" }, fmtNumber(item.calls)),
 				),
-				main
-					? h("div", { className: "dpc-zh" + (cardText.which === "zh" ? "" : " dpc-zh-plain"), title: stripMd(zh || en) }, main)
-					: h(
-							"div",
-							{ className: "dpc-zh dpc-zh-missing", title: "这条没有写简介（package.json / SKILL.md 里都没有）" },
-							item.kind === "skill" ? "（这个 Skill 没有写 description —— 点「生成 ▾ → 中文简介」可自动补）" : "（这个插件没有写简介 —— 点「生成 ▾ → 中文简介」可自动补）",
-						),
-				sub ? h("div", { className: "dpc-en" }, sub) : null,
-				hits.length > 0 ? h("div", { className: "dpc-hit", title: "搜索命中的工具名" }, "工具：" + hits.join(" · ")) : null,
+				/* 正文：固定兜住两行高度 —— 各条简介长短不一，不兜住整排卡就会参差不齐 */
+				h(
+					"div",
+					{ className: "dpc-card-main" },
+					main
+						? h("div", { className: "dpc-zh" + (cardText.which === "zh" ? "" : " dpc-zh-plain"), title: stripMd(zh || en) }, main)
+						: h(
+								"div",
+								{ className: "dpc-zh dpc-zh-missing", title: "这条没有写简介（package.json / SKILL.md 里都没有）" },
+								item.kind === "skill" ? "（这个 Skill 没有写 description —— 点「生成 ▾ → 中文简介」可自动补）" : "（这个插件没有写简介 —— 点「生成 ▾ → 中文简介」可自动补）",
+							),
+					sub ? h("div", { className: "dpc-en", title: sub }, sub) : null,
+					hits.length > 0 ? h("div", { className: "dpc-hit", title: "搜索命中的工具名" }, "工具：" + hits.join(" · ")) : null,
+				),
+				/* 底部：**左下角是状态**（报错 / 工作区较旧 / 待确认 / 依赖 / 运行期），
+				   右下角是"最近用过"；体积已收进详情页的「位置与安装形态」。 */
 				h(
 					"div",
 					{ className: "dpc-card-foot" },
-					h(TagChips, { ids: (item.tags && item.tags.purpose) || [], all }),
+					h(
+						"div",
+						{ className: "dpc-foot-status" },
+						runtimeLabel(item) ? h("span", { className: "dpc-runtime " + runtimeTone(item), title: runtimeTitle(item) }, runtimeLabel(item)) : null,
+						/* R35：运行期真相 —— 没有问题时**不占版面**：133 张卡不该每张顶一个绿标 */
+						hasErrors(item)
+							? h("span", { className: "dpc-err", title: "报错 " + (item.errors || 0) + " 次 / 调用 " + (item.calls || 0) + " 次（" + Math.round(errorRate(item) * 100) + "%）" }, "报错 " + fmtNumber(item.errors || 0))
+							: null,
+						driftLabel(drift) ? h("span", { className: "dpc-drift", title: driftDetail(drift) }, driftLabel(drift)) : null,
+						item.askUser ? h("span", { className: "dpc-warn", title: "来源待你确认一次" }, "待确认") : null,
+						/* R9：依赖关系 —— 「删了会弄坏谁」必须在卡片上就看得见 */
+						depLabel(item)
+							? h(
+									"span",
+									{
+										className: "dpc-dep" + (Number(item.dependentCount) > 0 ? "" : " is-orphan"),
+										title:
+											Number(item.dependentCount) > 0
+												? "被这些包依赖：" +
+													(item.dependents || []).join("、") +
+													(Number(item.dependentCount) > (item.dependents || []).length ? " 等 " + item.dependentCount + " 个" : "") +
+													" —— 删它会让它们直接坏掉"
+												: "profile 里没有任何包的 package.json 声明依赖它（嵌套只展开了一层）。这是候选，动之前用 npm ls / pnpm why 确认",
+									},
+									depLabel(item),
+								)
+							: null,
+					),
 					h(
 						"span",
-						{ className: "dpc-foot-meta" },
-						item.subagentCalls > 0 ? "含子代理 " + fmtNumber(item.subagentCalls) + " · " : "",
+						{
+							className: "dpc-foot-meta",
+							title: (item.subagentCalls > 0 ? "含子代理 " + fmtNumber(item.subagentCalls) + " 次调用" : "") + (item.createdAt ? (item.subagentCalls > 0 ? " · " : "") + "建于 " + fmtTime(item.createdAt) : ""),
+						},
 						item.lastUsed ? "最近 " + ago(item.lastUsed) : "从未调用",
-						item.createdAt ? " · 建于 " + fmtTime(item.createdAt) : "",
 					),
 				),
+				/* 标签单独一行：有标签才占位，标签多时折行也不会把状态行挤歪 */
+				(item.tags && (item.tags.purpose || []).length > 0) ? h("div", { className: "dpc-card-tags" }, h(TagChips, { ids: (item.tags && item.tags.purpose) || [], all })) : null,
 				/* R39：动作入口默认收进详情浮窗（设置里可切回卡片底部）——
 				   卡片只留介绍与 meta，一排卡的高低就不再由"有没有复制路径"决定。 */
 				props.showActions === false ? null : h(CardActions, props),
@@ -1943,6 +1968,26 @@ window.__ModuleLoader__.load({
 
 			const publishable = item && (item.source === "self" || item.source === "hybrid");
 
+			/* R40：体积的主展示位从卡片挪到了这里（详情页统计格）。
+			   三个来源按可信度排序：刚量的 /size > 后台全量快照 > "量不到（说清为什么）"。 */
+			function sizeSnapshotOf() {
+				const snapshot = (state.data && state.data.sizes && state.data.sizes.byId) || {};
+				return Number.isFinite(snapshot[open.id]) ? snapshot[open.id] : null;
+			}
+			function sizeCellText() {
+				if (state.size) return fmtBytes(state.size.bytes) + (state.size.truncated ? "+" : "");
+				if (state.sizeError) return "—";
+				const known = sizeSnapshotOf();
+				return known !== null ? fmtBytes(known) : "…";
+			}
+			function sizeCellTitle() {
+				if (state.size) return fmtNumber(state.size.files) + " 个文件（刚递归量的）";
+				if (state.sizeError) return state.sizeError;
+				const known = sizeSnapshotOf();
+				if (known !== null) return "来自后台量好的全量快照（点「更多 ▾ → 量体积」可重算）";
+				return "正在量…";
+			}
+
 			/* 体积行（插件与 Skill 共用）：先用全量快照，没有再退到懒算的 /size。
 			   「量不到」必须说清原因 —— 官方包在 asar 里 / Skill 没有独立目录，都不是「0 B」。 */
 			function sizeRow() {
@@ -2063,6 +2108,9 @@ window.__ModuleLoader__.load({
 										statCell("其中子代理", fmtNumber(item.subagentCalls || 0)),
 										statCell("最近使用", ago(item.lastUsed)),
 										statCell(item.kind === "skill" ? "创建" : "启用", item.kind === "skill" ? fmtTime(item.createdAt) : loadCell(item)),
+										/* R40：体积从卡片收进详情页（用户要求）—— 这里是它现在的主展示位，
+										   懒算的 /size 优先，还没回来就用后台全量快照，两者都没有就如实写「量不到」 */
+										statCell("磁盘体积", sizeCellText(), sizeCellTitle()),
 									),
 									item.subagentCalls > 0
 										? h("div", { className: "dpc-note" }, "总调用里包含子代理会话的 " + fmtNumber(item.subagentCalls) + " 次（父会话直呼 " + fmtNumber((item.calls || 0) - (item.subagentCalls || 0)) + " 次）—— 交接链里子代理占比很高时，看这个数才知道真实分布。")
@@ -2350,34 +2398,163 @@ window.__ModuleLoader__.load({
 												: null,
 										);
 									})(),
-									/* 仓库与操作 */
+									/* 仓库与操作（R40：改成创作者视角 —— 星标 / 复刻 / 关注 / 克隆 / 浏览 / 下载 + 快捷入口） */
 									h(
 										"div",
 										{ className: "dpc-block" },
 										h("div", { className: "dpc-block-title" }, "仓库与操作"),
 										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["仓库与操作"]) : null,
-										h(
-											"div",
-											{ className: "dpc-row" },
-											item.repoUrl ? h("a", { className: "dpc-link", href: item.repoUrl, target: "_blank", rel: "noreferrer" }, item.repoUrl) : h("span", { className: "dpc-muted" }, "还没有远端仓"),
-										),
-										h("div", { className: "dpc-muted" }, "创建/下载时间：" + fmtDateTime(item.createdAt)),
-										publishable
-											? h(
-													"div",
-													{ className: "dpc-row" },
-													h("button", { className: "dpc-btn dpc-btn-sm", onClick: () => { set({ open: null }); startPlan(); } }, "上传 / 更新到 GitHub"),
-													h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: runGap, disabled: state.reportBusy }, state.reportBusy ? "分析中…" : "缺口分析"),
-												)
-											: h("div", { className: "dpc-muted" }, "只有「自写」与「混血」可以上传。"),
+										h(RepoBlock, {
+											item,
+											repo: state.repo,
+											loading: state.repoLoading,
+											error: state.repoError,
+											publishable,
+											onRefresh: () => loadRepo(item.id, true),
+											onUpload: () => { set({ open: null }); startPlan(); },
+											onGap: runGap,
+											reportBusy: state.reportBusy,
+										}),
 									),
 								),
 				),
 			);
 		}
 
-		function statCell(label, value) {
-			return h("div", { className: "dpc-stat", key: label }, h("div", { className: "dpc-stat-value" }, value), h("div", { className: "dpc-stat-label" }, label));
+		/**
+		 * R40：仓库与操作（GitHub 创作者视角）。
+		 *
+		 * 三条判据都在这里落地：
+		 *   ① 数字只从 GitHub 来（/repo 路由），拿不到就如实说原因 —— 绝不把"读不到"画成 0；
+		 *   ② 星标 / 复刻 / 关注 / 克隆 / 浏览 / 下载 **各自的含义不同**，标签里写清楚，
+		 *      尤其：GitHub 没有"仓库下载数"，只有 Release 资产的下载数；克隆/浏览是 14 天窗口且要推送权限；
+		 *   ③ 创作者真正要点的东西（仓库 / Issues / Releases / Actions / 流量）都在这一块，不用再回浏览器敲网址。
+		 */
+		function RepoBlock(props) {
+			const item = props.item;
+			const repo = props.repo;
+			const error = props.error;
+			const stats = (repo && repo.stats) || null;
+			const slug = repo && repo.repo ? repo.repo : null;
+			const base = slug ? slug.url : item.repoUrl || "";
+			const [copied, setCopied] = useState("");
+			const cloneUrl = slug ? "https://github.com/" + slug.owner + "/" + slug.name + ".git" : "";
+			function copy(text, label) {
+				const ok = copyText(text);
+				setCopied(ok ? label : "fail");
+				if (!ok) set({ notice: "复制失败：渲染进程不让写剪贴板" });
+				setTimeout(() => setCopied(""), 1600);
+			}
+			const num = (value) => (value === null || value === undefined ? "—" : fmtNumber(value));
+			const stat = (label, value, hint, small) => h("div", { className: "dpc-repo-stat", key: label, title: hint || label }, h("div", { className: "dpc-repo-stat-v" + (small ? " is-small" : "") }, value), h("div", { className: "dpc-repo-stat-k" }, label));
+			const link = (href, label, hint) => (href ? h("a", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", href, target: "_blank", rel: "noreferrer", title: hint || href }, label) : null);
+
+			const body = [];
+			/* 仓库地址**先画出来**（package.json 里就有，不必等联网）：读不到数据时至少还能点开仓。
+			   可见性徽标只有读到元数据才知道，所以它跟着 stats 走。 */
+			body.push(
+				h(
+					"div",
+					{ className: "dpc-repo-head" },
+					base ? h("a", { className: "dpc-link dpc-repo-slug", href: base, target: "_blank", rel: "noreferrer", title: "在 GitHub 打开" }, (slug ? slug.owner + "/" + slug.name : base) + " ↗") : h("span", { className: "dpc-muted" }, "还没有远端仓"),
+					stats ? (stats.private ? h("span", { className: "dpc-repo-vis", title: "私有仓：只有你和你邀请的人看得到" }, "私有") : h("span", { className: "dpc-repo-vis is-public", title: "公开仓：任何人都能看到" }, "公开")) : null,
+					stats && stats.archived ? h("span", { className: "dpc-warn" }, "已归档") : null,
+				),
+			);
+			if (props.loading || (!repo && !error)) {
+				body.push(h("div", { className: "dpc-muted" }, "正在读 GitHub 数据（星标 / 复刻 / 克隆 / Release 下载）…"));
+			} else if (!repo && error) {
+				/* 三种"没有数字"的原因分开说 —— 它们对应三种完全不同的处置 */
+				const text =
+					error === "no-repo"
+						? "还没有远端仓 —— " + (props.publishable ? "点下面的「上传 / 更新到 GitHub」建一个私有仓，之后这里会显示星标、复刻、克隆与 Release 下载。" : "只有「自写」与「混血」可以上传。")
+						: error === "not-github"
+							? "这条指向的不是 GitHub 仓（" + (item.repoUrl || "?") + "），拿不到星标 / 克隆数据。"
+							: "读不到 GitHub 数据（" + error + "）—— 先用 `gh auth status` 确认登录，或检查网络。";
+				body.push(h("div", { className: "dpc-note dpc-note-warn" }, text));
+			} else if (stats) {
+				body.push(
+					h(
+						"div",
+						{ className: "dpc-repo-stats" },
+						stat("星标 Star", num(stats.stars), "stargazers：收藏了这个仓的人数"),
+						stat("复刻 Fork", num(stats.forks), "forks：把这个仓复制到自己名下的人数"),
+						stat("关注 Watch", num(stats.watchers), "subscribers_count：订阅了这个仓动态的人数（GitHub 的 watchers_count 其实是星标数）"),
+						stat(
+							"克隆 14 天",
+							stats.clones ? num(stats.clones.uniques) + " 人 / " + num(stats.clones.count) + " 次" : "—",
+							"traffic/clones：最近 14 天独立克隆人数 / 克隆总次数。需要该仓的推送权限；它不是「下载数」",
+							true,
+						),
+						stat(
+							"浏览 14 天",
+							stats.views ? num(stats.views.uniques) + " 人 / " + num(stats.views.count) + " 次" : "—",
+							"traffic/views：最近 14 天独立访客 / 浏览量。需要推送权限",
+							true,
+						),
+						stat(
+							"Release 下载",
+							stats.releases > 0 ? num(stats.downloads) : "—",
+							stats.releases > 0 ? "所有 Release 资产的 download_count 之和（GitHub 不提供「仓库下载数」）" : "这个仓还没有 Release —— 所以没有可统计的资产下载",
+						),
+					),
+				);
+				const meta = [
+					stats.license ? "许可 " + stats.license : "没有许可声明",
+					stats.topics && stats.topics.length > 0 ? "主题 " + stats.topics.length : "",
+					stats.sizeKb > 0 ? "仓体积 " + (stats.sizeKb >= 1024 ? (stats.sizeKb / 1024).toFixed(1) + " MB" : stats.sizeKb + " KB") : "",
+					stats.contributors !== null ? "贡献者 " + stats.contributors + (stats.contributorsCapped ? "+" : "") : "",
+					stats.pushedAt ? "最近推送 " + ago(Date.parse(stats.pushedAt)) : "",
+					stats.createdAt ? "建于 " + fmtTime(Date.parse(stats.createdAt)) : "",
+				].filter(Boolean);
+				body.push(h("div", { className: "dpc-repo-meta dpc-muted" }, meta.join("　·　")));
+				if (stats.trafficDenied) {
+					body.push(h("div", { className: "dpc-muted" }, "克隆 / 浏览：这个 gh 账号没有该仓的推送权限，读不到流量（这不是 0，是没权限）。"));
+				}
+				if (stats.latestRelease) {
+					body.push(
+						h(
+							"div",
+							{ className: "dpc-muted" },
+							"最新 Release：",
+							h("a", { className: "dpc-link", href: base + "/releases/tag/" + stats.latestRelease.tag, target: "_blank", rel: "noreferrer" }, stats.latestRelease.tag),
+							stats.latestRelease.publishedAt ? "　" + ago(Date.parse(stats.latestRelease.publishedAt)) : "",
+							"　资产下载 " + num(stats.latestRelease.downloads),
+						),
+					);
+				}
+				body.push(
+					h(
+						"div",
+						{ className: "dpc-row dpc-repo-links" },
+						link(base, "仓库"),
+						stats.hasIssues ? link(base + "/issues", "Issues" + (stats.openIssues > 0 ? " " + stats.openIssues : "")) : null,
+						link(base + "/releases", "Releases"),
+						link(base + "/actions", "Actions"),
+						link(base + "/pulse", "动态"),
+						link(base + "/graphs/traffic", "流量（网页）"),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onRefresh, title: "重新读一次 GitHub（默认缓存 10 分钟）" }, "刷新数据"),
+					),
+				);
+			}
+
+			body.push(
+				h(
+					"div",
+					{ className: "dpc-row" },
+					cloneUrl ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copied === "clone" ? " is-on" : ""), onClick: () => copy("git clone " + cloneUrl, "clone"), title: cloneUrl }, copied === "clone" ? "已复制 clone 命令" : "复制 clone 命令") : null,
+					base ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (copied === "url" ? " is-on" : ""), onClick: () => copy(base, "url") }, copied === "url" ? "已复制仓库地址" : "复制仓库地址") : null,
+					props.publishable ? h("button", { className: "dpc-btn dpc-btn-sm", onClick: props.onUpload }, "上传 / 更新到 GitHub") : null,
+					props.publishable ? h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onGap, disabled: props.reportBusy }, props.reportBusy ? "分析中…" : "缺口分析") : null,
+					!props.publishable && !base ? h("span", { className: "dpc-muted" }, "只有「自写」与「混血」可以上传。") : null,
+				),
+			);
+			body.push(h("div", { className: "dpc-muted" }, "创建/下载时间：" + fmtDateTime(item.createdAt)));
+			return h("div", { className: "dpc-repo" }, body);
+		}
+
+		function statCell(label, value, title) {
+			return h("div", { className: "dpc-stat", key: label, title: title || undefined }, h("div", { className: "dpc-stat-value" }, value), h("div", { className: "dpc-stat-label" }, label));
 		}
 
 		/* ── 上传计划浮窗 ── */
@@ -3428,6 +3605,28 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/**
+		 * R40：右下角的提示浮条（取代页面里那一整行提示条）。
+		 * 失败类文案**不自动消失** —— 一闪而过的错误等于没提示；其余 6 秒后自己走掉。
+		 */
+		function NoticeToast() {
+			const state = useStore();
+			const text = state.notice || "";
+			const sticky = /失败|错误|读不到|不允许|拒绝/.test(text);
+			useEffect(() => {
+				if (!text || sticky) return undefined;
+				const timer = setTimeout(() => set({ notice: null }), 6000);
+				return () => clearTimeout(timer);
+			}, [text]);
+			if (!text) return null;
+			return h(
+				"div",
+				{ className: "dpc-toast" + (sticky ? " is-bad" : ""), role: "status", "aria-live": "polite" },
+				h("span", { className: "dpc-toast-text", title: text }, text),
+				h("button", { className: "dpc-toast-x", onClick: () => set({ notice: null }), title: "关掉" }, "×"),
+			);
+		}
+
 		function Panel() {
 			const state = useStore();
 			const data = state.data;
@@ -3716,6 +3915,18 @@ window.__ModuleLoader__.load({
 				}
 				return { bytes, noDir, unmeasured, lockedBytes };
 			}, [filtered, sizeMap]);
+
+			/* R40：头部菜单底部的只读备注 —— 目前只有「审核」用得上（上次缺口 / 安全审核的时间与计数）。
+			   判据是「概览条可能被关掉」，所以这条信息必须还有一个始终找得到的地方。 */
+			const menuNote = (id) => {
+				if (id !== "audit") return "";
+				const gap = (data.reports && data.reports.gap) || null;
+				const security = (data.reports && data.reports.security) || null;
+				const bits = [];
+				if (gap && gap.repos > 0) bits.push("上次缺口 " + ago(gap.ranAt) + "：high " + (gap.high || 0) + " / medium " + (gap.medium || 0) + " / low " + (gap.low || 0));
+				if (security && security.ranAt) bits.push("安全审核 " + ago(security.ranAt));
+				return bits.join("　·　");
+			};
 
 			/* 缓存太旧就自动补一次增量刷新。
 			   ★ 三条闸门缺一不可：本挂载只刷一次（否则 20 秒轮询会变成循环刷新）、
@@ -4127,6 +4338,9 @@ window.__ModuleLoader__.load({
 								"div",
 								{ className: "dpc-menu" + (state.menu === menu.id ? " is-open" : ""), role: "menu" },
 								menu.items.map((item) => h("button", { key: item.op, className: "dpc-menu-item", title: item.hint, onClick: () => { set({ menu: "" }); runHeaderOp(item.op); } }, item.label)),
+								/* R40：原来单独占一行的「上次缺口分析 / 最近安全审核」收进这个菜单底部 ——
+								   概览条可以被用户关掉，这里是一条始终找得到的去处（不点也看得到）。 */
+								menuNote(menu.id) ? h("div", { className: "dpc-menu-note" }, menuNote(menu.id)) : null,
 							),
 						),
 					),
@@ -4179,9 +4393,12 @@ window.__ModuleLoader__.load({
 								"概览：" + (changeSummaryOf(data) || "没有目录变化"),
 								driftBad.length > 0 ? "｜副本不同步 " + driftBad.length : "",
 								staleSkills.length > 0 ? "｜" + staleSkills.length + " 个 Skill 的 staging 是旧的（推上去的就是旧版）" : "",
+								/* R40：原来「上次缺口分析：…｜最近安全审核：…」单独占一整行（用户报"这一块占地太大"）——
+								   这里已经有一条同样的摘要，把审核时间并进来，那一行整块删掉。 */
 								data.reports && data.reports.gap && data.reports.gap.repos > 0
-									? "｜上次缺口 high " + ((data.reports && data.reports.gap && data.reports.gap.high) || 0) + " / medium " + ((data.reports && data.reports.gap && data.reports.gap.medium) || 0) + " / low " + ((data.reports && data.reports.gap && data.reports.gap.low) || 0)
+									? "｜缺口 high " + ((data.reports && data.reports.gap && data.reports.gap.high) || 0) + " / medium " + ((data.reports && data.reports.gap && data.reports.gap.medium) || 0) + " / low " + ((data.reports && data.reports.gap && data.reports.gap.low) || 0) + "（" + ago(data.reports.gap.ranAt) + "）"
 									: "",
+								(data.reports && data.reports.security && data.reports.security.ranAt) ? "｜安全审核 " + ago(data.reports.security.ranAt) : "",
 							),
 							staleSkills.length > 0 && state.changesCollapsed
 								? h(
@@ -4251,8 +4468,9 @@ window.__ModuleLoader__.load({
 							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.runtimeOnly ? " is-on" : ""), onClick: () => set({ runtimeOnly: !state.runtimeOnly, page: 1 }) }, state.runtimeOnly ? "✓ 只看这些" : "只看这些"),
 						)
 					: null,
-				/* 提示 */
-				state.notice ? h("div", { className: "dpc-note dpc-note-warn" }, state.notice) : null,
+				/* R40：提示条不再是页面里的一行（用户报"这块占地太大"）——
+				   改成右下角自动消失的浮条；失败类文案不自动消失，必须人点 × —— 免得错误一闪而过。 */
+				h(NoticeToast, null),
 				/* R11：体检结论（失败项直接摊开，不用先去 .cache 里找报告） */
 				preflightResult ? h(PreflightCard, { result: preflightResult, busy: Boolean(job.running), onRerun: runPreflight }) : null,
 				/* R14：处置清单（不会被加载 → 怎么卸干净）。点「处置清单」才算，算完就地摊开 */
@@ -4323,96 +4541,57 @@ window.__ModuleLoader__.load({
 				state.syncPlan && !state.open
 					? h(SyncConfirm, { plan: state.syncPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) })
 					: null,
-				data.reports && data.reports.gap && data.reports.gap.repos > 0
-					? h(
-							"div",
-							{ className: "dpc-note" },
-							"上次缺口分析：" + ago(data.reports.gap.ranAt) + "｜high " + data.reports.gap.high + " / medium " + data.reports.gap.medium + " / low " + data.reports.gap.low + "｜最近安全审核：" + ago((data.reports.security || {}).ranAt || 0),
-						)
-					: null,
-				/* 工具条 */
+				/* R40：这一行（上次缺口分析 / 最近安全审核）整块删掉了 —— 同样的数字已经在顶部概览条里，
+				   而且要占一整行。详情与历史仍可从「概览」展开、「更多 ▾ → 缺口分析」重跑。 */
+				/* 工具条（R40：精简）—— 原来一行挤了 12 个控件（搜索 + 5 个来源段选 + 4 个类型段选 +
+				   排序 + 条数 + 3 个筛选按钮 + 合计 + 选择/导出/CSV），在 1600px 下会折成两行。
+				   现在：搜索 + 类型 / 来源 / 排序 三个下拉 + 条数 + 合计 + 一个「⋯ 操作」菜单。 */
 				h(
 					"div",
 					{ className: "dpc-toolbar dpc-toolbar-sticky" },
 					h("input", { id: "dpc-search", className: "dpc-search", placeholder: "搜索名称 / 简介 / 工具名…（/ 聚焦）", value: state.query, onChange: (event) => set({ query: event.target.value, page: 1 }) }),
 					h(
-						"div",
-						{ className: "dpc-seg" },
-						[{ id: "any", label: "全部" }, { id: "official", label: "官方" }, { id: "self", label: "自写" }, { id: "third", label: "第三方" }, { id: "hybrid", label: "混血" }, { id: "pending", label: "待标记" }].map((option) =>
-							h("button", { key: option.id, className: "dpc-seg-btn" + (state.source === option.id ? " is-on" : ""), onClick: () => set({ source: option.id, page: 1 }) }, option.label),
-						),
-					),
-					h(
-						"div",
-						{ className: "dpc-seg" },
-						/* R30：MCP 是第三类条目（组合文件里的一条声明），与插件/Skill 并列。
-						   0 台时也保留这颗 chip —— 点进去是空态 + 可抄模板，比"藏起来"有用。 */
-						[
-							{ id: "all", label: "全部" },
-							{ id: "plugin", label: "插件" },
-							{ id: "skill", label: "Skill" },
-							{ id: "mcp", label: "MCP" + (mcpCount > 0 ? " " + mcpCount : "") },
-						].map((option) =>
-							h("button", { key: option.id, className: "dpc-seg-btn" + (state.kind === option.id ? " is-on" : ""), onClick: () => set({ kind: option.id, page: 1 }), title: option.id === "mcp" ? "MCP 服务器：组合文件里 @deepseek-ai/dsh-mcp-client 的每条条目（本机 " + mcpCount + " 台）" : undefined }, option.label),
+						"label",
+						{ className: "dpc-inline" },
+						h(
+							"select",
+							{ value: state.kind, onChange: (event) => set({ kind: event.target.value, page: 1 }), title: "类型：插件 / Skill / MCP（MCP 是组合文件里的一条声明）" },
+							/* R30：MCP 是第三类条目，与插件/Skill 并列。0 台时也保留这一项 ——
+							   点进去是空态 + 可抄模板，比"藏起来"有用。 */
+							[
+								{ id: "all", label: "全部类型" },
+								{ id: "plugin", label: "插件" },
+								{ id: "skill", label: "Skill" },
+								{ id: "mcp", label: "MCP" + (mcpCount > 0 ? " " + mcpCount : "") },
+							].map((option) => h("option", { key: option.id, value: option.id }, option.label)),
 						),
 					),
 					h(
 						"label",
 						{ className: "dpc-inline" },
-						"排序 ",
 						h(
 							"select",
-							{ value: state.sort, onChange: (event) => set({ sort: event.target.value, page: 1 }) },
+							{ value: state.source, onChange: (event) => set({ source: event.target.value, page: 1 }), title: "来源：官方 / 自写 / 第三方 / 混血 / 待标记" },
+							[
+								{ id: "any", label: "全部来源" },
+								{ id: "official", label: "官方" },
+								{ id: "self", label: "自写" },
+								{ id: "third", label: "第三方" },
+								{ id: "hybrid", label: "混血" },
+								{ id: "pending", label: "待标记" },
+							].map((option) => h("option", { key: option.id, value: option.id }, option.label)),
+						),
+					),
+					h(
+						"label",
+						{ className: "dpc-inline" },
+						h(
+							"select",
+							{ value: state.sort, onChange: (event) => set({ sort: event.target.value, page: 1 }), title: "排序" },
 							SORTS.map((option) => h("option", { key: option.id, value: option.id }, option.label)),
 						),
 					),
-					h("span", { className: "dpc-muted" }, filtered.length + " 条"),
-					/* R9：只看「无人依赖」的候选 —— 与体积合计配合就是"能安全省多少"的入口 */
-					orphanCount > 0 || state.orphanOnly
-						? h(
-								"button",
-								{
-									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.orphanOnly ? " is-on" : ""),
-									onClick: () => set({ orphanOnly: !state.orphanOnly, page: 1 }),
-									title:
-										"只看无人依赖的条目：profile 里所有 package.json（含一层嵌套）都没声明依赖它们。" +
-										"这是候选不是结论 —— 动之前用 npm ls / pnpm why 确认；反过来说，「被 N 依赖」的条目删了会直接弄坏别人。",
-								},
-								(state.orphanOnly ? "✓ " : "") + "无人依赖 " + orphanCount,
-							)
-						: null,
-					/* R12：只看「不会被加载」的条目 —— 这是最硬的死重量判据（装了根本不会跑），
-					   比"未使用"更硬：未使用至少可能是暂时没用到。 */
-					dormantCount > 0 || state.dormantOnly
-						? h(
-								"button",
-								{
-									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.dormantOnly ? " is-on" : ""),
-									onClick: () => set({ dormantOnly: !state.dormantOnly, page: 1 }),
-									title:
-										"只看「不会被加载」的条目：不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主根本不会加载它们。" +
-										"这是声明层面的判据（运行时按路径 require 的动态加载看不见），所以文案是「不会被加载」而不是「绝对没跑」。",
-								},
-								(state.dormantOnly ? "✓ " : "") + "不会被加载 " + dormantCount,
-							)
-						: null,
-					/* R14：「不会被加载」只是判据，动手还得知道**怎么删、删了会不会回来** ——
-					   这个按钮出一份按分量分组、分类清楚、只生成不执行的处置清单。 */
-					dormantCount > 0 || uninstallPlan
-						? h(
-								"button",
-								{
-									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (uninstallPlan ? " is-on" : ""),
-									onClick: runUninstall,
-									disabled: state.uninstallBusy || Boolean(job.running),
-									title:
-										"生成「不会被加载」的处置清单：按弱连通分量分组（组内互相依赖，单删一个会留孤儿），" +
-										"每组给可回收体积与分类（实体 / 被 profile 依赖钉住 / 链接到工作区 / 同项目第二份），并写清步骤。" +
-										"只生成、永不执行删除；写入 reports/ 需要再点一次确认。约 1 秒",
-								},
-								state.uninstallBusy ? "算清单…" : "处置清单",
-							)
-						: null,
+					h("span", { className: "dpc-muted dpc-count" }, filtered.length + " 条"),
 					/* 当前筛选这一屏一共占多少盘 —— 点「未使用」就能直接看到"删这批能省多少" */
 					filtered.length > 0 && sizesAt
 						? h(
@@ -4427,33 +4606,40 @@ window.__ModuleLoader__.load({
 										(sizeTruncated.length > 0 ? "；" + sizeTruncated.length + " 条超过预算只算了一部分（标 + 的那些）" : "") +
 										"。数据来自后台全量快照（" + ago(sizesAt) + "）",
 								},
-								"合计 " +
-									fmtBytes(filteredWeight.bytes) +
-									(filteredWeight.noDir > 0 || filteredWeight.unmeasured > 0
-										? "（" +
-											[filteredWeight.noDir > 0 ? filteredWeight.noDir + " 条无可量目录" : "", filteredWeight.unmeasured > 0 ? filteredWeight.unmeasured + " 条还没量" : ""].filter(Boolean).join("，") +
-											"）"
-										: ""),
+								"合计 " + fmtBytes(filteredWeight.bytes) + (filteredWeight.noDir > 0 || filteredWeight.unmeasured > 0 ? "（" + (filteredWeight.noDir + filteredWeight.unmeasured) + " 条未计入）" : ""),
 							)
 						: null,
 					h(
-						"div",
+						"span",
 						{ className: "dpc-toolbar-actions" },
+						/* 低频动作收进一个菜单：平时只占一个按钮（导出/CSV 仍然一次点击可达） */
 						h(
-							"button",
-							{ className: "dpc-btn dpc-btn-sm" + (state.picking ? " is-on" : ""), onClick: togglePicking, title: "多选：点卡片选中，再一次性导出 / 打标这批（选中项不跨重载保留）" },
-							state.picking ? "退出选择" : "选择",
-						),
-						h(
-							"button",
-							{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-export", onClick: exportFiltered, disabled: state.exportBusy || filtered.length === 0, title: "把当前这一屏（含筛选条件）写成 Markdown，存到数据目录 reports/ 下" },
-							state.exportBusy ? "导出中…" : "导出这 " + filtered.length + " 条",
-						),
-						/* R28：同一屏、同一批筛选，只换格式 —— 要贴进 Excel 就用这个 */
-						h(
-							"button",
-							{ className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-export", onClick: exportFilteredCsv, disabled: state.exportBusy || filtered.length === 0, title: "同一屏写成 CSV（带 UTF-8 BOM，Excel 直接打开中文不乱码）" },
-							"CSV",
+							"span",
+							{ className: "dpc-menu-wrap" },
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.menu === "tools" ? " is-on" : ""), onClick: () => set({ menu: store.menu === "tools" ? "" : "tools" }), title: "多选 / 导出 Markdown / 导出 CSV / 处置清单" }, "⋯ 操作"),
+							h(
+								"div",
+								{ className: "dpc-menu" + (state.menu === "tools" ? " is-open" : ""), role: "menu" },
+								h("button", { className: "dpc-menu-item", onClick: () => { set({ menu: "" }); togglePicking(); }, title: "多选：点卡片选中，再一次性导出 / 打标这批（选中项不跨重载保留）" }, state.picking ? "退出选择" : "多选（点卡片选）"),
+								h("button", { className: "dpc-menu-item dpc-export", disabled: state.exportBusy || filtered.length === 0, onClick: () => { set({ menu: "" }); exportFiltered(); }, title: "把当前这一屏（含筛选条件）写成 Markdown，存到数据目录 reports/ 下" }, state.exportBusy ? "导出中…" : "导出这 " + filtered.length + " 条（Markdown）"),
+								/* R28：同一屏、同一批筛选，只换格式 —— 要贴进 Excel 就用这个 */
+								h("button", { className: "dpc-menu-item dpc-export", disabled: state.exportBusy || filtered.length === 0, onClick: () => { set({ menu: "" }); exportFilteredCsv(); }, title: "同一屏写成 CSV（带 UTF-8 BOM，Excel 直接打开中文不乱码）" }, "导出这 " + filtered.length + " 条（CSV）"),
+								dormantCount > 0 || uninstallPlan
+									? h(
+											"button",
+											{
+												className: "dpc-menu-item",
+												disabled: state.uninstallBusy || Boolean(job.running),
+												onClick: () => { set({ menu: "" }); runUninstall(); },
+												title:
+													"生成「不会被加载」的处置清单：按弱连通分量分组（组内互相依赖，单删一个会留孤儿），" +
+													"每组给可回收体积与分类（实体 / 被 profile 依赖钉住 / 链接到工作区 / 同项目第二份），并写清步骤。" +
+													"只生成、永不执行删除；写入 reports/ 需要再点一次确认。约 1 秒",
+											},
+											state.uninstallBusy ? "算清单…" : "处置清单（不会被加载的怎么删）",
+										)
+									: null,
+							),
 						),
 					),
 				),
@@ -4550,6 +4736,37 @@ window.__ModuleLoader__.load({
 							option.label + " " + insightCounts[option.id],
 						),
 					),
+					/* R9：只看「无人依赖」的候选 —— 与体积合计配合就是"能安全省多少"的入口。
+					   R40：从工具条挪到这里 —— 它和上面那些 chip 是同一类东西（一次筛选），
+					   挤在工具条里只会把那一行撑成两行。 */
+					orphanCount > 0 || state.orphanOnly
+						? h(
+								"button",
+								{
+									className: "dpc-insight" + (state.orphanOnly ? " is-on" : "") + (orphanCount === 0 ? " is-empty" : ""),
+									onClick: () => set({ orphanOnly: !state.orphanOnly, page: 1 }),
+									title:
+										"只看无人依赖的条目：profile 里所有 package.json（含一层嵌套）都没声明依赖它们。" +
+										"这是候选不是结论 —— 动之前用 npm ls / pnpm why 确认；反过来说，「被 N 依赖」的条目删了会直接弄坏别人。",
+								},
+								(state.orphanOnly ? "✓ " : "") + "无人依赖 " + orphanCount,
+							)
+						: null,
+					/* R12：只看「不会被加载」的条目 —— 这是最硬的死重量判据（装了根本不会跑），
+					   比"未使用"更硬：未使用至少可能是暂时没用到。 */
+					dormantCount > 0 || state.dormantOnly
+						? h(
+								"button",
+								{
+									className: "dpc-insight" + (state.dormantOnly ? " is-on" : "") + (dormantCount === 0 ? " is-empty" : ""),
+									onClick: () => set({ dormantOnly: !state.dormantOnly, page: 1 }),
+									title:
+										"只看「不会被加载」的条目：不在 dsh.profile.bundles、没有 cordis 配置条目、也不在任何入口的依赖链上 —— 宿主根本不会加载它们。" +
+										"这是声明层面的判据（运行时按路径 require 的动态加载看不见），所以文案是「不会被加载」而不是「绝对没跑」。",
+								},
+								(state.dormantOnly ? "✓ " : "") + "不会被加载 " + dormantCount,
+							)
+						: null,
 					/* R35：运行期问题（fiberPhase=failed / 声明会加载但 Loader 里没有 / 打架）——
 					   它和"用没用""报没报错"是**不同维度**的事实，所以单列一颗 chip。 */
 					runtimeIssueCount > 0 || state.runtimeOnly
@@ -4711,7 +4928,10 @@ window.__ModuleLoader__.load({
   --dpc-fill-hover:color-mix(in srgb,var(--dsw-alias-label-primary,#1f2937) 7%,transparent);
   --dpc-klein:#002fa7;
   --dpc-klein-glow:rgba(0,47,167,.55)}
-.dpc-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.dpc-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;
+  /* R40：下拉菜单要能盖住下面的卡片 —— header 自己必须是一层（position+z-index），
+     否则 z-index:auto 的 header 里那个 absolute 菜单会被后面的卡片盖住 */
+  position:relative;z-index:30}
 .dpc-title{font-size:19px;font-weight:650;letter-spacing:.2px}
 .dpc-sub{font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:4px;line-height:1.6}
 .dpc-header-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
@@ -4723,8 +4943,9 @@ window.__ModuleLoader__.load({
 .dpc-btn-ghost:hover{background:var(--dpc-fill-hover);border-color:color-mix(in srgb,var(--dpc-klein) 45%,var(--dpc-line))}
 .dpc-btn-ghost.is-on{border-color:var(--dsw-alias-brand-primary,#3964fe);color:var(--dsw-alias-brand-primary,#3964fe)}
 .dpc-btn-ghost.is-due{border-color:var(--dsw-alias-state-warn-primary,#d89614);color:var(--dsw-alias-state-warn-primary,#d89614)}
-.dpc-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-radius:13px;
+.dpc-toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:9px 11px;border-radius:13px;
   border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-count{white-space:nowrap;font-variant-numeric:tabular-nums}
 .dpc-search{flex:1 1 240px;min-width:200px;padding:8px 11px;border-radius:9px;font-size:13px;
   border:1px solid var(--dpc-line);background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 55%,transparent);
   color:var(--dsw-alias-label-primary,#1f2937);transition:border-color .15s ease,box-shadow .15s ease}
@@ -4749,8 +4970,8 @@ window.__ModuleLoader__.load({
 /* 数字为 0 的档位置灰：仍然可点（点开是空态 + 解释），但别让它看起来和有用的一样重 */
 .dpc-insight.is-empty{opacity:.55}
 .dpc-insight.is-empty.is-on{opacity:1}
-/* 导出按钮靠右，和「N 条」拉开距离，避免误点 */
-.dpc-export{margin-left:auto}
+/* 导出按钮靠右，和「N 条」拉开距离，避免误点（R40 起这两个按钮在「⋯ 操作」菜单里） */
+.dpc-toolbar-actions>.dpc-export{margin-left:auto}
 /* ── 多选（清理决策）──
    选择模式下点卡片 = 选中；选中项用克莱因蓝描边 + 勾徽章，一眼看出"这批是我圈的" */
 .dpc-toolbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px}.dpc-card.is-picking{cursor:copy}
@@ -4770,9 +4991,7 @@ window.__ModuleLoader__.load({
 /* 报错 chip：只有 errors>0 才出现，标题里带错误率 */
 .dpc-err{font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid rgba(185,28,28,.45);
   color:#b91c1c;background:rgba(220,38,38,.10);font-variant-numeric:tabular-nums}
-/* 体积 chip：清理决策要看得到；量不到（asar / 还没量）就干脆不出现，别写「0 B」 */
-.dpc-size{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
-  color:var(--dsw-alias-label-secondary,#6b7280);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
+/* 体积：R40 起只在详情页的统计格里出现（卡片上不收体积 —— 那是最容易让人以为"卡上数字=能省多少"的误读） */
 /* 依赖 chip（R9）：有依赖者=不能单独删（中性色）；无人依赖=候选（琥珀色，与「待确认」同族但更淡） */
 .dpc-dep{font-size:10.5px;padding:1px 6px;border-radius:6px;font-variant-numeric:tabular-nums;
   color:var(--dsw-alias-label-secondary,#4b5563);background:var(--dpc-fill);border:1px solid var(--dpc-line-soft)}
@@ -4806,22 +5025,32 @@ window.__ModuleLoader__.load({
   box-shadow:0 0 0 2px rgba(0,47,167,.5),0 0 22px -4px var(--dpc-klein-glow)}
 .dpc-card.is-off{opacity:.72}
 .dpc-card-host{grid-column:1/-1}
-.dpc-card-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.dpc-name{font-weight:600;font-size:13.5px;word-break:break-all}
+.dpc-card-head{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-width:0}
+.dpc-name{font-weight:600;font-size:13.5px;flex:1 1 auto;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 .dpc-kind{font-size:11px;padding:1px 6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.06));
   color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-warn{font-size:11px;padding:1px 6px;border-radius:6px;border:1px solid var(--dsw-alias-state-warn-primary,#d89614);
   color:var(--dsw-alias-state-warn-primary,#d89614)}
 .dpc-calls{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:650;font-size:13.5px;
   color:var(--dsw-alias-brand-primary,#3964fe)}
+/* R40：卡片正文兜住两行高度（各条简介长短不一，不兜住整排卡就参差不齐）；
+   英文原文压成一行省略号 —— 第二条描述不该改变卡片高度。 */
+.dpc-card-main{flex:1 1 auto;display:flex;flex-direction:column;gap:3px;min-width:0}
 .dpc-zh{font-size:12.5px;line-height:1.55;color:var(--dsw-alias-label-primary,#1f2937);
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  min-height:calc(2 * 1.55em)}
 .dpc-zh-plain{color:var(--dsw-alias-label-secondary,#525a66)}
 .dpc-en{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary,#8b93a1);
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.dpc-en-block{font-size:12px;margin-top:6px;-webkit-line-clamp:6}
-.dpc-card-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px}
-.dpc-foot-meta{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary,#8b93a1)}
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dpc-en-block{font-size:12px;margin-top:6px;white-space:normal;display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical}
+/* R40：底部 = 左下角状态 + 右下角"最近用过"；两边都不折行，所以一排卡的基线一致 */
+.dpc-card-foot{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;margin-top:auto;
+  padding-top:6px;border-top:1px dashed var(--dpc-line-soft)}
+.dpc-foot-status{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0}
+.dpc-foot-meta{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary,#8b93a1);
+  white-space:nowrap;flex:0 0 auto}
+.dpc-card-tags{display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0}
 /* ── R30：MCP（服务器卡片 + 视图头部 + 可抄模板） ── */
 .dpc-mcp-target code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
   word-break:break-all;color:var(--dsw-alias-label-primary,#1f2937)}
@@ -4840,6 +5069,8 @@ window.__ModuleLoader__.load({
 .dpc-chip{font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--dsw-alias-bg-layer-3,rgba(0,0,0,.06));
   color:var(--dsw-alias-label-secondary,#4b5563)}
 .dpc-src{font-size:10.5px;padding:1px 7px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+/* R40：卡片上只用缩写 + 小方标（占地小一半），完整来源名在 tooltip / 详情页 */
+.dpc-src.is-compact{font-size:9.5px;line-height:1.7;padding:0 5px;border-radius:5px;font-weight:600;letter-spacing:.2px}
 .dpc-src-official{background:rgba(57,100,254,.12);color:#2f5fd0;border-color:rgba(57,100,254,.3)}
 .dpc-src-self{background:rgba(22,163,74,.14);color:#15803d;border-color:rgba(22,163,74,.32)}
 .dpc-src-third{background:rgba(107,114,128,.14);color:#4b5563;border-color:rgba(107,114,128,.28)}
@@ -4858,10 +5089,24 @@ window.__ModuleLoader__.load({
 .dpc-modal-title{font-weight:650;font-size:15px;word-break:break-all;letter-spacing:.1px}
 .dpc-grow{flex:1}
 .dpc-modal-body{padding:16px 18px 22px;overflow:auto;display:flex;flex-direction:column;gap:12px}
-.dpc-stats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+.dpc-stats{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(96px,1fr))}
 .dpc-stat{padding:10px 12px;border-radius:12px;border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
 .dpc-stat-value{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.25}
 .dpc-stat-label{font-size:11px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:3px}
+/* ── R40：仓库与操作（GitHub 创作者视角：星标 / 复刻 / 关注 / 克隆 / 浏览 / Release 下载） ── */
+.dpc-repo{display:flex;flex-direction:column;gap:9px;min-width:0}
+.dpc-repo-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.dpc-repo-slug{font-size:13px;font-weight:600;word-break:break-all;text-decoration:none}
+.dpc-repo-vis{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--dpc-line);
+  color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap}
+.dpc-repo-vis.is-public{border-color:rgba(22,163,74,.45);color:#15803d}
+.dpc-repo-stats{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(92px,1fr))}
+.dpc-repo-stat{padding:7px 9px;border-radius:10px;border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
+.dpc-repo-stat-v{font-size:15px;font-weight:650;font-variant-numeric:tabular-nums;line-height:1.25;white-space:nowrap}
+.dpc-repo-stat-v.is-small{font-size:12px;line-height:1.5}
+.dpc-repo-stat-k{font-size:10.5px;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:2px;white-space:nowrap}
+.dpc-repo-meta{font-size:11.5px;line-height:1.7}
+.dpc-repo-links a.dpc-btn{text-decoration:none;display:inline-flex;align-items:center}
 /* 详情分区改成"一块卡片"，替掉原来一排虚线分隔 —— 之前每段之间只有一条虚线，看着散 */
 .dpc-block{display:flex;flex-direction:column;gap:9px;padding:13px 14px;border-radius:14px;
   border:1px solid var(--dpc-line-soft);background:var(--dpc-fill)}
@@ -5153,20 +5398,39 @@ window.__ModuleLoader__.load({
 .dpc-legacy-actions{display:none}
 .dpc-header-actions2{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
 .dpc-menu-wrap{position:relative;display:inline-flex}
-.dpc-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:214px;padding:6px;
-  border-radius:12px;background:var(--dsw-alias-bg-elevated,#fff);box-shadow:0 10px 30px rgba(0,0,0,.16);
-  border:1px solid var(--dsw-alias-border-l1,#e5e7eb);text-align:left}
+.dpc-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:200;min-width:214px;padding:6px;
+  /* ★ R40：这里原来用的那个「elevated 背景」主题变量在 DSH 里**根本不存在**（全站只有 bg-base/layer-2/layer-3），
+     于是底色取 #fff，而条目文字取 --dsw-alias-label-primary（深色主题 #f9fafb）→ 白字白底，
+     菜单看着就是一个空白白框。（2026-11-05 用户报"四个下拉打开全是空白"。）
+     改用主题里真实存在的 layer-3，并显式给文字色；两者都不再依赖不存在的 token。 */
+  border-radius:12px;background:var(--dsw-alias-bg-layer-3,#26272b);color:var(--dsw-alias-label-primary,#1f2937);
+  box-shadow:0 12px 34px rgba(0,0,0,.28);
+  border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.06))}
 .dpc-menu.is-open{display:flex;flex-direction:column;gap:2px}
 .dpc-menu-item{appearance:none;border:0;background:transparent;font:inherit;font-size:13px;text-align:left;
   padding:7px 10px;border-radius:8px;cursor:pointer;color:var(--dsw-alias-label-primary,#111)}
-.dpc-menu-item:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 7%,transparent)}
+.dpc-menu-item:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 9%,transparent)}
+.dpc-menu-item:disabled{opacity:.45;cursor:default}
+.dpc-menu-item:disabled:hover{background:transparent}
+/* R40：菜单底部的只读备注（上次缺口 / 安全审核），把原来占一整行的信息收进来 */
+.dpc-menu-note{margin-top:4px;padding:6px 10px 3px;border-top:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));
+  font-size:11px;line-height:1.6;color:var(--dsw-alias-label-secondary,#9ca3af)}
 .dpc-settings-btn{font-size:14px;line-height:1;padding:5px 9px}
-/* 顶部概览条：一行摘要 + 右侧展开 / 关闭（原来那三行公告默认折起来） */
-.dpc-statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 11px;border-radius:10px;
+/* 顶部概览条：一行摘要 + 右侧展开 / 关闭（原来那三行公告默认折起来） */.dpc-statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 11px;border-radius:10px;
   background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 3%,transparent);
   border:1px solid var(--dsw-alias-border-l1,#e5e7eb);font-size:12.5px}
 .dpc-statusbar-text{flex:1 1 320px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   color:var(--dsw-alias-label-secondary,#6b7280)}
+/* R40：提示浮条（取代页面里那一整行）—— 右下角，点 × 关，失败类不自动消失 */
+.dpc-toast{position:fixed;right:26px;bottom:26px;z-index:90;display:flex;align-items:flex-start;gap:8px;
+  max-width:min(520px,calc(100vw - 60px));padding:10px 12px;border-radius:12px;
+  background:var(--dsw-alias-bg-layer-3,#26272b);color:var(--dsw-alias-label-primary,#1f2937);
+  border:1px solid var(--dsw-alias-border-l1,rgba(255,255,255,.08));box-shadow:0 12px 34px rgba(0,0,0,.34)}
+.dpc-toast.is-bad{border-color:rgba(220,38,38,.55)}
+.dpc-toast-text{font-size:12.5px;line-height:1.6;word-break:break-word}
+.dpc-toast-x{appearance:none;border:0;background:transparent;color:inherit;cursor:pointer;
+  font-size:15px;line-height:1;padding:1px 4px;opacity:.65}
+.dpc-toast-x:hover{opacity:1}
 /* 详情页：来源判定 / 标签 两个 popover（默认收起，点按钮才展开） */
 .dpc-popover{display:none;flex-direction:column;gap:9px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e7eb);
   background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 3%,transparent);max-height:40vh;overflow:auto}
@@ -5330,6 +5594,7 @@ window.__ModuleLoader__.load({
 			HEADER_MENUS,
 			PLAIN_HINTS,
 			SettingsModal,
+			RepoBlock,
 			stripMd,
 			briefOf,
 			cardMainOf,

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-catalog",
-  "version": "0.39.0",
+  "version": "0.40.0",
   "private": true,
   "type": "module",
   "description": "DSH 插件/Skill 目录面板：卡片式列出全部插件与 Skill 与 MCP（官方/自写/第三方/混血四分类）、按会话日志统计 90 天内每个工具的调用次数/报错/耗时/涉及会话（子代理单独标记）、读运行期真相（Loader 的 fiberPhase 与声明层对账）、在卡片底部直接卸载插件 / 停用启用 / 删除 Skill（回收站可还原）/ 停用或删除 MCP 条目（两段式 + 备份 + 写后校验）、自定义标签 + AI 分类、每周缺口分析与安全审核、自写与混血一键备份到 GitHub 私有仓（双语 README，密钥命中即停）。官方插件入口保留不隐藏。",

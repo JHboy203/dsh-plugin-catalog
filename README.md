@@ -398,6 +398,29 @@ dir "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
 会话每页条数 / 密度 / 列表每页条数 / 恢复默认。**只改显示偏好**，不改任何插件与配置；
 写在浏览器 localStorage（换浏览器才丢）。
 
+## 界面收口与仓库数据（R40）
+
+2026-11-05 用户提了五条界面意见，逐条落地。这一轮的共同点是**坏掉也不会报错**
+（白字白底只是看不见、体积挪走了测试仍绿、星数读不到可以写成 0），所以每条都进了自检。
+
+| 用户说的 | 现在的行为 | 判据 |
+|---|---|---|
+| 刷新 / 生成 / 审核 / 更多 **四个下拉打开全是空白** | 菜单底色改回主题里**真实存在**的 `--dsw-alias-bg-layer-3`。原来用的 `--dsw-alias-bg-elevated` 在 DSH 主题里根本不存在 → 底色落到 `#fff`，而文字取深色主题的 `--dsw-alias-label-primary`（近白）→ **白字白底**。同时给 header 补层叠上下文（`position:relative;z-index:30`）、菜单 `z-index:200` | `audit` 不许再出现 `var(--dsw-alias-bg-elevated`；`render-check` 菜单打开时条目真的在 DOM 里；`preview-menu.html` 是它的版式回归页 |
+| 卡片：把「报错 / 工作区较旧」挪到左下角、体积收进详情、来源徽章缩小、各卡排版一致 | 卡头只留 **来源（两字缩写）/ 名字 / 类型 / 调用数**；**报错、副本较旧、待确认、被 N 依赖、运行期问题全部下沉到卡片左下角**；正文兜住两行高度、底部 `margin-top:auto` 贴底；**体积进详情页统计格**（懒算优先，其次后台快照，量不到写「—」并说原因） | `audit` 三条（卡头窗口里不许出现 err/drift/dep、`.dpc-zh` 两行、foot 贴底）+ `render-check` 三条 |
+| 「已生成中文简介」「上次缺口分析」那两块占地 | 提示条 → **右下角浮条**（6 秒自动消失；**失败类不消失**，必须点 ×）；「上次缺口分析 / 最近安全审核」不再单独占一行，数字进概览条，并在 **审核 ▾ 菜单底部**留一条只读备注（概览条被关掉也找得到） | `audit`（`.dpc-toast` + sticky 判据）+ `render-check`（通知渲染成浮条） |
+| 工具条一整行十来个控件 | 收成 **搜索 + 类型 / 来源 / 排序 三个下拉 + 条数 + 合计 + 「⋯ 操作」**；多选 / 导出 Markdown / 导出 CSV / 处置清单进菜单；「无人依赖 / 不会被加载」并与洞察条 | `audit`（工具条里不许再有段选按钮）+ `render-check`（3 个 `select` + 一个菜单） |
+| 「仓库与操作」要符合 GitHub 创作者的需求 | 六项指标：**星标 Star / 复刻 Fork / 关注 Watch / 克隆 14 天（人/次）/ 浏览 14 天（人/次）/ Release 下载**；外加许可、主题数、仓体积、贡献者、最近推送、建于、最新 Release；快捷入口 仓库 / Issues / Releases / Actions / 动态 / 流量；动作 复制 clone 命令 / 复制仓库地址 / 上传更新 / 缺口分析 | `hosttest`（`/repo` 的三条边界）+ `dev/r40-live.mjs`（12 条真机只读） |
+
+**口径要点（别混）**：
+
+- GitHub **没有「仓库下载数」**，只有 *Release 资产的* `download_count` 之和；没有 Release 时写「—」并说明。
+- `stargazers_count` = 星标；`watchers_count` 在 GitHub API 里其实是**星标的别名**，真正的「关注者」是 `subscribers_count`。
+- 克隆 / 浏览走 **traffic 接口**（14 天窗口、**需要推送权限**）：没权限时写「没权限」，**不写 0**。
+- 数据是**懒拉**的：打开详情页才请求 `GET /repo?id=<条目>`（进程内 10 分钟缓存，`refresh=1` 强制重取），
+  不进 20 秒轮询的 `/state`。
+- `git+https://github.com/o/n.git`（`package.json` 的 `repository.url` 标准写法）也算 GitHub 仓 ——
+  R40 真机第一跑就栽在这里（整仓被判「不是 GitHub 仓」，星标一栏永远是空的）。
+
 ## MCP 分类（R30）
 
 面板工具条上第三颗类型 chip：`全部 / 插件 / Skill / MCP`。MCP 与插件是**两种不同的东西**，所以它有自己的判据：
@@ -731,16 +754,16 @@ node dev/deliver.mjs --base http://127.0.0.1:<GUI端口>
                             #   判据三条：ship 全绿 / 运行中与磁盘一致 / 没有悬空项（未提交 / 未推送 / staging 旧了 / 该重启）。
                             #   退出码 0 = 可以换会话；报告 `.cache/deliver-<时间戳>.md`；--skip-ship 省 40 秒。
                             #   ★ 不提交、不推送、不同步 —— 写盘动作一律由人显式发起。
-node dev/audit.mjs         # 自洽（697 项）：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（沙箱可跑；R31 起多 22 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在、`/state` 字节数经 `noteTransport` 进 health；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
-node dev/render-check.cjs  # 界面（264 项，无需 DSH）
+node dev/audit.mjs         # 自洽（727 项）：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（沙箱可跑；R31 起多 22 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在、`/state` 字节数经 `noteTransport` 进 health；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
+node dev/render-check.cjs  # 界面（287 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 
 宿主侧（不需要重启 DSH）：
 
 ```bash
-node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **处置对账（工具读回计划并逐目录 stat / 四态计数 / 文案四段齐 / 路由直接回结果且默认不写盘）**+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本 + **配置层（/state.composition 形状 / 三组计数守恒 / 每条带 file+line / bundles 缺口守恒 / 工具 view / health 只给摘要 / 导出「配置层」一节）** + **R35：运行期与动作层（/state.runtime 读不到时给原因 / /runtime 只读 / 动作层 journal 与 trash 位置 / 两段式 token 一次性 / Skill 删除→回收站→还原 / MCP 删除与停用真改临时文件且留 .bak / 留痕）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 351 项；普通 node 里 345 通过 + 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
-node dev/live-check.mjs --base http://127.0.0.1:<GUI端口>  # 对**运行中的面板**只读核验（≈0.7 秒，21 条）：
+node dev/hosttest.mjs      # 假 ctx 真跑 apply()：路由 / 工具契约 / 统计 / 标签 / AI 路径 / 门禁 / effect 同步约束 / async apply 返回值校验 / 列表项字段 / 体积递归与缓存 / 体积快照（含 asar 与 Skill 口径）/ 批量体积 / 依赖图四字段 / 加载态四态与 enabled 的独立性 / 导出的加载路径与「不会被加载」一节 / **发版体检路由（dry，五项）/ /skillsync 计划与 confirm 门禁 / staging 判据与单向复制 / ship 的副本同步项 / 处置清单（工具 + /uninstall 路由 + 跑完 node_modules 一个没少）+ 删除预演（整份清单必判安全 / 单删父包必报孤儿 / 未知包不瞎猜 / 路由直接回结果 / 文案写清三行风险）+ **处置对账（工具读回计划并逐目录 stat / 四态计数 / 文案四段齐 / 路由直接回结果且默认不写盘）**+ **变化追踪（快照落盘 / 指纹不重复 / 只留 20 条 / 导出报告有「变化」一节）+ 正文哈希进快照 + 确认窗口（无 confirm 被拒 / 写基线 / 清零 / health 报得出）+ 时间线进 /state（total + items）+ /health 只给时间线摘要 / 副本哈希判据 / 还原计划与 confirm 门禁 / 真还原 + pre-restore 备份 / 备份列表 + 运行中版本与磁盘版本 + **配置层（/state.composition 形状 / 三组计数守恒 / 每条带 file+line / bundles 缺口守恒 / 工具 view / health 只给摘要 / 导出「配置层」一节）** + **R35：运行期与动作层（/state.runtime 读不到时给原因 / /runtime 只读 / 动作层 journal 与 trash 位置 / 两段式 token 一次性 / Skill 删除→回收站→还原 / MCP 删除与停用真改临时文件且留 .bak / 留痕）** / 导出落盘 / 副本漂移判据 / skill_sync 计划与 confirm 门禁（宿主里 356 项；普通 node 里 350 通过 + 6 条 SKIP —— 沙箱禁止带管道 spawn + 读不到 app.asar）
+node dev/live-check.mjs --base http://127.0.0.1:<GUI端口>  # 对**运行中的面板**只读核验（≈0.7 秒，23 条）：
                             # 版本一致 / 工具与目录在 / 时间线形状 / drift 带哈希与备份 / 还原计划只读 / 不带 confirm 的还原被拒
                             # ★ 端口每次重启都会变；走 host_selfcheck 跑（args 传 --base），不写任何文件
 node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + 两份组合文件 → 四态 → 与 cache/catalog.json 对账；
@@ -748,6 +771,10 @@ node dev/probe-loadstate.mjs  # 独立重算加载路径：自己扫 profile + �
                               # disabled 不算入口 / 快照与重算一致 / dormant 对加载中的声明封闭），破一条退出码 1；--json 可机读
 node dev/probe-uninstall.mjs  # 处置清单自检：四条不变式（I8 覆盖与不重叠 / I9 体积口径 / I10 钉住键安全 /
                               # I11 不误伤加载路径），破一条退出码 1；--json 可机读
+node dev/r39-live.mjs --base http://127.0.0.1:<GUI端口>  # ★ R39 真机只读（13 条）：/state 不带 toolHints（体积预算 380KB）、
+                            # 会话默认 5、intros 形状、/entry 的 tools[].hint 与 toolHints、/intro ensure 未知 id 早退
+node dev/r40-live.mjs --base http://127.0.0.1:<GUI端口>  # ★ R40 真机只读（12 条）：/repo 的正路与三条边界（no-repo / unknown-id /
+                            # 不写 0）、10 分钟缓存与 refresh=1、以及「GitHub 统计不许进 /state」
 node dev/run-probes.mjs       # **17 个探针串成一条**（发版体检的第 5 项，共 498 条，约 6 秒）：
 node dev/probe-runtime.mjs    # ★ R35：运行期真相（31 条）。fiberPhase 六相位 / moduleName 带子路径按包名归一 /
                               #   同包多条取 failed 优先 / 读不到一律 unknown（绝不猜 active）/ declared-absent 只在

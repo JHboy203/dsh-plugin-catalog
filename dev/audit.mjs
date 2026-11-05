@@ -615,10 +615,10 @@ ok("条目形状变了 → CATALOG_VERSION 跟着 +1（R8 曾把它抬到 5，R9
 ok("客户端有「体积」排序（清理决策的第一问是能省多少）", /SORTS[\s\S]{0,600}id: "size", label: "体积"/.test(clientSource));
 ok("体积排序按字节降序，量不到的按 0 排后面", /state\.sort === "size"[\s\S]{0,260}sizeOfItem\(b, sizeMap\) \|\| 0\) - \(sizeOfItem\(a, sizeMap\) \|\| 0\)/.test(clientSource));
 ok("sizeOfItem 量不到返回 null（绝不返回 0）", /function sizeOfItem\(item, sizeMap\)[\s\S]{0,200}return Number\.isFinite\(value\) \? value : null/.test(clientSource));
-ok("卡片上有体积 chip，且有样式定义", cssSource.includes(".dpc-size{") && clientSource.includes('className: "dpc-size"'));
-ok("量不到的条目卡片上不显示体积（于是也不会出现「0 B」）", /props\.size\s*\n\s*\? h\(\s*\n\s*"span",\s*\n\s*\{\s*\n\s*className: "dpc-size"/.test(clientSource) && clientSource.includes('fmtBytes(props.size) + (props.sizeTruncated ? "+" : "")'));
-ok("超预算的条目带「+」并在 title 里说明（数字是下限）", clientSource.includes("只算到这里（实际只会更大）") && /fmtBytes\(props\.size\) \+ \(props\.sizeTruncated \? "\+" : ""\)/.test(clientSource));
-ok("工具条显示当前筛选的体积合计，并点出「无可量目录」条数", clientSource.includes('"合计 " +') && clientSource.includes("条无可量目录") && clientSource.includes("条还没量"));
+ok("体积 chip 从卡片收进详情页（R40：卡片只留一句简介 + 左下角状态，详细数据进浮窗）", clientSource.includes('statCell("磁盘体积"') && !clientSource.includes('className: "dpc-size"'));
+ok("量不到的体积在详情页写「—」并说清原因（绝不写 0 B）", clientSource.includes('if (state.sizeError) return "—";') && serviceSource.includes("在官方 asar 里，没有独立目录（体积记在 DSH 安装包内）"));
+ok("超预算的条目带「+」并在 title 里说明（数字是下限）", /fmtBytes\(state\.size\.bytes\) \+ \(state\.size\.truncated \? "\+" : ""\)/.test(clientSource) && clientSource.includes("只算到这里"));
+ok("工具条显示当前筛选的体积合计，并点出「未计入」的条数", clientSource.includes('"合计 " +') && clientSource.includes("条没有可量目录") && clientSource.includes("条还没量过体积") && clientSource.includes("条未计入"));
 ok("自动量体积有闸门：本挂载一次 + 有任务不抢 + 过期才量", /const autoSized = useRef\(false\)/.test(clientSource) && /if \(data\.job && data\.job\.running\) return;/.test(clientSource) && /const SIZES_TTL_MS = 24 \* 60 \* 60 \* 1000/.test(clientSource));
 ok("导出的表格带体积列（清单拿出去也要能支撑决策）", serviceSource.includes("| 体积 |") && serviceSource.includes("formatBytes(bytes)"));
 ok("Skill 浮窗也有「位置与体积」块（不再只有插件才看得到）", clientSource.includes('"位置与体积"') && clientSource.includes("技能目录"));
@@ -947,7 +947,19 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.39.0 / r39.0", /"version": "0\.39\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r39.0"'));
+/* ★ 版本钉子**不再写死轮次**：写死就变成"每轮先改自检"（R40 提 0.40.0 时正是这条先红）。
+   现在断言的是**两者互相对得上**：package.json 的 minor 必须与 client 的 BUILD 轮次一致 ——
+   这正是"改了 client.js 忘了提 BUILD"要抓的东西，而且不会因为提版本而假红。 */
+(() => {
+	const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	const buildMatch = /const BUILD = "r(\d+)\.\d+"/.exec(clientSource);
+	const minor = String(pkg.version || "").split(".")[1] || "";
+	ok(
+		"版本号与构建戳互相对得上（package.json " + pkg.version + " ↔ client BUILD " + (buildMatch ? "r" + buildMatch[1] : "?") + "）",
+		Boolean(buildMatch) && buildMatch[1] === String(Number(minor)) && Number(minor) >= 39,
+		"version=" + pkg.version + " build=" + (buildMatch ? buildMatch[0] : "缺"),
+	);
+})();
 
 /* ── R39：界面定制化 / 信息分层（用户这一轮 13 条需求对应的契约） ── */
 ok(
@@ -1002,6 +1014,74 @@ ok(
 	["actionsInDetail", "cardBrief", "plain", "changesCollapsed", "changesHidden", "lang", "sessionsPageSize", "autoIntro"].every((key) => clientSource.includes('"' + key + '"')) &&
 		!/VIEW_KEYS\s*=\s*\[[^\]]*prefsOpen/.test(clientSource) &&
 		!/VIEW_KEYS\s*=\s*\[[^\]]*"menu"/.test(clientSource),
+);
+
+/* ── R40：用户 2026-11-05 提的五条界面问题对应的契约 ──
+   ① 四个下拉打开是空白（白字白底）；
+   ② 卡片：状态移左下、体积进详情、来源徽章缩小、版式统一；
+   ③ 概览/提示那块占地；
+   ④ 工具条占地；
+   ⑤ 仓库与操作要 GitHub 创作者视角的数据。
+   这几条的共同点是「坏了也不会报错」：白字白底只是看不见、体积挪走了测试仍绿、星数读不到可以写成 0。
+   所以每条都要有静态断言钉住。 */
+ok(
+	"R40 ①：下拉菜单底色不再使用**主题里不存在**的 --dsw-alias-bg-elevated（这正是白字白底的根因）",
+	!clientSource.includes("var(--dsw-alias-bg-elevated") && /\.dpc-menu\{[^}]*background:var\(--dsw-alias-bg-layer-3/.test(cssSource),
+);
+ok("R40 ①：header 是层叠上下文（否则菜单会被下面的卡片盖住）且菜单 z-index 更高", /\.dpc-header\{[^}]*position:relative;z-index:\d+/.test(cssSource) && /\.dpc-menu\{[^}]*z-index:200/.test(cssSource));
+ok(
+	"R40 ②：卡片状态（报错 / 不同步 / 待确认 / 依赖 / 运行期）全部在底部左栏 .dpc-foot-status 里，卡头只留来源 / 名字 / 类型 / 调用数",
+	(/function Card\(props\)[\s\S]*?\{ className: "dpc-foot-status" \}[\s\S]{0,900}className: "dpc-err"/.test(clientSource) &&
+		(() => {
+			const cardStart = clientSource.indexOf("function Card(props)");
+			const head = clientSource.indexOf('{ className: "dpc-card-head" }', cardStart);
+			const calls = clientSource.indexOf('className: "dpc-calls"', head);
+			const seg = head >= 0 && calls > head ? clientSource.slice(head, calls) : "";
+			/* 卡头这一段的窗口里不许出现报错 / 副本 / 依赖徽标 */
+			return cardStart > 0 && seg.length > 0 && !seg.includes("dpc-err") && !seg.includes("dpc-drift") && !seg.includes("dpc-dep");
+		})()),
+);
+ok("R40 ②：来源徽章在卡片上用缩写（三方/待定），完整名留在 tooltip 与详情页", clientSource.includes("compact: true") && /third: \{ label: "第三方", short: "三方"/.test(clientSource) && /pending: \{ label: "待标记", short: "待定"/.test(clientSource));
+ok("R40 ②：卡片正文兜住两行高度（各条简介长短不一也不参差），底部用 margin-top:auto 贴底", /\.dpc-zh\{[^}]*-webkit-line-clamp:2[^}]*min-height:calc\(2 \* 1\.55em\)/.test(cssSource) && /\.dpc-card-foot\{[^}]*margin-top:auto/.test(cssSource));
+ok(
+	"R40 ③：原来单独占一行的「上次缺口分析 / 最近安全审核」已并进顶部概览条（不再各占一行）",
+	clientSource.includes("｜安全审核 ") && !clientSource.includes('"上次缺口分析："'),
+);
+ok(
+	"R40 ③：提示条改成右下角浮条 + 自动消失（失败类不自动消失，必须人点 ×）",
+	clientSource.includes("function NoticeToast(") &&
+		clientSource.includes('className: "dpc-toast"') &&
+		/const sticky = \/失败\|错误\|读不到\|不允许\|拒绝\/\.test\(text\)/.test(clientSource) &&
+		cssSource.includes(".dpc-toast{"),
+);
+ok(
+	"R40 ④：工具条收成 搜索 + 类型/来源/排序 三个下拉 + 条数 + 合计 + 一个「⋯ 操作」菜单（导出/多选/处置清单进菜单）",
+	clientSource.includes('"⋯ 操作"') &&
+		clientSource.includes('{ id: "all", label: "全部类型" }') &&
+		clientSource.includes('{ id: "any", label: "全部来源" }') &&
+		clientSource.includes("dpc-menu-item dpc-export") &&
+		/* 工具条里不再有段选按钮（原来源/类型那两组 chip）*/
+		!/dpc-toolbar dpc-toolbar-sticky"[\s\S]{0,2600}dpc-seg/.test(clientSource),
+);
+ok(
+	"R40 ⑤：仓库与操作给出 Star / Fork / Watch / 克隆 / 浏览 / Release 下载 六项 + 三种读不到的原因分开说",
+	clientSource.includes('stat("星标 Star"') &&
+		clientSource.includes('stat("复刻 Fork"') &&
+		clientSource.includes('stat("关注 Watch"') &&
+		clientSource.includes('"克隆 14 天"') &&
+		clientSource.includes('"浏览 14 天"') &&
+		clientSource.includes('"Release 下载"') &&
+		clientSource.includes('error === "no-repo"') &&
+		clientSource.includes('error === "not-github"') &&
+		clientSource.includes("读不到 GitHub 数据（"),
+);
+ok(
+	"R40 ⑤：GitHub 数据是懒算（/repo 路由 + 10 分钟缓存），不塞进 20 秒轮询的 /state",
+	routeSource.includes('path === "/repo"') && serviceSource.includes("this.repoCache") && /repoCache\.get\(key\)[\s\S]{0,120}10 \* 60 \* 1000/.test(serviceSource) && !/state\(\)[\s\S]{0,2000}repoStats\(/.test(serviceSource),
+);
+ok(
+	"R40 ⑤：读不到流量时如实说「没权限」，不把克隆/浏览写成 0",
+	serviceSource.includes("trafficDenied") && clientSource.includes("没有该仓的推送权限，读不到流量"),
 );
 
 
@@ -1184,7 +1264,7 @@ ok("catalog_skill_sync 有 backup 参数，并写明「省略 = 最近一份」"
 ok("还原计划回传可选备份清单（backups / backupCount），点名不存在时给出可选项而不是静默", serviceSource.includes("backupCount: backups.count") && serviceSource.includes("没有这份备份"));
 ok("写盘那一步带着**同一份**备份（否则会按「最近一份」重新解析，看起来还完全成功）", clientSource.includes("const backup = plan.backup ||") && routeSource.includes('const backup = body.backup ? String(body.backup) : "";'));
 ok("面板还原确认里可以点「更早的备份」（onPick → 重新出计划），不是只能还原最近一份", clientSource.includes("onPick: (backup) => planStageRestore(item.id, backup)") && clientSource.includes("更早的备份"));
-ok("CSV 两个入口都挂了按钮（当前这一屏 / 选中批次），且结果条会说清格式", clientSource.includes("onClick: exportFilteredCsv") && clientSource.includes("onClick: exportPickedCsv") && clientSource.includes('state.exportFormat === "csv"'));
+ok("CSV 两个入口都挂了按钮（当前这一屏 / 选中批次），且结果条会说清格式", clientSource.includes("exportFilteredCsv()") && clientSource.includes("exportPickedCsv()") && clientSource.includes('state.exportFormat === "csv"'));
 
 /* ── R29：换会话前的最后一条命令（dev/deliver.mjs）── */
 const deliverSource = readFileSync(new URL("../dev/deliver.mjs", import.meta.url), "utf8");

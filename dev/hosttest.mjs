@@ -531,8 +531,41 @@ if (skillEntry) {
 	ok("体积：没有 Skill 可测", false, "entries 里没有 skill");
 }
 
-const exportPicked = entries.slice(0, 3);
-const skipped = entries[5];
+/* ── R40：仓库数据（Star / 克隆 / 下载）──
+   两条离线可判的边界先钉死：**没有仓**与**未知 id** 都不能看起来像"0 个星"。 */
+const noRepoEntry = entries.find((entry) => !entry.repoUrl);
+if (noRepoEntry) {
+	const noRepo = await callRoute("/repo?id=" + encodeURIComponent(noRepoEntry.id));
+	ok(
+		"/repo：没有远端仓的条目返回 no-repo（不是「0 星」，也不是空数据）",
+		noRepo.status === 200 && noRepo.json?.ok === false && noRepo.json?.reason === "no-repo",
+		JSON.stringify(noRepo.json).slice(0, 240),
+	);
+} else {
+	skip("/repo：没有远端仓的条目返回 no-repo", "这台机器的每个条目都写了 repoUrl");
+}
+const unknownRepo = await callRoute("/repo?id=" + encodeURIComponent("plugin:definitely-not-installed"));
+ok("/repo：未知 id 明确失败（不静默返回空统计）", unknownRepo.json?.ok === false && unknownRepo.json?.error === "unknown-id", JSON.stringify(unknownRepo.json).slice(0, 200));
+{
+	const { slugOf } = await import("../lib/gitops.mjs");
+	const s1 = slugOf("https://github.com/JHboy203/dsh-plugin-catalog");
+	const s2 = slugOf("git@github.com:JHboy203/dsh-plugin-catalog.git");
+	const s3 = slugOf("https://gitlab.com/a/b");
+	ok("slugOf 认得 https / ssh 两种 GitHub 地址，认不出时返回空（不瞎猜）", s1.owner === "JHboy203" && s1.name === "dsh-plugin-catalog" && s2.owner === "JHboy203" && s2.name === "dsh-plugin-catalog" && s3.owner === "", JSON.stringify({ s1, s2, s3 }));
+}
+/* 有 repoUrl 的条目：真去问一次 GitHub —— 但**允许三种如实结果**（联网失败不是本测试的失败）。
+   ⚠️ 只断言"形状与措辞"，不断言具体星数：星数会变，钉死它就等于给自己埋一个必红项。 */
+const withRepo = entries.find((entry) => /github\.com/.test(String(entry.repoUrl || "")));
+if (withRepo) {
+	const repoRes = await callRoute("/repo?id=" + encodeURIComponent(withRepo.id));
+	const j = repoRes.json || {};
+	const shapeOk = j.ok === true ? Boolean(j.repo?.owner && j.repo?.name && j.stats && typeof j.stats.stars === "number") : ["repo-unreachable", "not-github", "no-repo"].includes(j.reason);
+	ok("/repo：读得到就给 stars/forks/clones 形状，读不到给原因（绝不写 0 星）", repoRes.status === 200 && shapeOk, JSON.stringify(j).slice(0, 300));
+} else {
+	skip("/repo：读得到就给形状，读不到给原因", "这台机器没有带 github.com 仓库地址的条目");
+}
+
+const exportPicked = entries.slice(0, 3);const skipped = entries[5];
 const exportRoute = await callRoute("/export", "POST", { ids: exportPicked.map((entry) => entry.id), filters: { query: "test", source: "any", kind: "all", usage: "unused", sort: "rate" } });
 ok("/export 路由 200 且真的写盘（返回 path + count）", exportRoute.status === 200 && exportRoute.json?.ok === true && typeof exportRoute.json?.path === "string" && exportRoute.json?.count === exportPicked.length, JSON.stringify(exportRoute.json).slice(0, 240));
 const exportText = exportRoute.json?.path ? readFileSync(exportRoute.json.path, "utf8") : "";

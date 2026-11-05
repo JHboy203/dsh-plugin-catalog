@@ -351,6 +351,13 @@ export async function apply(ctx) {
 					return json(res, 200, await catalog.entrySize(url.searchParams.get("id") || ""));
 				}
 
+				/* R40：仓库的创作者数据（Star / Fork / Watch / 克隆 / 浏览 / Release 下载）。
+				   与 /size 同一条纪律：打开详情页才问一次，进程内 10 分钟缓存。
+				   只读；`refresh=1` 强制重取（面板上的「刷新仓库数据」）。 */
+				if (path === "/repo" && method === "GET") {
+					return json(res, 200, await catalog.repoStats(url.searchParams.get("id") || "", { refresh: url.searchParams.get("refresh") === "1" }));
+				}
+
 				if (path === "/sizes" && method === "POST") {
 					const body = await readJsonBody(req);
 					return json(res, 200, await catalog.entrySizes(Array.isArray(body.ids) ? body.ids : []));

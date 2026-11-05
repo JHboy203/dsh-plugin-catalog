@@ -350,12 +350,10 @@ ok(
 	JSON.stringify(bySize.map((text) => text.slice(0, 40))).slice(0, 300),
 );
 ok(
-	"卡片上有体积 chip（.dpc-size 里是 9.7 MB）",
+	"体积 chip 已从卡片收走（R40：卡片只留简介 + 左下角状态）",
 	(() => {
 		const chips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-size"));
-		/* ★ textsOf 会连 props 里的字符串一起收（title 里写着字节数），所以只能 contains，不能全等 */
-		const labels = chips.map((chip) => textsOf(chip).join(" "));
-		return chips.length === 5 && labels.some((label) => label.includes("9.7 MB")) && labels.some((label) => label.includes("4 KB"));
+		return chips.length === 0;
 	})(),
 );
 ok(
@@ -370,7 +368,7 @@ ok(
 	(() => {
 		const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
 		/* 6 条里 5 条有体积：10137524+6000575+4096+34567+2012345 = 18189107 B → 17.3 MB，另外 1 条量不到 */
-		return text.includes("合计 17.3 MB") && text.includes("1 条无可量目录");
+		return text.includes("合计 17.3 MB") && text.includes("1 条未计入");
 	})(),
 );
 ok(
@@ -551,7 +549,7 @@ const exportButtons = findAll(expand(render(T.Panel, {})), (node) => String((nod
 const exportTexts = exportButtons.map((node) => textsOf(node).join(""));
 ok("工具条有「导出这 N 条」，N 就是当前筛选条数", exportButtons.length === 2 && exportTexts.join(" ").includes("导出这 6 条"), JSON.stringify(exportTexts));
 /* R28：CSV 与 Markdown 是同一屏、同一批筛选，只换格式 —— 两个按钮必须都在，否则"能导 CSV"只存在于文档里 */
-ok("工具条还有一个「CSV」（贴进 Excel 用），与 Markdown 那个并列", exportTexts.some((text) => text.includes("同一屏写成 CSV") && text.endsWith("CSV")), JSON.stringify(exportTexts));
+ok("工具条还有一个「CSV」（贴进 Excel 用），与 Markdown 那个并列", exportTexts.some((text) => text.includes("同一屏写成 CSV") && text.includes("（CSV）")), JSON.stringify(exportTexts));
 T.store.kind = "skill";
 const zeroChips = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-insight") && String(node.props.className).includes("is-empty")).map((node) => textsOf(node).join(""));
 ok("计数为 0 的档位置灰但不隐藏（点开是空态 + 说明书）", zeroChips.length >= 1 && zeroChips.some((text) => text.includes("有报错 0")), JSON.stringify(zeroChips));
@@ -1693,6 +1691,8 @@ ok("可以手工改来源（标一次不再问）", modalText.includes("判错�
 ok("自写条目有上传/更新按钮", modalText.includes("上传 / 更新到 GitHub"));
 ok("自写条目有缺口分析入口", modalText.includes("缺口分析"));
 ok("显示仓库链接", modalText.includes("github.com/JHboy203/dsh-screenshot"));
+/* R40：体积的主展示位在详情页统计格里（卡片上已收走） */
+ok("详情页统计格里有「磁盘体积」（体积从卡片收进浮窗）", modalText.includes("磁盘体积"));
 ok("显示创建/下载时间", modalText.includes("创建/下载时间"));
 ok("标签区可新增自定义标签", modalText.includes("新增自定义标签"));
 /* 新增表单默认是收起的：预置 hooks[0]=true 把「已点开」这个分支渲染出来。
@@ -2480,8 +2480,124 @@ ok("R39 涉及会话默认每页 5 条，且 5/10/20/50/100 都可选（旧服�
 })());
 ok("R39 大白话词条覆盖详情页的技术块（依赖关系 / 副本同步 / 仓库与操作…）", Object.keys(T.PLAIN_HINTS).length >= 8 && T.PLAIN_HINTS["依赖关系"].includes("弄坏") && T.PLAIN_HINTS["副本同步"].includes("同一版"));
 
+/* ── R40：用户 2026-11-05 的五条界面问题（真的渲染一遍，不是看源码） ── */
+resetHooks();
+T.store.data = data;
+T.store.loading = false;
+T.store.error = null;
+T.store.open = null;
+T.store.query = "";
+T.store.source = "any";
+T.store.kind = "all";
+T.store.sort = "calls";
+T.store.page = 1;
+T.store.usage = "any";
+T.store.menu = "refresh";
+ok(
+	"R40 ①：下拉菜单打开时条目真的在 DOM 里（四个菜单不是空的）",
+	(() => {
+		const menu = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-menu") && String(node.props.className).includes("is-open"));
+		const text = menu.map((node) => textsOf(node).join(" ")).join(" ");
+		return menu.length === 1 && text.includes("刷新统计") && text.includes("量体积") && text.includes("重新扫描");
+	})(),
+);
+T.store.menu = "";
+ok(
+	"R40 ②：报错 / 工作区较旧 这些状态在卡片底部左栏（.dpc-foot-status），不在卡头",
+	(() => {
+		const classes = (node) => String((node.props && node.props.className) || "").split(/\s+/);
+		const cards = findAll(expand(render(T.Panel, {})), (node) => classes(node).includes("dpc-card") && !classes(node).includes("dpc-card-host"));
+		const withStatus = cards.filter((card) => findAll(card, (node) => classes(node).includes("dpc-foot-status")).length === 1);
+		const headHasErr = cards.some((card) => {
+			const heads = findAll(card, (node) => classes(node).includes("dpc-card-head"));
+			return heads.some((head) => findAll(head, (node) => classes(node).includes("dpc-err")).length > 0);
+		});
+		const anyErrInFoot = cards.some((card) => findAll(card, (node) => classes(node).includes("dpc-err")).length > 0);
+		return cards.length > 0 && withStatus.length === cards.length && !headHasErr && anyErrInFoot;
+	})(),
+);
+ok(
+	"R40 ④：工具条是三个下拉（类型 / 来源 / 排序）+ 一个「⋯ 操作」菜单，不再是两排段选按钮",
+	(() => {
+		const panel = expand(render(T.Panel, {}));
+		const bar = findAll(panel, (node) => String((node.props && node.props.className) || "").includes("dpc-toolbar"))[0];
+		if (!bar) return false;
+		const selects = findAll(bar, (node) => node.type === "select");
+		const text = textsOf(bar).join(" ");
+		const segs = findAll(bar, (node) => String((node.props && node.props.className) || "").includes("dpc-seg"));
+		return selects.length === 3 && text.includes("⋯ 操作") && segs.length === 0 && text.includes("全部类型") && text.includes("全部来源");
+	})(),
+);
+const repoFixture = {
+	ok: true,
+	repo: { owner: "JHboy203", name: "dsh-plugin-catalog", url: "https://github.com/JHboy203/dsh-plugin-catalog" },
+	stats: {
+		private: false,
+		archived: false,
+		stars: 128,
+		forks: 14,
+		watchers: 37,
+		openIssues: 3,
+		sizeKb: 1938,
+		pushedAt: new Date().toISOString(),
+		createdAt: new Date().toISOString(),
+		license: "MIT",
+		topics: ["dsh", "dsh-plugin"],
+		hasIssues: true,
+		releases: 2,
+		downloads: 2194,
+		latestRelease: { tag: "v0.39.0", publishedAt: new Date().toISOString(), downloads: 100 },
+		clones: { count: 131, uniques: 56 },
+		views: { count: 402, uniques: 188 },
+		trafficDenied: false,
+		contributors: 2,
+		contributorsCapped: false,
+	},
+};
+const repoItem = { name: "dsh-plugin-catalog", createdAt: Date.now(), repoUrl: repoFixture.repo.url, source: "self" };
+const repoProps = { item: repoItem, repo: repoFixture, loading: false, error: null, publishable: true, onRefresh: () => {}, onUpload: () => {}, onGap: () => {}, reportBusy: false };
+ok(
+	"R40 ⑤：仓库与操作六项指标都渲染出来（星标 / 复刻 / 关注 / 克隆 / 浏览 / Release 下载）",
+	(() => {
+		const text = textsOf(expand(T.RepoBlock(repoProps))).join(" | ");
+		return (
+			["星标 Star", "复刻 Fork", "关注 Watch", "克隆 14 天", "浏览 14 天", "Release 下载"].every((label) => text.includes(label)) &&
+			text.includes("128") &&
+			text.includes("2194") &&
+			text.includes("56 人 / 131 次") &&
+			text.includes("公开")
+		);
+	})(),
+);
+ok(
+	"R40 ⑤：三种「没有数字」的原因分开说（没仓 / 不是 GitHub / 读不到），不写成 0 星",
+	(() => {
+		const textOf = (error) => textsOf(expand(T.RepoBlock({ ...repoProps, repo: null, error }))).join(" | ");
+		const noRepo = textOf("no-repo");
+		const notGithub = textOf("not-github");
+		const unreachable = textOf("repo-unreachable");
+		return noRepo.includes("还没有远端仓") && notGithub.includes("不是 GitHub 仓") && unreachable.includes("读不到 GitHub 数据") && !noRepo.includes("0 星");
+	})(),
+);
+ok(
+	"R40 ⑤：没权限读流量时明说「没权限」，不把克隆/浏览画成 0",
+	(() => {
+		const text = textsOf(expand(T.RepoBlock({ ...repoProps, repo: { ...repoFixture, stats: { ...repoFixture.stats, clones: null, views: null, trafficDenied: true } } }))).join(" | ");
+		return text.includes("没有该仓的推送权限") && text.includes("—");
+	})(),
+);
+ok(
+	"R40 ③：提示条是右下角浮条（.dpc-toast），不再是页面里的一行 .dpc-note",
+	(() => {
+		T.store.notice = "已生成中文简介（存进 intros.json）";
+		const html = expand(render(T.Panel, {}));
+		const toast = findAll(html, (node) => String((node.props && node.props.className) || "").split(/\s+/).includes("dpc-toast"));
+		T.store.notice = null;
+		return toast.length === 1;
+	})(),
+);
+
 console.log("");
-console.log("dsh-plugin-catalog / render-check");
 console.log("  passed: " + passed);
 console.log("  failed: " + failed);
 if (failed > 0) {
