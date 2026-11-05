@@ -755,7 +755,7 @@ node dev/deliver.mjs --base http://127.0.0.1:<GUI端口>
                             #   退出码 0 = 可以换会话；报告 `.cache/deliver-<时间戳>.md`；--skip-ship 省 40 秒。
                             #   ★ 不提交、不推送、不同步 —— 写盘动作一律由人显式发起。
 node dev/audit.mjs         # 自洽（727 项）：默认值冻结/工具契约/规则覆盖/去重/命名/门禁/双语 README 流程 + 客户端样式与行为契约 + staging 判据单源 + 加载态四态判据 + 探针不变式 + **处置清单（分类/分组/别名键/只生成不执行）+ 删除预演（纯函数/按目录算/revived 恒等）/ 写盘计划跳过 60 秒漂移缓存 / 变化追踪（纯函数/指纹 12 位/第一条不报新增/正文哈希与升级迁移/确认基线/时间线相邻相减与基线不产出行）/ 副本判据（正文哈希 / 同字数漏判 / 退回口径 / 备份名与路径校验 / 还原只写 staging）/ 配置层声明（块标量 / disabled 三语义 / 按 id 合并 / 条目五类 / 解析五档 / 只有 bundles 缺才算 bad / 三组计数守恒）/ 真机核验脚本（只读 / 不出现 confirm:true）/ health 时间线摘要 / 发版体检清单单源 + 运行中版本与磁盘版本**（沙箱可跑；R31 起多 22 条：探针清单单源、文档数字与真值对账（工具数/探针数/live-check 条数/交接单项数/三处「共 N 条」一致）、`dev/` 顶层探针都在登记表里、MCP 停用片段只出文本、gzip 分支与 `measure-state` 脚本还在、`/state` 字节数经 `noteTransport` 进 health；R29 起多 5 条：deliver 只消费判据不重算 / 不执行写盘动作 / 三条结论判据 / 沙箱 EPERM 与断言红分开报；R28 起多 13 条：CSV 转义是 RFC 4180 那三条 + BOM / 事实只有一份实现（Markdown 只加装饰）/ CSV 与 Markdown 同一批 picked / 工具与路由同一条链路 / pickBackupByName 按全名比对 / 写盘带同一份备份 / 两个 CSV 入口都真挂了按钮；R22.1 起多两条：浮层脚注给出缓存年龄、health 摘要带 at；R23 起多 14 条：配置层签名只解析声明 / 指纹折进快照 / 单列 composition 桶 / 单边缺不判 / 面板与导出同一措辞；R24 起多 4 条：bundleNames 去重排序 / 可点行只限 profile 与 asar / 跳转清筛选 / 交叉引用与徽标；R25 起多 5 条：签名身份表 / 明细点名到 id / 单边缺不伪造 / 面板与报告同一措辞 / 历史截断；R27 起多 14 条：对账是纯函数 / 白删三来源 / 组内声明不算失守 / presence 缺失时保守 / planPath 只限 reports 下 / 对账结论不进 state / 措辞单源 / 探针 V1–V15 与注册）
-node dev/render-check.cjs  # 界面（287 项，无需 DSH）
+node dev/render-check.cjs  # 界面（288 项，无需 DSH）
 node dev/preview.mjs       # 版式：生成静态预览（真实组件树 + 真实 CSS），供浏览器截图看
 ```
 

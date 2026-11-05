@@ -2587,6 +2587,20 @@ ok(
 	})(),
 );
 ok(
+	"R40 ③：审核 ▾ 菜单底部有「上次缺口 / 安全审核」只读备注（概览条被关掉也找得到）",
+	(() => {
+		const saved = T.store.data;
+		T.store.data = { ...saved, reports: { gap: { ranAt: Date.now() - 86400000, repos: 3, high: 1, medium: 2, low: 3, ok: 3, failed: 0 }, security: { ranAt: Date.now() - 3600000 } } };
+		T.store.menu = "audit";
+		const menu = findAll(expand(render(T.Panel, {})), (node) => String((node.props && node.props.className) || "").includes("dpc-menu") && String(node.props.className).includes("is-open"))[0];
+		const note = menu ? findAll(menu, (node) => String((node.props && node.props.className) || "").includes("dpc-menu-note")) : [];
+		const text = note.length > 0 ? textsOf(note[0]).join(" ") : "";
+		T.store.menu = "";
+		T.store.data = saved;
+		return note.length === 1 && text.includes("上次缺口") && text.includes("high 1") && text.includes("安全审核");
+	})(),
+);
+ok(
 	"R40 ③：提示条是右下角浮条（.dpc-toast），不再是页面里的一行 .dpc-note",
 	(() => {
 		T.store.notice = "已生成中文简介（存进 intros.json）";
