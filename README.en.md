@@ -438,6 +438,29 @@ plugins are usually junctions — uninstall only drops the dependency and the en
 deleted here. Runtime truth depends on the host's `pluginManager.listPlugins()`; on older hosts that layer degrades to
 "cannot read" and the rest of the panel is unaffected.
 
+## Customisation and information layering (R39)
+
+The panel separates "what you need at a glance" from "what you open a card for", and ships a small set of
+display preferences (the **⚙** button, top right):
+
+| Problem | Current behaviour |
+|---|---|
+| Duplicated header info, too many buttons | The summary keeps only "plugins / Skills / MCP count + calls + updated at" (the source split lives in the toolbar filter); the buttons collapse into **Refresh ▾ / Generate ▾ / Review ▾ / More ▾** plus Backup / Self-check / ⚙ |
+| Change / drift / staging notices eat three rows | Folded into one "Overview: …" line by default; expand for details, × hides it entirely (⚙ restores it); a stale staging copy still gets a one-click sync while folded |
+| Card body is a truncated wall of text | The card shows **one brief sentence** (sentence-boundary aware); the full introduction is in the detail dialog |
+| Card action rows are uneven, some cards miss actions | **Action slots are fixed** (plugin 4 / Skill 3 / MCP 3); unavailable ones stay visible but disabled with a reason. Actions live in the **detail dialog header** by default (⚙ switches them back to the card footer) |
+| Some cards have no Chinese intro | The card falls back to the original text; when there is none at all it says so and points at "Generate ▾ → Chinese intro". Opening the detail dialog **auto-generates one** (at most once per minute per entry) |
+| Source rationale / tags each took a whole block | Two buttons in the detail header: **Source rationale** / **Tags**, expanding in place (nothing is deleted; collapsed content stays keyboard-readable) |
+| The detail intro was empty | The full introduction lives here: Chinese first, switchable when both languages exist; without Chinese it shows the original plus a "Generate Chinese intro" button |
+| Technical blocks are hard to read | Each block title gets a plain-language line ("Dependencies" = will deleting this break another plugin); can be turned off in ⚙ |
+| Tool names are opaque | Every tool name gets a one-line Chinese description (also as a `title` tooltip); the static table covers host and common plugin tools, and "Generate ▾ → Tool hints" fills in plugin-specific ones |
+| 20 sessions per page is too long | **5 per page** by default (5 / 10 / 20 / 50 / 100) |
+
+**Preferences (⚙)**: where actions live / card intro length / overview state (folded, open, hidden) /
+plain language / intro language / auto-generate missing intros / sessions per page / density / list page size /
+reset to defaults. These change **display only** — no plugin or configuration is touched — and are stored in
+the browser's localStorage (they survive reloads, not browser changes).
+
 ## MCP category (R30)
 
 The third kind chip on the panel toolbar is `全部 / 插件 / Skill / MCP`. MCP servers are **not installed packages**, so they get their own rules:
@@ -639,7 +662,7 @@ It **does not hide or modify the official plugin entry**: the official "Plugins"
 
 ## Self-check
 
-**Before shipping or handing off, run just this one** (three checks + **16 independent probes (479 invariants)** + copy sync + version consistency + git, ~60–90 s):
+**Before shipping or handing off, run just this one** (three checks + **17 independent probes (498 invariants)** + copy sync + version consistency + git, ~60–90 s):
 
 ```bash
 node dev/ship.mjs          # writes its verdict to .cache/ship-<stamp>.md; the panel's "Self-check" button runs the same path
@@ -652,7 +675,7 @@ Five checks:
 | `audit` | Self-consistency (frozen defaults / tool contracts / style and behaviour contracts) | counts as failure |
 | `render` | UI rendering (really renders the component tree, then asserts) | counts as failure |
 | `hosttest` | Host behaviour (real `apply()` and routes against a fake ctx) | counts as failure |
-| `probes` | **16 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules** / **open-source release readiness**, 479 invariants, ~6 s) | counts as failure |
+| `probes` | **17 standalone probes** (load paths / removal plan / removal simulation / **removal reconciliation** / bulk tagging / change tracking / copy verdicts / **composition** / **handoff** / **CSV export** / **MCP rules** / **single-package removal** / **retention & staleness** / **runtime truth** / **card-action rules** / **open-source release readiness** / **Chinese tool hints**, 498 invariants, ~6 s) | counts as failure |
 | `staging` | **Copy sync**: how many same-named `SKILL.md` files differ between `<ws>/.dsh/skills` and staging | **report only, never blocks** |
 
 Why `staging` only reports: it describes **this machine's state**, not a code defect — mid-edit, a lagging stage is normal

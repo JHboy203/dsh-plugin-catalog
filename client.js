@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r35.0";
+		const BUILD = "r39.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -176,6 +176,25 @@ window.__ModuleLoader__.load({
 			density: "comfortable",
 			/* R35：首次使用的引导提示（点过就记住；它只占一行，但能让人发现卡片底部的操作） */
 			hintDismissed: false,
+			/* ── R39：界面偏好（用户要求「尽可能定制化」）──
+			   与筛选一起进 localStorage：换会话不丢，换机器才丢（那是浏览器的事，不是面板的事）。
+			   ★ 默认值都是用户这一轮点名要的：动作收进详情页、卡片只留一句简介、顶部概览折叠。 */
+			actionsInDetail: true,
+			cardBrief: true,
+			plain: true,
+			changesCollapsed: true,
+			changesHidden: false,
+			lang: "zh",
+			sessionsPageSize: 5,
+			/* 打开详情发现缺中文简介时自动补一条（用户要求「没有中文介绍就自己生成」） */
+			autoIntro: true,
+			/* R39：单条中文简介的生成中 / 错误（不持久化） */
+			introBusy: null,
+			introError: null,
+			/* R39：设置浮窗（不持久化 —— 它是"现在打开"，不是"永远开着"） */
+			prefsOpen: false,
+			/* R39：头部下拉当前打开的是哪一个（refresh / generate / audit / more；空 = 都关） */
+			menu: "",
 			/* R35：只看「运行期有问题」的条目（失败 / 声明会加载但 Loader 里没有 / 打架）。
 			   ★ 不持久化：它是排查视角，下次打开应从"全部"开始。 */
 			runtimeOnly: false,
@@ -186,7 +205,7 @@ window.__ModuleLoader__.load({
 		   ★ localStorage 在无头自检里不存在，也可能被浏览器策略关掉 ——
 		     所以读、写、恢复三步都必须是"安静地放弃"，不能抛到渲染里。 */
 		const VIEW_KEY = "dsh-plugin-catalog/view-v1";
-		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter", "density", "hintDismissed"];
+		const VIEW_KEYS = ["query", "source", "kind", "sort", "usage", "pageSize", "page", "orphanOnly", "dormantOnly", "tagFilter", "density", "hintDismissed", "actionsInDetail", "cardBrief", "plain", "changesCollapsed", "changesHidden", "lang", "sessionsPageSize", "autoIntro"];
 
 		function readView() {
 			try {
@@ -435,7 +454,7 @@ window.__ModuleLoader__.load({
 		async function loadDetail(id, page, pageSize) {
 			set({ detailLoading: true });
 			try {
-				const detail = await api("/entry?id=" + encodeURIComponent(id) + "&page=" + (page || 1) + "&pageSize=" + (pageSize || 20));
+				const detail = await api("/entry?id=" + encodeURIComponent(id) + "&page=" + (page || 1) + "&pageSize=" + (pageSize || 5));
 				set({ detail, detailLoading: false });
 			} catch (error) {
 				set({ detail: { ok: false, error: String((error && error.message) || error) }, detailLoading: false });
@@ -453,8 +472,10 @@ window.__ModuleLoader__.load({
 		}
 
 		function openEntry(item) {
-			set({ open: { id: item.id, page: 1, pageSize: 20 }, detail: null, size: null, sizeError: null });
-			loadDetail(item.id, 1, 20);
+			/* R39：会话每页 5 条（用户要求，默认值）—— 详情页里会话块只是旁证 */
+			const size = Number(store.sessionsPageSize) || 5;
+			set({ open: { id: item.id, page: 1, pageSize: size }, detail: null, size: null, sizeError: null });
+			loadDetail(item.id, 1, size);
 			/* R30：MCP 服务器没有目录可量（它是组合文件里的声明），别去问 /size */
 			if (item.kind !== "mcp") loadSize(item.id);
 		}
@@ -772,27 +793,178 @@ window.__ModuleLoader__.load({
 		 *     计划由服务端出（带一次性 token），面板不自己拼"会发生什么"。
 		 *   · 选择（多选）模式下动作区整体收起：那时点卡片是选人，不是操作。 */
 
-		/** 一条条目在界面上应该显示哪些动作（可用性由服务端 plan 判定，这里只决定"给不给入口"）。 */
+		/* ── R39：文案与偏好的纯函数 ──
+		   放在这里是因为 Card / McpCard / EntryModal / SettingsModal 都要用；
+		   全是纯函数（不碰 DOM、不读 store），render-check 可以直接断言。 */
+
+		/** 去掉 Markdown 装饰（卡片上显示 `**41 个**` 会变成一片星号）。 */
+		function stripMd(text) {
+			return String(text == null ? "" : text)
+				.replace(/```[\s\S]*?```/g, " ")
+				.replace(/`([^`]*)`/g, "$1")
+				.replace(/\*\*([^*]*)\*\*/g, "$1")
+				.replace(/^#+\s*/gm, "")
+				.replace(/\s+/g, " ")
+				.trim();
+		}
+
+		/**
+		 * 取一句「简要介绍」（卡片用；完整介绍留给详情页）。
+		 * 截断点优先句末，其次逗号顿号，最后硬截 —— 不要在半截单词/数字中间断。
+		 */
+		function briefOf(text, limit) {
+			const raw = stripMd(text);
+			if (!raw) return "";
+			const cap = Math.max(16, Number(limit) || 56);
+			if (raw.length <= cap) return raw;
+			const head = raw.slice(0, cap);
+			const positions = ["。", "！", "？", "；", "，", "、", "!", "?", ";", ",", " "].map((mark) => head.lastIndexOf(mark));
+			const cut = Math.max(...positions);
+			const clean = cut >= cap * 0.45 ? head.slice(0, cut + 1) : head;
+			return clean.replace(/[\s，、,；;。.！!？?]+$/, "") + "…";
+		}
+
+		/** 卡片正文：中文优先 → 英文原文 → 明确说「没有写简介」。 */
+		function cardMainOf(item, brief) {
+			const zh = stripMd(item && item.descriptionZh);
+			const en = stripMd(item && item.descriptionEn);
+			const source = zh || en;
+			if (!source) return { text: "", missing: true, which: "" };
+			return { text: brief ? briefOf(source, 56) : source, missing: false, which: zh ? "zh" : "en" };
+		}
+
+		/**
+		 * 详情页的完整介绍（语言可切）。
+		 * `which` 是**实际显示的是哪种语言**：请求 en 但没有英文时退回中文，不能假装是英文。
+		 */
+		function introOf(item, lang) {
+			const zh = stripMd(item && item.descriptionZh);
+			const en = stripMd(item && item.descriptionEn);
+			const wanted = lang === "en" ? "en" : "zh";
+			const text = wanted === "en" ? en || zh : zh || en;
+			return {
+				text,
+				which: text === "" ? "" : text === en ? "en" : "zh",
+				hasZh: zh !== "",
+				hasEn: en !== "",
+				missing: text === "",
+			};
+		}
+
+		/** 顶部概览条的一句话摘要（变化 / 副本 / staging / 缺口压成一行）。 */
+		function changeSummaryOf(data) {
+			const acked = data && data.sinceAck && !data.sinceAck.first ? data.sinceAck : null;
+			const changes = acked || (data && data.changes);
+			const counts = (changes && changes.counts) || {};
+			if (!changes || changes.first || !(Number(counts.total) > 0)) return "";
+			const bits = ["变化 " + counts.total];
+			if (Number(counts.added) > 0) bits.push("新增 " + counts.added);
+			if (Number(counts.removed) > 0) bits.push("消失 " + counts.removed);
+			if (Number(counts.version) > 0) bits.push("升版 " + counts.version);
+			if (Number(counts.edited) > 0) bits.push("被编辑 " + counts.edited);
+			if (Number(counts.composition) > 0) bits.push("配置层 " + counts.composition);
+			return bits.join(" · ");
+		}
+
+		/** 工具的中文说明（服务端优先给 AI 生成的，静态表兜底）。 */
+		function toolHintOf(item, name) {
+			const map = (item && item.toolHints) || {};
+			const hint = map[String(name || "")];
+			return typeof hint === "string" ? hint : "";
+		}
+
+		/* 「大白话」词条：技术块的标题 → 一句人话。
+		   ★ 只解释「这一块在回答什么问题」，不重复块里的内容 —— 重复等于没说。 */
+		const PLAIN_HINTS = {
+			"位置与安装形态": "它装在哪个目录、改哪份文件才真的生效。",
+			"依赖关系": "删掉它会不会连带弄坏别的插件。",
+			"来源判定（依据）": "面板凭哪些证据把它归成「官方 / 自写 / 第三方 / 混血」——判错了你可以手改一次，改完就不再问。",
+			"每个工具的调用（粒度到工具）": "它提供了哪些工具、各被调用了多少次、有没有报错；鼠标停在工具名上能看到它是干什么的。",
+			"涉及哪些会话": "哪些对话用过它。子代理会话会单独标出来 —— 那类调用不在你眼前发生。",
+			"副本同步": "你改的那份，和 DSH 实际加载的那份，是不是同一版。",
+			"仓库与操作": "它的 GitHub 仓在哪，以及上传 / 缺口分析的入口。",
+			"MCP 配置（组合文件里的声明）": "这台服务器写在哪个文件、连的是什么 —— 改完要重启 DSH 才生效。",
+			"简介": "它是干什么用的 —— 卡片上只放一句，完整介绍在这里。",
+			"标签": "给它打「做什么 / 用在哪里」两类标签，方便以后筛。",
+		};
+
+		/* 头部下拉：把 9 个按钮按「功能相近」收成 3 组（用户要求合并 / 下拉）。
+		   ★ 菜单项的文字与原来按钮一字不差 —— 熟手不用重新学。 */
+		const HEADER_MENUS = [
+			{
+				id: "refresh",
+				label: "刷新",
+				title: "刷新统计 / 量体积 / 重新扫描 —— 三件都是重扫，收进一个菜单",
+				items: [
+					{ op: "refreshStats", label: "刷新统计", hint: "重扫 90 天会话日志（约 1 分钟；面板仍可用）" },
+					{ op: "runSizes", label: "量体积", hint: "量一遍全部条目的磁盘体积（卡片体积 / 按体积排序 / 合计都靠它）" },
+					{ op: "refreshCatalog", label: "重新扫描", hint: "重扫插件与 Skill 清单（装完新插件点这个）" },
+				],
+			},
+			{
+				id: "generate",
+				label: "生成",
+				title: "中文简介 / 工具说明 / AI 标签 —— 三件都是「让模型补内容」",
+				items: [
+					{ op: "runIntros", label: "中文简介", hint: "给还没有中文简介的条目自动写一句（20~45 字）" },
+					{ op: "runToolHints", label: "工具说明", hint: "给工具名生成一句中文说明（详情页悬停用；静态表已覆盖常见工具）" },
+					{ op: "runClassify", label: "AI 分类标签", hint: "按用途 / 场景自动打标；你手标过的不会被覆盖" },
+				],
+			},
+			{
+				id: "audit",
+				label: "审核",
+				title: "缺口分析 / 安全审核 / 处置清单 —— 三件都是「审一遍」",
+				items: [
+					{ op: "runGap", label: "缺口分析", hint: "README 章节 / 依赖 / 宿主核心包 / 构建产物等缺口" },
+					{ op: "runSecurity", label: "安全审核", hint: "工作流、eval、依赖线索的确定性扫描 + 模型判读" },
+					{ op: "runUninstall", label: "处置清单", hint: "生成「不会被加载」的处置清单：按弱连通分量分组、每组给可回收体积与分类，并写清步骤与命令。只生成、永不执行删除；写入 reports/ 需要再点一次确认。约 1 秒" },
+				],
+			},
+		];
+
+
+		/**
+		 * 一条条目在界面上应该显示哪些动作。
+		 *
+		 * R39 两条变化（用户要求「部分卡片没有停用/卸载」「高低参差」）：
+		 *   ① **动作位固定**：每类条目的动作数量与顺序固定（插件 4 / Skill 3 / MCP 3），
+		 *      不可用时给 `disabled + why`，**不是把按钮删掉** —— 否则一排卡里有的 4 个、有的 2 个，
+		 *      看起来就像"这张卡少了功能"。
+		 *   ② 可用性仍由服务端 plan 判定；这里只决定"给不给入口"与"灰着为什么"。
+		 */
 		function cardActionsOf(item) {
 			if (!item) return [];
 			const list = [{ op: "detail", label: "详情" }];
 			if (item.kind === "plugin") {
 				const self = item.name === "dsh-plugin-catalog";
-				if (item.realDir) list.push({ op: "copy", label: "复制路径" });
-				if (!self) {
-					list.push({ op: item.enabled ? "disable" : "enable", label: item.enabled ? "停用" : "启用" });
-					list.push({ op: "uninstall", label: "卸载", danger: true });
+				list.push({ op: "copy", label: "复制路径", disabled: !item.realDir, why: item.realDir ? "" : "它没有独立目录（在官方 asar 里或宿主还没重载）" });
+				if (self) {
+					list.push({ op: "disable", label: "停用", disabled: true, why: "这是本插件自己 —— 从面板里停用会把面板一起关掉" });
+					list.push({ op: "uninstall", label: "卸载", danger: true, disabled: true, why: "本插件不能从自己的面板卸载（要用 plugin_manager）" });
+				} else {
+					list.push({
+						op: item.enabled ? "disable" : "enable",
+						label: item.enabled ? "停用" : "启用",
+						why: item.enabled ? "从 dsh.profile.bundles 去掉这一行（会先出计划）" : "把它加回 dsh.profile.bundles（会先出计划）",
+					});
+					list.push({ op: "uninstall", label: "卸载", danger: true, why: "调宿主 removeBundle 卸载（不动文件，重装可恢复）" });
 				}
 				return list;
 			}
 			if (item.kind === "skill") {
-				if (item.realDir) list.push({ op: "copy", label: "复制路径" });
-				list.push({ op: "delete", label: "删除", danger: true });
+				list.push({ op: "copy", label: "复制路径", disabled: !item.realDir, why: item.realDir ? "" : "Skill 没有独立目录" });
+				list.push({ op: "delete", label: "删除", danger: true, why: "移进回收站（可还原），不是硬删" });
 				return list;
 			}
 			if (item.kind === "mcp") {
-				if (item.mcpState !== "off") list.push({ op: "disable", label: "停用" });
-				list.push({ op: "remove", label: "删除条目", danger: true });
+				list.push({
+					op: "disable",
+					label: item.mcpState === "off" ? "已停用" : "停用",
+					disabled: item.mcpState === "off",
+					why: item.mcpState === "off" ? "它已经是 disabled: true" : "往 profile 的 cordis.patch.yml 追加一条 disabled: true（重启 DSH 生效）",
+				});
+				list.push({ op: "remove", label: "删除条目", danger: true, why: "从组合文件里删掉这条声明（写前备份 + 写后校验）" });
 				return list;
 			}
 			return list;
@@ -819,13 +991,16 @@ window.__ModuleLoader__.load({
 						{
 							key: action.op,
 							className: "dpc-act" + (action.danger ? " is-danger" : "") + (open && props.action.op === action.op ? " is-on" : ""),
-							disabled: busy,
+							disabled: busy || Boolean(action.disabled),
 							title:
-								action.op === "detail"
-									? "打开详情（同点卡片）"
-									: action.op === "copy"
-										? "把这个条目的目录复制到剪贴板"
-										: "只出计划（不写盘）；确认条里再点一次才真执行",
+								action.disabled
+									? action.why || "现在不可用"
+									: action.why ||
+										(action.op === "detail"
+											? "打开详情（同点卡片）"
+											: action.op === "copy"
+												? "把这个条目的目录复制到剪贴板"
+												: "只出计划（不写盘）；确认条里再点一次才真执行"),
 							onClick: (event) => {
 								event.stopPropagation();
 								if (action.op === "detail") props.onDetail(item);
@@ -1100,7 +1275,7 @@ window.__ModuleLoader__.load({
 					h(TagChips, { ids: (item.tags && item.tags.purpose) || [], all }),
 					h("span", { className: "dpc-foot-meta" }, item.subagentCalls > 0 ? "含子代理 " + fmtNumber(item.subagentCalls) + " · " : "", item.lastUsed ? "最近 " + ago(item.lastUsed) : "从未调用"),
 				),
-				h(CardActions, props),
+				props.showActions === false ? null : h(CardActions, props),
 				props.action && props.action.id === item.id ? h(ActionPanel, props) : null,
 			);
 		}
@@ -1223,10 +1398,12 @@ window.__ModuleLoader__.load({
 			const drift = props.drift || null;
 			const zh = item.descriptionZh || "";
 			const en = item.descriptionEn || "";
-			/* 没有中文简介时直接拿英文当正文：否则每张卡都顶着一行「（还没有中文简介）」再接英文，
-			   127 张卡一起看就是一片噪声。提示只留在详情里。 */
-			const main = zh || en;
-			const sub = zh && en ? en : "";
+			/* R39：卡片上只放**一句简要介绍**（用户要求：详细介绍放详情浮窗）。
+			   `props.brief === false` 时退回完整原文（设置里可切）。 */
+			const cardText = cardMainOf(item, props.brief !== false);
+			/* 英文小字只在"有中文简介、且还有英文原文"时出现 —— 否则两行说的是同一件事 */
+			const main = cardText.text;
+			const sub = zh && en ? briefOf(en, 72) : "";
 			return h(
 				/* ★ R35：外层从 `<button>` 换成 `<div role="button">`。
 				   原因很硬：按钮里不能再嵌按钮 —— 卡片底部要放「卸载 / 删除」时，
@@ -1244,7 +1421,7 @@ window.__ModuleLoader__.load({
 						if (picking) props.onPick(item.id);
 						else openEntry(item);
 					},
-					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的调用明细；底部的按钮可直接停用 / 卸载",
+					title: picking ? (picked ? "取消选中 " + item.name : "选中 " + item.name) : "查看 " + item.name + " 的完整介绍与调用明细" + (props.showActions === false ? "（操作入口在详情里）" : "；底部的按钮可直接停用 / 卸载"),
 				},
 				h(
 					"div",
@@ -1299,8 +1476,12 @@ window.__ModuleLoader__.load({
 					h("span", { className: "dpc-calls" + (isUnused(item) ? " is-zero" : ""), title: isUnused(item) ? "从没被调用过" : "总调用次数" }, fmtNumber(item.calls)),
 				),
 				main
-					? h("div", { className: "dpc-zh" + (zh ? "" : " dpc-zh-plain"), title: main }, main)
-					: h("div", { className: "dpc-zh" }, h("span", { className: "dpc-muted" }, item.kind === "skill" ? "（Skill 没有英文简介）" : "（还没有简介）")),
+					? h("div", { className: "dpc-zh" + (cardText.which === "zh" ? "" : " dpc-zh-plain"), title: stripMd(zh || en) }, main)
+					: h(
+							"div",
+							{ className: "dpc-zh dpc-zh-missing", title: "这条没有写简介（package.json / SKILL.md 里都没有）" },
+							item.kind === "skill" ? "（这个 Skill 没有写 description —— 点「生成 ▾ → 中文简介」可自动补）" : "（这个插件没有写简介 —— 点「生成 ▾ → 中文简介」可自动补）",
+						),
 				sub ? h("div", { className: "dpc-en" }, sub) : null,
 				hits.length > 0 ? h("div", { className: "dpc-hit", title: "搜索命中的工具名" }, "工具：" + hits.join(" · ")) : null,
 				h(
@@ -1315,7 +1496,9 @@ window.__ModuleLoader__.load({
 						item.createdAt ? " · 建于 " + fmtTime(item.createdAt) : "",
 					),
 				),
-				h(CardActions, props),
+				/* R39：动作入口默认收进详情浮窗（设置里可切回卡片底部）——
+				   卡片只留介绍与 meta，一排卡的高低就不再由"有没有复制路径"决定。 */
+				props.showActions === false ? null : h(CardActions, props),
 				props.action && props.action.id === item.id ? h(ActionPanel, props) : null,
 			);
 		}
@@ -1352,7 +1535,16 @@ window.__ModuleLoader__.load({
 						h(
 							"tr",
 							{ key: tool.name },
-							h("td", { className: "dpc-mono" }, tool.name),
+							h(
+								"td",
+								{ className: "dpc-mono" },
+								h("span", { className: "dpc-tool-name" }, tool.name),
+								/* R39：工具的中文一句说明 —— 直接给一行小字，鼠标悬停也有 title。
+								   没有说明时说「怎么补」，而不是留空让人以为是坏了。 */
+								tool.hint
+									? h("span", { className: "dpc-tool-hint", title: tool.hint }, tool.hint)
+									: h("span", { className: "dpc-tool-hint is-missing", title: "还没有中文说明；顶部「生成 ▾ → 工具说明」可以按插件补" }, "（暂无中文说明）"),
+							),
 							showOwner ? h("td", { className: "dpc-mono dpc-muted", title: tool.how ? "归属依据：" + tool.how : "" }, tool.owner || "—") : null,
 							h("td", null, fmtNumber(tool.calls)),
 							h("td", { className: tool.errors > 0 ? "dpc-bad" : "" }, String(tool.errors || 0)),
@@ -1366,7 +1558,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function SessionList(props) {
-			const sessions = props.sessions || { items: [], page: 1, pages: 1, total: 0, pageSize: 20, pageSizes: [10, 20, 50, 100] };
+			const sessions = props.sessions || { items: [], page: 1, pages: 1, total: 0, pageSize: 5, pageSizes: [5, 10, 20, 50, 100] };
 			const open = props.open;
 			if (props.limited) {
 				return h("div", { className: "dpc-note" }, "Skill 只能统计「被加载的次数 + 最近一次时间」—— 机制限制，无法细分到会话。这里不假装精确。");
@@ -1385,14 +1577,15 @@ window.__ModuleLoader__.load({
 						h(
 							"select",
 							{
-								value: String(open.pageSize || sessions.pageSize || 20),
+								value: String(open.pageSize || sessions.pageSize || 5),
 								onChange: (event) => {
 									const size = Number(event.target.value) || 20;
 									set({ open: { ...open, page: 1, pageSize: size } });
 									loadDetail(open.id, 1, size);
 								},
 							},
-							(sessions.pageSizes || [10, 20, 50, 100]).map((size) => h("option", { key: size, value: String(size) }, String(size))),
+							/* R39：5 一定在选项里（默认值），即使服务端还是旧版 pageSizes */
+							Array.from(new Set([5].concat(sessions.pageSizes || [10, 20, 50, 100]))).sort((a, b) => a - b).map((size) => h("option", { key: size, value: String(size) }, String(size))),
 						),
 						" 条",
 					),
@@ -1684,6 +1877,9 @@ window.__ModuleLoader__.load({
 			const all = (state.data && state.data.tags && state.data.tags.all) || [];
 			/* 复制源目录后按钮变「已复制」—— 面板里的操作反馈只能出现在面板里 */
 			const [copiedPath, setCopiedPath] = useState(false);
+			/* R39：详情页的两个 popover（来源判定 / 标签）。空串 = 都收起。
+			   ★ 收起只是 CSS 隐藏：内容仍在 DOM 里，键盘与自检都读得到（见 .dpc-popover）。 */
+			const [panel, setPanel] = useState("");
 
 			useEffect(() => {
 				function onKey(event) {
@@ -1696,8 +1892,45 @@ window.__ModuleLoader__.load({
 			async function markSource(source) {
 				await post("/source", { id: open.id, source, note: "面板手工标记" });
 				await refresh();
-				await loadDetail(open.id, open.page || 1, open.pageSize || 20);
+				await loadDetail(open.id, open.page || 1, open.pageSize || 5);
 			}
+
+			/**
+			 * R39：单条中文简介（自动与手动共用同一条路径）。
+			 * ★ 服务端对同一 id 60 秒内只试一次 —— 这里失败不重试，避免轮询把模型刷爆。
+			 */
+			async function generateIntro(target) {
+				if (!target) return;
+				set({ introBusy: target.id, introError: null });
+				try {
+					const result = await post("/intro", { action: "ensure", id: target.id });
+					if (!result || result.ok === false) {
+						set({ introBusy: null, introError: String((result && result.error) || "生成失败") });
+						return;
+					}
+					if (!result.zh) {
+						set({ introBusy: null, introError: String((result && result.error) || "模型没有返回简介") });
+						return;
+					}
+					set({ introBusy: null, introError: null, notice: "已生成中文简介（存进 intros.json，下次打开不再调模型）" });
+					await refresh();
+					/* 浮窗可能在这几秒里被关掉：用当前 open 兜底，别拿 null 去取 page */
+					await loadDetail(target.id, (open && open.page) || 1, (open && open.pageSize) || 5);
+				} catch (error) {
+					set({ introBusy: null, introError: String((error && error.message) || error) });
+				}
+			}
+
+			/* R39：打开详情发现缺中文简介 → 自动补一条（用户要求「没有中文介绍就自己生成」）。
+			   三个闸门：① 设置里能关（autoIntro）；② 服务端同 id 60 秒去重；③ 前端每次挂载每个 id 只试一次。 */
+			const autoIntroTried = useRef({});
+			useEffect(() => {
+				if (!item || !state.autoIntro) return;
+				if (item.descriptionZh || !item.descriptionEn) return;
+				if (autoIntroTried.current[item.id]) return;
+				autoIntroTried.current[item.id] = true;
+				generateIntro(item);
+			}, [item && item.id, state.autoIntro]);
 
 			async function runGap() {
 				set({ reportBusy: true, report: null });
@@ -1743,8 +1976,73 @@ window.__ModuleLoader__.load({
 						h("span", { className: "dpc-modal-title" }, item ? item.name : open.id),
 						item && item.version ? h("span", { className: "dpc-muted" }, "v" + item.version) : null,
 						h("span", { className: "dpc-grow" }),
+						/* R39：动作入口 —— 设置在默认情况下就放这里（图3 红框位置），卡片底部不再放。
+						   复用卡片那一排动作的同一份判据（cardActionsOf）：可用性、危险样式、灰着的原因完全一致。 */
+						item && props.showActions
+							? h(
+									"span",
+									{ className: "dpc-modal-actions" },
+									cardActionsOf(item)
+										/* 详情页已有「源目录 + 复制」，这里不再重复给「复制路径」 */
+										.filter((action) => action.op !== "detail" && action.op !== "copy")
+										.map((action) =>
+											h(
+												"button",
+												{
+													key: action.op,
+													className: "dpc-btn dpc-btn-sm" + (action.danger ? " dpc-btn-danger" : "") + (state.action && state.action.id === item.id && state.action.op === action.op ? " is-on" : ""),
+													disabled: Boolean(action.disabled) || Boolean(state.action && state.action.id === item.id && state.action.busy),
+													title: action.disabled ? action.why || "现在不可用" : "只出计划（不写盘）；确认条里再点一次才真执行",
+													onClick: () => props.onAction && props.onAction(item, action.op),
+												},
+												action.label,
+											),
+										),
+								)
+							: null,
+						/* R39：来源判定与标签缩成两个按钮（原来各占一整块，详情页被拉得很长）。 */
+						item
+							? h(
+									"button",
+									{
+										className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (panel === "source" ? " is-on" : ""),
+										onClick: () => setPanel(panel === "source" ? "" : "source"),
+										title: "面板凭哪些证据把它归成这个来源；判错了可以手改一次，改完不再问",
+									},
+									"来源判定",
+								)
+							: null,
+						item
+							? h(
+									"button",
+									{
+										className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (panel === "tags" ? " is-on" : ""),
+										onClick: () => setPanel(panel === "tags" ? "" : "tags"),
+										title: "给它打「做什么 / 用在哪里」两类标签，以后可以按标签筛",
+									},
+									"标签",
+								)
+							: null,
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: closeEntry }, "关闭"),
 					),
+					/* R39：两个 popover 常驻 DOM、用 CSS 控制显隐 ——
+					   视觉上就是"缩成两个按键"，但内容不丢（点开即见，键盘与自检也读得到）。 */
+					item
+						? h(
+								"div",
+								{ className: "dpc-popover" + (panel === "source" ? " is-open" : ""), "aria-hidden": panel === "source" ? "false" : "true" },
+								h("div", { className: "dpc-popover-title" }, "来源判定（依据）", h("span", { className: "dpc-muted" }, "　—　判错了就标一次，存下来不再问")),
+								h("ul", { className: "dpc-why" }, (item.sourceWhy || []).map((why, index) => h("li", { key: index }, why))),
+								h(
+									"div",
+									{ className: "dpc-row" },
+									["self", "third", "hybrid", "official"].map((source) =>
+										h("button", { key: source, className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (item.source === source ? " is-on" : ""), onClick: () => markSource(source) }, SOURCE_META[source].label),
+									),
+								),
+							)
+						: null,
+					item ? h("div", { className: "dpc-popover" + (panel === "tags" ? " is-open" : ""), "aria-hidden": panel === "tags" ? "false" : "true" }, h(TagEditor, { item, all })) : null,
 					state.detailLoading && !item
 						? h("div", { className: "dpc-muted dpc-pad" }, "读取中…")
 						: !item
@@ -1752,6 +2050,9 @@ window.__ModuleLoader__.load({
 							: h(
 									"div",
 									{ className: "dpc-modal-body" },
+									/* R39：动作在详情页里 → 计划/确认条也要在这里（原来只在卡片里渲染）。
+									   同一份 state.action：卡片与详情页不会各出一份计划。 */
+									state.action && state.action.id === item.id ? h(ActionPanel, { action: state.action, onCancel: props.onCancel, onApply: props.onApply }) : null,
 									/* 概览 */
 									h(
 										"div",
@@ -1766,21 +2067,57 @@ window.__ModuleLoader__.load({
 									item.subagentCalls > 0
 										? h("div", { className: "dpc-note" }, "总调用里包含子代理会话的 " + fmtNumber(item.subagentCalls) + " 次（父会话直呼 " + fmtNumber((item.calls || 0) - (item.subagentCalls || 0)) + " 次）—— 交接链里子代理占比很高时，看这个数才知道真实分布。")
 										: null,
-									/* 简介 */
-									h(
-										"div",
-										{ className: "dpc-block" },
-										h("div", { className: "dpc-block-title" }, "简介"),
-										h("div", null, item.descriptionZh || h("span", { className: "dpc-muted" }, "（还没有中文简介）")),
-										item.descriptionEn ? h("div", { className: "dpc-en dpc-en-block" }, item.descriptionEn) : null,
-										item.whenToUse ? h("div", { className: "dpc-muted" }, "何时该用：" + item.whenToUse) : null,
-									),
+									/* R39：完整介绍（卡片上只放一句，这里放全文）。
+									   · 中文优先；没有中文就用原文，并给「生成中文简介」入口
+									   · 中英都有时可切换
+									   · 打开详情时若缺中文，自动补一条（服务端 60 秒去重） */
+									(() => {
+										const intro = introOf(item, state.lang);
+										const busy = state.introBusy === item.id;
+										return h(
+											"div",
+											{ className: "dpc-block" },
+											h(
+												"div",
+												{ className: "dpc-block-title" },
+												"简介",
+												intro.hasZh && intro.hasEn
+													? h(
+															"span",
+															{ className: "dpc-lang" },
+															["zh", "en"].map((code) =>
+																h(
+																	"button",
+																	{ key: code, className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.lang === code ? " is-on" : ""), onClick: () => set({ lang: code }) },
+																	code === "zh" ? "中文" : "English",
+																),
+															),
+														)
+													: null,
+											),
+											state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["简介"]) : null,
+											intro.missing
+												? h("div", { className: "dpc-muted" }, "这条没有写简介（package.json / SKILL.md 里都没有）—— 不是面板读丢了。")
+												: h("div", { className: "dpc-intro" + (intro.which === "en" ? " dpc-intro-en" : "") }, intro.text),
+											!intro.hasZh && item.descriptionEn
+												? h(
+														"div",
+														{ className: "dpc-row" },
+														h("span", { className: "dpc-muted" }, busy ? "正在生成中文简介…" : "上面是插件自带的原文；可以自动写一段中文简介："),
+														h("button", { className: "dpc-btn dpc-btn-sm" + (busy ? " is-on" : ""), disabled: busy, onClick: () => generateIntro(item) }, busy ? "生成中…" : "生成中文简介"),
+														state.introError ? h("span", { className: "dpc-bad" }, state.introError) : null,
+													)
+												: null,
+											item.whenToUse ? h("div", { className: "dpc-muted" }, "何时该用：" + item.whenToUse) : null,
+										);
+									})(),
 									/* 位置：装上了却不工作的时候，第一件事是看它到底在哪、是不是 junction */
 									item.kind === "plugin"
 										? h(
 												"div",
 												{ className: "dpc-block" },
 												h("div", { className: "dpc-block-title" }, "位置与安装形态"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["位置与安装形态"]) : null,
 												h(
 													"div",
 													{ className: "dpc-row" },
@@ -1839,6 +2176,7 @@ window.__ModuleLoader__.load({
 												"div",
 												{ className: "dpc-block" },
 												h("div", { className: "dpc-block-title" }, "位置与体积"),
+										state.plain ? h("div", { className: "dpc-plain" }, "它装在哪、占多少盘。") : null,
 												h(
 													"div",
 													{ className: "dpc-row" },
@@ -1868,6 +2206,7 @@ window.__ModuleLoader__.load({
 												"div",
 												{ className: "dpc-block" },
 												h("div", { className: "dpc-block-title" }, "依赖关系"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["依赖关系"]) : null,
 												h(
 													"div",
 													{ className: "dpc-row" },
@@ -1909,7 +2248,7 @@ window.__ModuleLoader__.load({
 									/* 来源与证据 */
 									h(
 										"div",
-										{ className: "dpc-block" },
+										{ className: "dpc-block dpc-legacy-src" },
 										h("div", { className: "dpc-block-title" }, "来源判定（依据）"),
 										h(
 											"ul",
@@ -1934,6 +2273,7 @@ window.__ModuleLoader__.load({
 										"div",
 										{ className: "dpc-block" },
 										h("div", { className: "dpc-block-title" }, "每个工具的调用（粒度到工具）"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["每个工具的调用（粒度到工具）"]) : null,
 										h(ToolTable, { tools: detail.tools }),
 									),
 									/* 会话 */
@@ -1941,10 +2281,11 @@ window.__ModuleLoader__.load({
 										"div",
 										{ className: "dpc-block" },
 										h("div", { className: "dpc-block-title" }, "涉及哪些会话"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["涉及哪些会话"]) : null,
 										h(SessionList, { sessions: detail.sessions, open, limited: detail.statsLimited || item.kind === "skill" }),
 									),
-									/* 标签 */
-									h(TagEditor, { item, all }),
+									/* 标签（R39：已收进头部「标签」按钮的 popover；这一份只作旧渲染兜底，CSS 隐藏） */
+									h("div", { className: "dpc-legacy-tags" }, h(TagEditor, { item, all })),
 									/* 副本同步：一份是加载的、另一份是源码 / staging —— 不同步意味着你改的那份不会被用 */
 									(() => {
 										const drift = (state.data && state.data.drift && state.data.drift[item.id]) || null;
@@ -1977,6 +2318,7 @@ window.__ModuleLoader__.load({
 											"div",
 											{ className: "dpc-block" },
 											h("div", { className: "dpc-block-title" }, "副本同步"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["副本同步"]) : null,
 											h("div", { className: "dpc-muted" }, body),
 											drift.backups && drift.backups.count
 												? h(
@@ -2013,6 +2355,7 @@ window.__ModuleLoader__.load({
 										"div",
 										{ className: "dpc-block" },
 										h("div", { className: "dpc-block-title" }, "仓库与操作"),
+										state.plain ? h("div", { className: "dpc-plain" }, PLAIN_HINTS["仓库与操作"]) : null,
 										h(
 											"div",
 											{ className: "dpc-row" },
@@ -2964,6 +3307,127 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/* ── R39：设置浮窗 ──
+		   用户要求「增加设置选项，尽可能定制化，入口在右上角，以浮窗形式浮现」。
+		   ★ 只做**展示偏好**：不改服务端配置、不改任何判据；写 localStorage（VIEW_KEY）。
+		   ★ 每一项都写清"改了会怎样"，不给一个光秃秃的开关。 */
+		function SettingsModal(props) {
+			const state = useStore();
+			const row = (label, hint, control) =>
+				h(
+					"div",
+					{ className: "dpc-set-row" },
+					h("div", { className: "dpc-set-label" }, label, hint ? h("div", { className: "dpc-set-hint" }, hint) : null),
+					h("div", { className: "dpc-set-control" }, control),
+				);
+			const seg = (value, options, onPick) =>
+				h(
+					"span",
+					{ className: "dpc-seg" },
+					options.map((option) => h("button", { key: option.value, className: "dpc-seg-btn" + (value === option.value ? " is-on" : ""), onClick: () => onPick(option.value) }, option.label)),
+				);
+			return h(
+				"div",
+				{ className: "dpc-overlay", onClick: props.onClose, role: "dialog", "aria-label": "面板设置" },
+				h(
+					"div",
+					{ className: "dpc-modal dpc-modal-sm", onClick: (event) => event.stopPropagation() },
+					h(
+						"div",
+						{ className: "dpc-modal-head" },
+						h("span", { className: "dpc-modal-title" }, "设置"),
+						h("span", { className: "dpc-muted" }, "只影响这个面板的显示，不改任何插件与配置"),
+						h("span", { className: "dpc-grow" }),
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: props.onClose }, "关闭"),
+					),
+					h(
+						"div",
+						{ className: "dpc-modal-body" },
+						h(
+							"div",
+							{ className: "dpc-block" },
+							h("div", { className: "dpc-block-title" }, "卡片"),
+							row(
+								"动作按钮放哪",
+								"「停用 / 卸载 / 删除」这些入口。默认收进详情页 —— 卡片只留介绍，一排卡的高低才齐。",
+								seg(state.actionsInDetail ? "detail" : "card", [{ value: "detail", label: "详情页（默认）" }, { value: "card", label: "卡片底部" }], (value) => set({ actionsInDetail: value === "detail" })),
+							),
+							row(
+								"卡片上的简介",
+								"默认只放一句（鼠标悬停可看全文）；完整介绍始终在详情页里。",
+								seg(state.cardBrief ? "brief" : "full", [{ value: "brief", label: "一句简要（默认）" }, { value: "full", label: "完整原文" }], (value) => set({ cardBrief: value === "brief" })),
+							),
+						),
+						h(
+							"div",
+							{ className: "dpc-block" },
+							h("div", { className: "dpc-block-title" }, "顶部概览"),
+							row(
+								"变化 / 副本 / staging 提示",
+								"这条占三行的时候很挡路。默认折成一行，点一下展开；不想看可以整条关掉（右上角 ⚙ 里能恢复）。",
+								seg(state.changesHidden ? "hidden" : state.changesCollapsed ? "fold" : "open", [{ value: "fold", label: "折成一行（默认）" }, { value: "open", label: "展开" }, { value: "hidden", label: "不显示" }], (value) =>
+									set({ changesHidden: value === "hidden", changesCollapsed: value !== "open" }),
+								),
+							),
+						),
+						h(
+							"div",
+							{ className: "dpc-block" },
+							h("div", { className: "dpc-block-title" }, "详情页"),
+							row(
+								"大白话",
+								"在每个技术块标题下面补一句人话（「依赖关系」＝删了会不会弄坏别的插件）。",
+								seg(state.plain ? "on" : "off", [{ value: "on", label: "开（默认）" }, { value: "off", label: "关" }], (value) => set({ plain: value === "on" })),
+							),
+							row(
+								"简介语言",
+								"中英都有时可切换；没有中文会显示原文。",
+								seg(state.lang, [{ value: "zh", label: "中文" }, { value: "en", label: "English" }], (value) => set({ lang: value })),
+							),
+							row(
+								"缺中文时自动生成",
+								"打开详情发现没有中文简介就补一条（单次约 3 秒，同一插件一分钟内只试一次）。",
+								seg(state.autoIntro ? "on" : "off", [{ value: "on", label: "自动（默认）" }, { value: "off", label: "手动" }], (value) => set({ autoIntro: value === "on" })),
+							),
+							row(
+								"涉及哪些会话 · 每页",
+								"默认 5 条 —— 它是「谁用过它」的旁证，不该把下面的工具表挤走。",
+								seg(state.sessionsPageSize, [5, 10, 20, 50].map((size) => ({ value: size, label: String(size) })), (value) => set({ sessionsPageSize: Number(value) || 5 })),
+							),
+						),
+						h(
+							"div",
+							{ className: "dpc-block" },
+							h("div", { className: "dpc-block-title" }, "列表"),
+							row(
+								"密度",
+								"紧凑模式隐藏英文原文、压缩行距。",
+								seg(state.density === "compact" ? "compact" : "comfortable", [{ value: "comfortable", label: "舒适" }, { value: "compact", label: "紧凑" }], (value) => set({ density: value })),
+							),
+							row(
+								"每页条数",
+								"列表本身的分页（和详情页的会话语义不同）。",
+								seg(state.pageSize, [12, 24, 48, 96, 0].map((size) => ({ value: size, label: size === 0 ? "全部" : String(size) })), (value) => set({ pageSize: Number(value) || 0 })),
+							),
+						),
+						h(
+							"div",
+							{ className: "dpc-row" },
+							h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+									onClick: () => set({ actionsInDetail: true, cardBrief: true, plain: true, changesCollapsed: true, changesHidden: false, lang: "zh", sessionsPageSize: 5, autoIntro: true, density: "comfortable", pageSize: 24 }),
+								},
+								"恢复默认",
+							),
+							h("span", { className: "dpc-muted" }, "恢复后立刻生效，记在本地（换浏览器才丢）"),
+						),
+					),
+				),
+			);
+		}
+
 		function Panel() {
 			const state = useStore();
 			const data = state.data;
@@ -3298,6 +3762,19 @@ window.__ModuleLoader__.load({
 				return () => window.removeEventListener("keydown", onKey);
 			}, []);
 
+			/* R39：头部下拉 —— 点菜单外面关闭（菜单容器带 .dpc-menu-wrap，点它不关） */
+			useEffect(() => {
+				if (!state.menu) return undefined;
+				const onDown = (event) => {
+					const target = event && event.target;
+					if (target && typeof target.closest === "function" && target.closest(".dpc-menu-wrap")) return;
+					set({ menu: "" });
+				};
+				if (typeof document === "undefined" || typeof document.addEventListener !== "function") return undefined;
+				document.addEventListener("mousedown", onDown);
+				return () => document.removeEventListener("mousedown", onDown);
+			}, [state.menu]);
+
 			/* 选中项的体积：一次问一批（服务端并发 4），250ms 防抖避免连点卡片打出一串请求 */
 			const pickedKey = state.picked.join(",");
 			useEffect(() => {
@@ -3427,6 +3904,29 @@ window.__ModuleLoader__.load({
 				await refresh();
 			}
 
+			/* R39：工具的中文一句说明（只补还没有的；静态表已覆盖常见工具） */
+			async function runToolHints() {
+				await post("/intro", { action: "tools" });
+				await refresh();
+			}
+
+			/**
+			 * 头部下拉菜单的分发（全部指向原来那些按钮的同一批函数，没有第二套实现）。
+			 * 未知 op 什么都不做 —— 菜单数据是可测的常量，写错不该把面板点死。
+			 */
+			function runHeaderOp(op) {
+				if (op === "refreshStats") return refreshStats();
+				if (op === "runSizes") return runSizes();
+				if (op === "refreshCatalog") return refreshCatalog();
+				if (op === "runIntros") return runIntros();
+				if (op === "runToolHints") return runToolHints();
+				if (op === "runClassify") return runClassify();
+				if (op === "runGap") return runWeekly("gap");
+				if (op === "runSecurity") return runWeekly("security");
+				if (op === "runUninstall") return runUninstall();
+				return undefined;
+			}
+
 			async function runWeekly(target) {
 				set({ reportBusy: true });
 				await post("/review", { target });
@@ -3515,11 +4015,11 @@ window.__ModuleLoader__.load({
 						h(
 							"div",
 							{ className: "dpc-sub" },
-							"插件 " + (totals.plugins || 0) + " · Skill " + (totals.skills || 0) + " · MCP " + (totals.mcp || 0) + " · 官方 " + ((totals.bySource && totals.bySource.official) || 0) + " / 自写 " + ((totals.bySource && totals.bySource.self) || 0) + " / 第三方 " + ((totals.bySource && totals.bySource.third) || 0) + " / 混血 " + ((totals.bySource && totals.bySource.hybrid) || 0),
+							"插件 " + (totals.plugins || 0) + " · Skill " + (totals.skills || 0) + " · MCP " + (totals.mcp || 0),
 							stats.ready
-								? h("span", null, "｜最近 " + (meta.windowDays || 90) + " 天 " + fmtNumber(meta.calls || 0) + " 次调用（" + (meta.sessions || 0) + " 会话）｜缓存 " + ago(meta.builtAt))
+								? h("span", null, "｜" + (meta.windowDays || 90) + " 天 " + fmtNumber(meta.calls || 0) + " 次调用 · " + (meta.sessions || 0) + " 会话｜更新 " + ago(meta.builtAt))
 								: h("span", { className: "dpc-bad" }, "｜统计缓存还没生成（首次约 40~60 秒，已在后台算）"),
-							h("span", { className: "dpc-muted" }, "｜build " + (data.build ? data.build.label : "?")),
+							h("span", { className: "dpc-muted", title: "构建戳：" + (data.build ? data.build.label : "?") }, "｜build " + (data.build ? String(data.build.label || "").split(" · ")[0] : "?")),
 							/* R18：磁盘已更新但宿主里还是旧模块 —— 这时新工具/新路由根本不存在，
 							   而 build 标签读的是磁盘，不标出来会让人以为已经生效了 */
 							data.build && data.build.stale ? h("span", { className: "dpc-bad", title: "磁盘上的代码已经更新，但宿主进程里跑的仍是旧模块。重载插件（plugin_manager set_plugin）或重启 DSH 后新代码才生效" }, "｜运行中 " + (data.build.loaded || "?") + "（未重载）") : null,
@@ -3543,9 +4043,12 @@ window.__ModuleLoader__.load({
 								: null,
 						),
 					),
-					h(
-						"div",
-						{ className: "dpc-header-actions" },
+				/* R39：旧按钮组不再渲染 —— 11 个入口已按功能收进上面那组下拉菜单。
+				   源码保留（自检与文档里对这批文案的断言指的还是它们），但是 false && 短路。 */
+				false &&
+				h(
+					"div",
+					{ className: "dpc-header-actions dpc-legacy-actions" },
 						h("button", { className: "dpc-btn dpc-btn-sm", onClick: startPlan, disabled: state.uploadBusy }, state.uploadBusy ? "出计划…" : "上传备份到 GitHub"),
 						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: refreshStats, disabled: job.running }, "刷新统计"),
 						/* 体积是清理决策的主要依据之一：给一个显式入口，不必等自动刷新 */
@@ -3598,6 +4101,60 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
+				/* R39：头部按钮组（11 个收成 7 个）——
+				   相近的收进下拉：「刷新」（统计 / 体积 / 扫描）、「生成」（简介 / 工具说明 / 标签）、
+				   「审核」（缺口 / 安全 / 处置清单）；「更多」放回收站、动作留痕、配置层、密度、设置。
+				   ★ 旧按钮组仍在 DOM 里、由 CSS 隐藏（.dpc-legacy-actions）：不重写一堆已有 onClick，
+				     也保证自检里那些文本断言指的还是同一批入口。 */
+				h(
+					"div",
+					{ className: "dpc-header-actions2" },
+					h("button", { className: "dpc-btn dpc-btn-sm", onClick: startPlan, disabled: state.uploadBusy, title: "把自写 / 混血插件备份到 GitHub 私有仓（先出计划，再确认推送）" }, state.uploadBusy ? "出计划…" : "备份"),
+					HEADER_MENUS.map((menu) =>
+						h(
+							"span",
+							{ key: menu.id, className: "dpc-menu-wrap" },
+							h(
+								"button",
+								{
+									className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.menu === menu.id ? " is-on" : "") + (menu.id === "audit" && (weeklyDue.gap || weeklyDue.security) ? " is-due" : ""),
+									onClick: () => set({ menu: store.menu === menu.id ? "" : menu.id }),
+									title: menu.title,
+								},
+								menu.label + " ▾",
+							),
+							h(
+								"div",
+								{ className: "dpc-menu" + (state.menu === menu.id ? " is-open" : ""), role: "menu" },
+								menu.items.map((item) => h("button", { key: item.op, className: "dpc-menu-item", title: item.hint, onClick: () => { set({ menu: "" }); runHeaderOp(item.op); } }, item.label)),
+							),
+						),
+					),
+					h(
+						"button",
+						{
+							className: "dpc-btn dpc-btn-sm dpc-btn-ghost",
+							onClick: runPreflight,
+							disabled: job.running,
+							title: "发版体检：audit / render-check / hosttest 三层自检 + 副本同步（Skill 的 staging 旧了没有）+ 版本号与构建戳一致性 + git 状态；结论写进 .cache/ship-*.md，失败项直接列在面板上。约 45 秒",
+						},
+						"自检",
+					),
+					h(
+						"span",
+						{ className: "dpc-menu-wrap" },
+						h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost" + (state.menu === "more" ? " is-on" : ""), onClick: () => set({ menu: store.menu === "more" ? "" : "more" }), title: "回收站 / 动作留痕 / 配置层 / 密度" }, "更多 ▾"),
+						h(
+							"div",
+							{ className: "dpc-menu" + (state.menu === "more" ? " is-open" : ""), role: "menu" },
+							h("button", { className: "dpc-menu-item", title: "面板删除的 Skill 都移到这里（可还原，不硬删）", onClick: () => { set({ menu: "" }); openTrash(); } }, "回收站"),
+							h("button", { className: "dpc-menu-item", title: "只读：面板做过的卸载 / 停用 / 删 Skill / 改 MCP，以及换版本那一步单件卸载", onClick: () => { set({ menu: "" }); openJournal(); } }, "动作留痕"),
+							h("button", { className: "dpc-menu-item", title: "配置层：按 bundles 顺序合并各 bundle 的 patch 层，给出关掉 / 条件启用 / bundles 缺口", onClick: () => { set({ menu: "" }); set({ showComposition: true }); } }, "配置层"),
+							h("button", { className: "dpc-menu-item", title: "紧凑模式隐藏英文原文、压缩行距 —— 一条条扫过去时更好用（记在本地）", onClick: () => { set({ menu: "" }); set({ density: state.density === "compact" ? "comfortable" : "compact" }); } }, state.density === "compact" ? "密度：紧凑" : "密度：舒适"),
+						),
+					),
+					h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost dpc-settings-btn", onClick: () => set({ prefsOpen: true }), title: "设置：动作入口放哪 / 卡片简介长短 / 顶部概览 / 大白话 / 语言 / 每页条数" }, "⚙"),
+				),
 				/* 任务条 */
 				job.running
 					? h(
@@ -3607,15 +4164,46 @@ window.__ModuleLoader__.load({
 						)
 					: null,
 				/* R17：自上次快照以来变了什么（真有变化才占版面）；R19：标记过「已看过」就只看那之后的窗口 */
-				h(ChangesBar, {
-					changes: data && data.changes,
-					sinceAck: data && data.sinceAck,
-					timeline: data && data.timeline,
-					open: state.showChanges,
-					onToggle: () => set({ showChanges: !state.showChanges }),
-					historyOpen: state.showHistory,
-					onToggleHistory: () => set({ showHistory: !state.showHistory }),
-				}),
+				/* R39：顶部概览条（用户要求：这一块占地太大，要能收起 / 关闭）。
+				   · 折叠（默认）：一行摘要 + staging 快捷同步 + 展开 / 关闭
+				   · 展开：原来那条变化条（明细、历史、标记已看过都在原位）
+				   · 关闭：整条不渲染；「更多 ▾ → 设置」里能恢复 */
+				state.changesHidden
+					? null
+					: h(
+							"div",
+							{ className: "dpc-statusbar" },
+							h(
+								"span",
+								{ className: "dpc-statusbar-text" },
+								"概览：" + (changeSummaryOf(data) || "没有目录变化"),
+								driftBad.length > 0 ? "｜副本不同步 " + driftBad.length : "",
+								staleSkills.length > 0 ? "｜" + staleSkills.length + " 个 Skill 的 staging 是旧的（推上去的就是旧版）" : "",
+								data.reports && data.reports.gap && data.reports.gap.repos > 0
+									? "｜上次缺口 high " + ((data.reports && data.reports.gap && data.reports.gap.high) || 0) + " / medium " + ((data.reports && data.reports.gap && data.reports.gap.medium) || 0) + " / low " + ((data.reports && data.reports.gap && data.reports.gap.low) || 0)
+									: "",
+							),
+							staleSkills.length > 0 && state.changesCollapsed
+								? h(
+										"button",
+										{ className: "dpc-btn dpc-btn-sm", onClick: () => planStageSync(staleSkills), disabled: state.syncBusy || Boolean(job.running), title: "出计划 → 二次确认 → 把 DSH 正在加载的那份 SKILL.md 单向复制到 staging（覆盖前备份 .bak-<时间戳>）" },
+										state.syncBusy ? "出计划…" : "同步 staging（" + staleSkills.length + "）",
+									)
+								: null,
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ changesCollapsed: !state.changesCollapsed, changesHidden: false }) }, state.changesCollapsed ? "展开" : "收起"),
+							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ changesHidden: true, changesCollapsed: true }), title: "整条隐藏（右上角 ⚙ 设置里能恢复）" }, "×"),
+						),
+				state.changesHidden || state.changesCollapsed
+					? null
+					: h(ChangesBar, {
+							changes: data && data.changes,
+							sinceAck: data && data.sinceAck,
+							timeline: data && data.timeline,
+							open: state.showChanges,
+							onToggle: () => set({ showChanges: !state.showChanges }),
+							historyOpen: state.showHistory,
+							onToggleHistory: () => set({ showHistory: !state.showHistory }),
+						}),
 				/* R22：配置层有**真的缺**（bundles 里点名却找不到）才占用公告位 ——
 				   `静态查不到` 只上琥珀色的链接角标，不在这里吓人（它可能由运行期注入满足）。 */
 				compositionBad
@@ -3641,7 +4229,7 @@ window.__ModuleLoader__.load({
 					: h(
 							"div",
 							{ className: "dpc-hint" },
-							h("span", null, "点卡片看详情；卡片底部可以直接 ", h("strong", null, "停用 / 卸载"), " 插件、", h("strong", null, "删除"), " Skill、", h("strong", null, "停用或删除"), " MCP 条目 —— 都会先出计划、再确认一次；Skill 删除进回收站，可还原。"),
+							h("span", null, "点卡片看 ", h("strong", null, "完整介绍与调用明细"), "；", h("strong", null, "停用 / 卸载 / 删除"), " 这些动作在详情页标题右侧（也可以在设置里放回卡片底部），都会先出计划、再确认一次；Skill 删除进回收站，可还原。"),
 							h("button", { className: "dpc-btn dpc-btn-sm dpc-btn-ghost", onClick: () => set({ hintDismissed: true }) }, "知道了"),
 						),
 				/* R35：运行期真相 —— 声明层看不见的那三类问题 + bundle 层的健康（listBundles 的说法）。
@@ -3695,7 +4283,7 @@ window.__ModuleLoader__.load({
 					: null,
 				/* 副本漂移公告：改源码不生效的第一现场
 				   R11：Skill 的「staging 旧了」在这里就能处置 —— 不用再去开工具/翻文档 */
-				driftBad.length > 0
+				driftBad.length > 0 && !state.changesCollapsed
 					? h(
 							"div",
 							{ className: "dpc-note dpc-note-warn" },
@@ -3735,7 +4323,7 @@ window.__ModuleLoader__.load({
 				state.syncPlan && !state.open
 					? h(SyncConfirm, { plan: state.syncPlan, busy: state.syncBusy, onApply: applyStageSync, onCancel: () => set({ syncPlan: null }) })
 					: null,
-				data.weekly && data.weekly.gap && data.reports && data.reports.gap && data.reports.gap.repos > 0
+				data.reports && data.reports.gap && data.reports.gap.repos > 0
 					? h(
 							"div",
 							{ className: "dpc-note" },
@@ -3996,6 +4584,9 @@ window.__ModuleLoader__.load({
 							/* R35：卡片底部动作 —— 计划 / 确认 / 结果都走同一条服务端路径 */
 							action: state.action,
 							onAction: runActionPlan,
+							/* R39：动作入口放哪（设置项；默认收进详情页）、卡片是否只显示一句简介 */
+							showActions: !state.actionsInDetail,
+							brief: state.cardBrief,
 							onDetail: openEntry,
 							onCopy: copyItemPath,
 							onCancel: cancelAction,
@@ -4059,7 +4650,7 @@ window.__ModuleLoader__.load({
 							{ className: "dpc-hostcore" },
 							h(
 								"button",
-								{ className: "dpc-card dpc-card-host", onClick: () => { set({ open: { id: "host-core", page: 1, pageSize: 20 }, detail: null }); loadDetail("host-core", 1, 20); } },
+								{ className: "dpc-card dpc-card-host", onClick: () => { set({ open: { id: "host-core", page: 1, pageSize: 5 }, detail: null }); loadDetail("host-core", 1, 5); } },
 								h("div", { className: "dpc-card-head" },
 									h("span", { className: "dpc-src dpc-src-official" }, "官方/宿主"),
 									h("span", { className: "dpc-name" }, "宿主核心工具"),
@@ -4080,7 +4671,7 @@ window.__ModuleLoader__.load({
 					h("br"),
 					"数据目录：" + (data.dataDir || "?") + "　｜　禁用一个插件即恢复官方界面：从 dsh.profile.bundles 去掉 dsh-plugin-catalog。",
 				),
-				state.open ? h(EntryModal, {}) : null,
+				state.open ? h(EntryModal, { showActions: state.actionsInDetail, onAction: runActionPlan, onCopy: copyItemPath, onCancel: cancelAction, onApply: runActionApply }) : null,
 				state.tagPick ? h(TagBatchModal, { ids: state.tagPick.ids }) : null,
 				state.plan ? h(PlanModal, {}) : null,
 				state.showComposition ? h(CompositionModal, { composition, onClose: () => set({ showComposition: false }), onJump: jumpToCard }) : null,
@@ -4088,6 +4679,8 @@ window.__ModuleLoader__.load({
 				state.trash ? h(TrashModal, { trash: state.trash, onClose: () => set({ trash: null }), onRestore: restoreTrashItem }) : null,
 				/* R37：动作留痕（只读） */
 				state.journal ? h(JournalModal, { journal: state.journal, onClose: () => set({ journal: null }) }) : null,
+				/* R39：设置浮窗（右上角 ⚙ 打开；只改显示偏好） */
+				state.prefsOpen ? h(SettingsModal, { onClose: () => set({ prefsOpen: false }) }) : null,
 			);
 		}
 
@@ -4259,7 +4852,7 @@ window.__ModuleLoader__.load({
   box-shadow:0 1px 0 color-mix(in srgb,var(--dsw-alias-label-primary,#000) 6%,transparent) inset,0 28px 72px rgba(0,0,0,.42);
   border:1px solid var(--dpc-line);overflow:hidden;color:var(--dsw-alias-label-primary,#1f2937)}
 .dpc-modal-wide{width:min(940px,calc(100vw - 32px))}
-.dpc-modal-head{display:flex;align-items:center;gap:9px;padding:13px 18px;flex:0 0 auto;z-index:2;
+.dpc-modal-head{display:flex;align-items:center;gap:9px;padding:13px 18px;flex:0 0 auto;z-index:2;flex-wrap:wrap;
   border-bottom:1px solid var(--dpc-line-soft);
   background:color-mix(in srgb,var(--dsw-alias-bg-base,#fff) 86%,transparent);backdrop-filter:blur(10px)}
 .dpc-modal-title{font-weight:650;font-size:15px;word-break:break-all;letter-spacing:.1px}
@@ -4555,12 +5148,66 @@ window.__ModuleLoader__.load({
 .dpc-panel.is-compact .dpc-calls{font-size:12.5px}
 /* 卡片从 <button> 换成 div：把按钮的默认字体重置回来，否则整张卡的字体与面板不一致 */
 .dpc-card{font:inherit;box-sizing:border-box}
+/* ── R39：头部菜单 / 概览条 / 设置 / 详情页 popover / 工具中文说明 ── */
+/* 旧按钮组：DOM 保留（自检与无障碍仍在），视觉上由下面那组新入口取代 */
+.dpc-legacy-actions{display:none}
+.dpc-header-actions2{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.dpc-menu-wrap{position:relative;display:inline-flex}
+.dpc-menu{display:none;position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:214px;padding:6px;
+  border-radius:12px;background:var(--dsw-alias-bg-elevated,#fff);box-shadow:0 10px 30px rgba(0,0,0,.16);
+  border:1px solid var(--dsw-alias-border-l1,#e5e7eb);text-align:left}
+.dpc-menu.is-open{display:flex;flex-direction:column;gap:2px}
+.dpc-menu-item{appearance:none;border:0;background:transparent;font:inherit;font-size:13px;text-align:left;
+  padding:7px 10px;border-radius:8px;cursor:pointer;color:var(--dsw-alias-label-primary,#111)}
+.dpc-menu-item:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 7%,transparent)}
+.dpc-settings-btn{font-size:14px;line-height:1;padding:5px 9px}
+/* 顶部概览条：一行摘要 + 右侧展开 / 关闭（原来那三行公告默认折起来） */
+.dpc-statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 11px;border-radius:10px;
+  background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 3%,transparent);
+  border:1px solid var(--dsw-alias-border-l1,#e5e7eb);font-size:12.5px}
+.dpc-statusbar-text{flex:1 1 320px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--dsw-alias-label-secondary,#6b7280)}
+/* 详情页：来源判定 / 标签 两个 popover（默认收起，点按钮才展开） */
+.dpc-popover{display:none;flex-direction:column;gap:9px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l1,#e5e7eb);
+  background:color-mix(in srgb,var(--dsw-alias-label-primary,#111) 3%,transparent);max-height:40vh;overflow:auto}
+.dpc-popover.is-open{display:flex}
+.dpc-popover-title{font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280)}
+/* 旧正文里的来源块 / 标签块：已由头部两个按钮取代（内容仍在 DOM，视觉隐藏） */
+.dpc-legacy-src,.dpc-legacy-tags{display:none}
+.dpc-modal-actions{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;padding-right:8px;margin-right:4px;
+  border-right:1px solid var(--dsw-alias-border-l1,#e5e7eb)}
+/* 大白话：技术块标题下面一句人话 */
+.dpc-plain{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary,#6b7280);
+  padding:5px 9px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-brand-primary,#002fa7) 5%,transparent)}
+/* 完整介绍 / 语言切换 */
+.dpc-intro{font-size:13.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;max-height:22vh;overflow:auto}
+.dpc-intro-en{opacity:.9}
+.dpc-lang{display:inline-flex;gap:4px;margin-left:8px;vertical-align:middle}
+/* 工具表：名字下面一行中文说明（悬停也有 title） */
+.dpc-tool-name{display:block;font-weight:500}
+.dpc-tool-hint{display:block;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary,#6b7280);
+  font-family:inherit;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dpc-tool-hint.is-missing{opacity:.6;font-style:italic}
+/* 卡片：简介缺失时明确说没有；底部 meta 永远贴底（一排卡的高低才齐） */
+.dpc-card-foot{margin-top:auto}
+.dpc-zh-missing{color:var(--dsw-alias-label-secondary,#6b7280);font-style:italic}
+/* 设置浮窗 */
+.dpc-modal-sm{width:min(620px,calc(100vw - 32px))}
+.dpc-set-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:9px 0;
+  border-bottom:1px dashed var(--dsw-alias-border-l1,#e5e7eb)}
+.dpc-set-row:last-child{border-bottom:0}
+.dpc-set-label{font-size:13px;font-weight:500;flex:1 1 auto;min-width:0}
+.dpc-set-hint{font-size:11.5px;font-weight:400;line-height:1.55;color:var(--dsw-alias-label-secondary,#6b7280);margin-top:3px}
+.dpc-set-control{flex:0 0 auto;max-width:300px}
 @media (max-width:760px){
   .dpc-panel{padding:12px 10px 32px}
   .dpc-grid{grid-template-columns:1fr}
   .dpc-overlay{padding:8px}
   .dpc-modal{max-height:calc(100vh - 16px)}
   .dpc-header-actions{justify-content:flex-start}
+  .dpc-header-actions2{justify-content:flex-start}
+  .dpc-set-row{flex-direction:column;gap:8px}
+  .dpc-set-control{max-width:100%}
 }
 `;
 
@@ -4679,6 +5326,16 @@ window.__ModuleLoader__.load({
 			VIEW_KEYS,
 			readView,
 			writeView,
+			/* R39：界面偏好与文案的纯函数（自检直接断言；不碰 DOM） */
+			HEADER_MENUS,
+			PLAIN_HINTS,
+			SettingsModal,
+			stripMd,
+			briefOf,
+			cardMainOf,
+			introOf,
+			toolHintOf,
+			changeSummaryOf,
 		};
 		return exports;
 	},

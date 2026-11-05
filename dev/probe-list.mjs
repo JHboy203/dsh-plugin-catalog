@@ -36,6 +36,8 @@ export const PROBES = Object.freeze([
 	/* R36：开源发版就绪 —— 版本↔BUILD / 包元数据 / 双语文档与工具表 / 探针清单 /
 	   密钥与绝对路径扫描（工作树、不 spawn、掩码输出） */
 	{ id: "release", label: "开源发版就绪", file: "dev/probe-release.mjs" },
+	/* R39：工具中文说明 —— 静态表覆盖 + 查不到不编 + AI 覆盖的空/非字符串回退 + 批量只收有说明的 */
+	{ id: "toolhints", label: "工具中文说明", file: "dev/probe-toolhints.mjs" },
 ]);
 
 /** 探针个数（文档里「11 个」的那个数）。 */

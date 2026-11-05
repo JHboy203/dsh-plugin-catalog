@@ -19,6 +19,8 @@ import { PROBES, PROBE_COUNT, LEGACY_PROBES } from "./probe-list.mjs";
 import { buildHandoff } from "../lib/handoff.mjs";
 
 import { DEFAULTS, FROZEN_DEFAULTS, normalizeSettings, SETTINGS_VERSION } from "../lib/settings.mjs";
+/* R39：工具中文说明（静态表 + AI 覆盖）—— 判据是纯函数，自检直接断言 */
+import { TOOL_HINTS, hintsForTools, staticToolHint, toolHintOf } from "../lib/toolhints.mjs";
 import { BUILTIN_TAGS, addCustomTag, listTags, removeCustomTag, setEntryTags, tagsOfEntry, tagPrompt, loadTagsStore, saveTagsStore } from "../lib/tags.mjs";
 import { buildCatalogTools } from "../lib/tools.mjs";
 import { repoNameFor, applyUpload, makePublic, PUBLISHABLE_SOURCES, selectCandidates } from "../lib/publish.mjs";
@@ -945,7 +947,62 @@ ok("探针不碰真数据（store 是内存空壳，不读也不写 tags.json）
 /* ★ R29 故意不抬版本：这一轮只加 dev 工具与文档、零运行期改动。
    抬版本会让 live-check 的版本 canary 立刻变红（宿主还是旧的那份），换会话前反而要人多做一次重启 ——
    而版本钉子存在的意义是"改了运行期代码别忘了抬"，不是"每次动仓库都要抬"。 */
-ok("版本号与构建戳同步抬到 0.35.0 / r35.0", /"version": "0\.35\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r35.0"'));
+ok("版本号与构建戳同步抬到 0.39.0 / r39.0", /"version": "0\.39\.0"/.test(readFileSync(new URL("../package.json", import.meta.url), "utf8")) && clientSource.includes('const BUILD = "r39.0"'));
+
+/* ── R39：界面定制化 / 信息分层（用户这一轮 13 条需求对应的契约） ── */
+ok(
+	"R39 工具中文说明：静态表覆盖宿主与高频插件工具，查不到就返回空串（绝不编一个像样的用途）",
+	typeof TOOL_HINTS.pwsh === "string" &&
+		TOOL_HINTS.pwsh.includes("PowerShell") &&
+		staticToolHint("shot_probe").length > 0 &&
+		staticToolHint("catalog_list").includes("插件") &&
+		staticToolHint("session_search").length > 0 &&
+		staticToolHint("no_such_tool_xyz") === "",
+);
+ok(
+	"R39 工具说明合并：AI 生成优先于静态表；空串 / 非字符串一律回退静态表",
+	toolHintOf("pwsh", { pwsh: "我自己的说法" }) === "我自己的说法" &&
+		toolHintOf("pwsh", { pwsh: "  " }) === TOOL_HINTS.pwsh &&
+		toolHintOf("pwsh", null) === TOOL_HINTS.pwsh &&
+		Object.keys(hintsForTools(["pwsh", "no_such_tool_xyz"], null)).join(",") === "pwsh",
+);
+ok("R39 会话分页默认 5 条，且选项里含 5（用户指定；服务端默认与前端兜底一起改）", DEFAULTS.sessionsPageSize === 5 && DEFAULTS.pageSizes.includes(5));
+ok(
+	"R39 /intro 路由多了两条新动作：单条按需（ensure）与工具说明（tools）",
+	indexSource.includes('=== "ensure"') && indexSource.includes('=== "tools"') && indexSource.includes("ensureIntro") && indexSource.includes("runToolHints"),
+);
+ok(
+	"R39 service：条目带 toolHints、每个工具带 hint（详情页悬停才有内容）",
+	serviceSource.includes("toolHints: hintsForTools(") && serviceSource.includes("hint: toolHintOf(") && serviceSource.includes("hint: staticToolHint("),
+);
+ok(
+	"R39 界面：卡片只取一句 / 详情页可切中英 / 缺中文自动补（三个纯函数 + 一条自动闸门）",
+	clientSource.includes("function briefOf(") &&
+		clientSource.includes("function introOf(") &&
+		clientSource.includes("function cardMainOf(") &&
+		clientSource.includes('post("/intro", { action: "ensure", id: target.id })') &&
+		clientSource.includes("autoIntroTried"),
+);
+ok(
+	"R39 动作位固定：自己那条也给卸载位、但灰着并说清为什么（需求「部分卡片没有停用/卸载」）",
+	clientSource.includes("这是本插件自己") && clientSource.includes("本插件不能从自己的面板卸载") && clientSource.includes("props.showActions === false ? null : h(CardActions, props)"),
+);
+ok(
+	"R39 界面：设置浮窗 / 头部三个下拉 / 顶部概览条 / 详情页两个 popover —— 都在源码里，不是只写在文档里",
+	clientSource.includes("function SettingsModal(") &&
+		clientSource.includes("const HEADER_MENUS = [") &&
+		clientSource.includes("dpc-statusbar") &&
+		clientSource.includes("dpc-popover") &&
+		clientSource.includes("function changeSummaryOf(") &&
+		clientSource.includes("const PLAIN_HINTS = {") &&
+		clientSource.includes("dpc-tool-hint"),
+);
+ok(
+	"R39 界面偏好进 localStorage（刷新不丢），但设置浮窗与下拉菜单本身不进（它们不该自己弹回来）",
+	["actionsInDetail", "cardBrief", "plain", "changesCollapsed", "changesHidden", "lang", "sessionsPageSize", "autoIntro"].every((key) => clientSource.includes('"' + key + '"')) &&
+		!/VIEW_KEYS\s*=\s*\[[^\]]*prefsOpen/.test(clientSource) &&
+		!/VIEW_KEYS\s*=\s*\[[^\]]*"menu"/.test(clientSource),
+);
 
 
 ok(

@@ -205,8 +205,8 @@ const detail = {
 	ok: true,
 	item: { ...entries[0], tags: { purpose: ["screenshot", "c-1"], context: ["web-gui"], origin: ["src-self"] } },
 	tools: [
-		{ name: "screenshot", calls: 8000, errors: 2, avgMs: 420, lastUsed: Date.now() - 3600000, sessions: 30 },
-		{ name: "shot_probe", calls: 4345, errors: 5, avgMs: 1200, lastUsed: Date.now() - 7200000, sessions: 12 },
+		{ name: "screenshot", hint: "无感截屏（整屏 / 指定窗口 / 一块矩形），落到 PNG 并返回路径", calls: 8000, errors: 2, avgMs: 420, lastUsed: Date.now() - 3600000, sessions: 30 },
+		{ name: "shot_probe", hint: "跑截图插件的 dev 探针并汇总 PASS / FAIL", calls: 4345, errors: 5, avgMs: 1200, lastUsed: Date.now() - 7200000, sessions: 12 },
 	],
 	sessions: {
 		items: [
@@ -271,7 +271,8 @@ ${capturedCss}
 const cases = [
 	{ file: "preview-panel.html", title: "面板列表（真实组件树 + 真实 CSS，沙箱预览）", setup: () => { T.store.data = state; T.store.loading = false; T.store.error = null; T.store.open = null; T.store.plan = null; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; return T.Panel({}); } },
 	{ file: "preview-search.html", title: "搜索「vision」+ 排序「名称」", setup: () => { T.store.data = state; T.store.query = "vision"; T.store.sort = "name"; return T.Panel({}); } },
-	{ file: "preview-modal.html", title: "条目浮窗（居中、点外部关闭）", setup: () => { T.store.data = state; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 20 }; T.store.detail = detail; return T.EntryModal({}); } },
+	{ file: "preview-modal.html", title: "条目浮窗（动作入口在标题右侧 + 来源判定 / 标签两个按钮）", setup: () => { T.store.data = state; T.store.query = ""; T.store.source = "any"; T.store.kind = "all"; T.store.sort = "calls"; T.store.changesCollapsed = true; T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 5 }; T.store.detail = detail; return T.EntryModal({ showActions: true, onAction: () => {} }); } },
+	{ file: "preview-settings.html", title: "设置浮窗（右上角 ⚙ 打开；只改显示偏好）", setup: () => { T.store.data = state; T.store.prefsOpen = true; return T.SettingsModal({ onClose: () => {} }); } },
 	{ file: "preview-plan.html", title: "上传计划浮窗（密钥命中 + 确认放行）", setup: () => { T.store.plan = plan; T.store.open = null; T.store.detail = null; return T.PlanModal({}); } },
 ];
 

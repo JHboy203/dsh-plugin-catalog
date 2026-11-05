@@ -554,6 +554,14 @@ export async function apply(ctx) {
 				if (path === "/intro" && method === "POST") {
 					const body = await readJsonBody(req);
 					if (String(body.action || "generate") === "set") return json(res, 200, await catalog.setIntro(String(body.id || ""), String(body.zh || "")));
+					/* R39：单条按需生成（详情页发现缺中文时补一条，带 60 秒去重）
+					   —— 与批量 generate 分开，避免打开一个详情页就把全量任务排上。 */
+					if (String(body.action || "generate") === "ensure") return json(res, 200, await catalog.ensureIntro(String(body.id || "")));
+					/* R39：工具的中文一句说明（详情页悬停提示）。已生成过的跳过，除非 force。 */
+					if (String(body.action || "generate") === "tools") {
+						const startedHints = catalog.startJob("toolhints", async () => await catalog.runToolHints(Array.isArray(body.ids) ? body.ids : [], Boolean(body.force)));
+						return json(res, 200, startedHints);
+					}
 					const started = catalog.startJob("intro", async () => await catalog.runIntros(Boolean(body.force)));
 					return json(res, 200, started);
 				}

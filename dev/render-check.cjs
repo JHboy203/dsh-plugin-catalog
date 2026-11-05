@@ -540,7 +540,7 @@ ok("errorRate 对没调用过的条目返回 0（不假装 100%）", T.errorRate
 
 /* R3：视图持久化 —— 无头自检里没有 localStorage，必须安静地放弃而不是抛错 */
 ok("没有 localStorage 时读视图返回 null、写视图返回 false（不抛错）", T.readView() === null && T.writeView() === false);
-ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly/tagFilter + R35 的 density/hintDismissed），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly,tagFilter,density,hintDismissed" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
+ok("视图键固定是那几个（query/source/kind/sort/usage/pageSize/page/orphanOnly/dormantOnly/tagFilter + R35 的 density/hintDismissed + R39 的界面偏好），滚动位置单独存", T.VIEW_KEYS.join(",") === "query,source,kind,sort,usage,pageSize,page,orphanOnly,dormantOnly,tagFilter,density,hintDismissed,actionsInDetail,cardBrief,plain,changesCollapsed,changesHidden,lang,sessionsPageSize,autoIntro" && typeof T.VIEW_KEY === "string" && T.VIEW_KEY.includes("dsh-plugin-catalog"));
 
 /* R4：导出当前筛选 / 0 值档位置灰 */
 T.store.kind = "all";
@@ -1022,6 +1022,8 @@ ok("对账结果块：没对账过就不出现（刷新后不许拿旧「已删�
 	return !text.includes("白删（会被装回来 / 入口指空）") && !text.includes("计划过期：") && text.includes("对账（不动盘）") && text.includes("处置清单（只生成、不执行）");
 })());
 /* ── R17：变化条（自上次快照以来变了什么） ── */
+/* R39：变化条默认折进顶部「概览」一行 —— 这一组测的是变化条本身，先把它展开 */
+T.store.changesCollapsed = false;
 const changesFixture = {
 	at: 1761300000000,
 	baselineAt: 1761200000000,
@@ -1375,7 +1377,8 @@ ok("配置层 R22：bundles 真的缺才占公告位；没缺口 / 旧服务端�
 		badText.includes("dsh-ghost") &&
 		!okText.includes("宿主启用它们时会失败") &&
 		!okText.includes("查不到 1") &&
-		!nullText.includes("配置层")
+		/* R39：菜单里有「配置层」入口，所以不能用「文本里有没有配置层」判断角标是否出现 —— 看带竖线的角标文案 */
+		!nullText.includes("｜配置层")
 	);
 })());
 /* R24：配置层条目可点跳卡片 + 「在 bundles 里吗」交叉引用 */
@@ -1434,7 +1437,7 @@ ok("运行中版本与磁盘不一致时，头部标「（未重载）」；一�
 ok("工具条有「处置清单」按钮，title 写明只生成不执行、写入要再确认", (() => {
 	const tree = expand(render(T.Panel, {}));
 	const buttons = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-btn"));
-	const target = buttons.find((node) => textsOf(node).join("").includes("处置清单"));
+	const target = findAll(tree, (node) => String((node.props && node.props.className) || "").includes("dpc-menu-item")).find((node) => textsOf(node).join("").includes("处置清单"));
 	if (!target) return false;
 	return String(target.props.title).includes("只生成、永不执行删除") && String(target.props.title).includes("需要再点一次确认");
 })(), (() => {
@@ -2202,7 +2205,7 @@ T.store.pageSize = 24;
 			const self = T.cardActionsOf({ kind: "plugin", name: "dsh-plugin-catalog", enabled: true, realDir: "D:\\c" }).map((action) => action.label);
 			const skill = T.cardActionsOf({ kind: "skill", name: "s", realDir: "D:\\s" }).map((action) => action.label);
 			const mcp = T.cardActionsOf({ kind: "mcp", name: "m", mcpState: "on" }).map((action) => action.label);
-			return plugin.join(",") === "详情,复制路径,停用,卸载" && !self.includes("卸载") && skill.includes("删除") && mcp.includes("删除条目") && mcp.includes("停用");
+			return plugin.join(",") === "详情,复制路径,停用,卸载" && (T.cardActionsOf({ kind: "plugin", name: "dsh-plugin-catalog", enabled: true }).find((action) => action.op === "uninstall") || {}).disabled === true && /本插件/.test(String((T.cardActionsOf({ kind: "plugin", name: "dsh-plugin-catalog", enabled: true }).find((action) => action.op === "uninstall") || {}).why)) && skill.includes("删除") && mcp.includes("删除条目") && mcp.includes("停用");
 		})(),
 	);
 
@@ -2391,6 +2394,92 @@ T.store.pageSize = 24;
 	})());
 	ok("R37 工具条有「动作留痕」入口（只读的留痕入口不该只活在接口里）", textsOf(expand(render(T.Panel, {}))).join(" ").includes("动作留痕"));
 }
+/* ─────────── R39：信息分层与定制化（13 条里可执行验证的部分） ─────────── */
+T.store.changesHidden = false;
+T.store.changesCollapsed = true;
+T.store.actionsInDetail = true;
+T.store.cardBrief = true;
+T.store.open = null;
+T.store.detail = null;
+
+ok("R39 briefOf：截到一句 + 省略号，Markdown 星号剥掉（卡片不该显示 ** 星号）", (() => {
+	const text = T.briefOf("**41 个**工具：渲染两个，其余是工序。后面还有很长很长的说明文字，足够超过上限了。", 24);
+	return text.startsWith("41 个工具") && text.endsWith("…") && !text.includes("**");
+})());
+ok("R39 cardMainOf：没有简介时 missing=true（界面要明说，不能留空白）", (() => {
+	const empty = T.cardMainOf({ descriptionZh: "", descriptionEn: "" }, true);
+	const en = T.cardMainOf({ descriptionZh: "", descriptionEn: "Does a thing." }, true);
+	const zh = T.cardMainOf({ descriptionZh: "做一件事。", descriptionEn: "Does a thing." }, true);
+	return empty.missing === true && empty.text === "" && en.missing === false && en.which === "en" && en.text === "Does a thing." && zh.which === "zh" && zh.text === "做一件事。";
+})());
+ok("R39 introOf：请求英文但没有英文 → 退回中文并如实标 which=zh（不假装是英文）", (() => {
+	const intro = T.introOf({ descriptionZh: "中文简介", descriptionEn: "" }, "en");
+	const both = T.introOf({ descriptionZh: "中文", descriptionEn: "English" }, "en");
+	return intro.text === "中文简介" && intro.which === "zh" && intro.hasZh === true && intro.hasEn === false && both.which === "en" && both.text === "English";
+})());
+ok("R39 卡片默认不再放动作按钮（入口收进详情页 —— 一排卡的高低才齐）", (() => {
+	const labels = findAll(expand(render(T.Panel, {})), (node) => node.type === "button").map(labelOf);
+	return !labels.includes("卸载") && !labels.includes("停用");
+})());
+ok("R39 头部把相近入口收进三个下拉 + 更多（刷新 / 生成 / 审核 / 更多），原入口都在菜单里", (() => {
+	const tree = expand(render(T.Panel, {}));
+	const labels = findAll(tree, (node) => node.type === "button").map(labelOf);
+	const text = textsOf(tree).join(" | ");
+	return (
+		labels.includes("刷新 ▾") &&
+		labels.includes("生成 ▾") &&
+		labels.includes("审核 ▾") &&
+		labels.includes("更多 ▾") &&
+		text.includes("刷新统计") &&
+		text.includes("中文简介") &&
+		text.includes("处置清单") &&
+		text.includes("回收站") &&
+		text.includes("动作留痕")
+	);
+})());
+ok("R39 顶部概览默认折成一行（变化 / 副本 / staging 一句话），不再占三行", (() => {
+	const text = textsOf(expand(render(T.Panel, {}))).join(" | ");
+	return text.includes("概览：") && text.includes("没有目录变化") && text.includes("展开") && text.includes("×");
+})());
+ok("R39 设置浮窗：动作位置 / 简介长度 / 大白话 / 语言 / 会话每页 / 恢复默认 都在", (() => {
+	const text = textsOf(expand(render(T.SettingsModal, { onClose: () => {} }))).join(" | ");
+	return (
+		text.includes("动作按钮放哪") &&
+		text.includes("卡片上的简介") &&
+		text.includes("大白话") &&
+		text.includes("简介语言") &&
+		text.includes("涉及哪些会话 · 每页") &&
+		text.includes("恢复默认") &&
+		text.includes("只影响这个面板的显示")
+	);
+})());
+ok("R39 详情页：来源判定 / 标签 各是一个按钮，内容仍读得到（收起不等于删掉）", (() => {
+	T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 5 };
+	T.store.detail = detail;
+	const tree = expand(render(T.EntryModal, {}));
+	const labels = findAll(tree, (node) => node.type === "button").map(labelOf);
+	const text = textsOf(tree).join(" | ");
+	return labels.includes("来源判定") && labels.includes("标签") && text.includes("link/junction 安装") && text.includes("新增自定义标签");
+})());
+ok("R39 详情页默认放动作入口（停用 / 卸载 在标题右侧），卡片上则没有", (() => {
+	const labels = findAll(expand(render(T.EntryModal, { showActions: true, onAction: () => {} })), (node) => node.type === "button").map(labelOf);
+	return labels.includes("停用") && labels.includes("卸载") && labels.includes("关闭");
+})());
+ok("R39 工具表每个工具名下面有一句中文说明（悬停也有 title）", (() => {
+	const tree = T.ToolTable({ tools: [{ name: "pwsh", hint: "在 Windows 上执行 PowerShell 命令", calls: 3, errors: 0, avgMs: 10, sessions: 1, lastUsed: 0 }] });
+	const text = textsOf(tree).join(" | ");
+	const node = findAll(tree, (item) => String((item.props && item.props.className) || "").includes("dpc-tool-hint"))[0];
+	return text.includes("在 Windows 上执行 PowerShell 命令") && Boolean(node) && String(node.props.title).includes("PowerShell");
+})());
+ok("R39 涉及会话默认每页 5 条，且 5/10/20/50/100 都可选（旧服务端也补上 5）", (() => {
+	T.store.open = { id: "plugin:dsh-screenshot", page: 1, pageSize: 5 };
+	T.store.detail = detail;
+	const select = findAll(expand(render(T.EntryModal, {})), (node) => node.type === "select")[0];
+	const options = findAll(select, (node) => node.type === "option").map(labelOf);
+	return Boolean(select) && String(select.props.value) === "5" && options.includes("5") && options.includes("100");
+})());
+ok("R39 大白话词条覆盖详情页的技术块（依赖关系 / 副本同步 / 仓库与操作…）", Object.keys(T.PLAIN_HINTS).length >= 8 && T.PLAIN_HINTS["依赖关系"].includes("弄坏") && T.PLAIN_HINTS["副本同步"].includes("同一版"));
+
 console.log("");
 console.log("dsh-plugin-catalog / render-check");
 console.log("  passed: " + passed);
