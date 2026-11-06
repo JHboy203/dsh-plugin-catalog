@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r40.1";
+		const BUILD = "r40.0";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
