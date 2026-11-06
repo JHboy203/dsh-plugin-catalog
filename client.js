@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 
 		const API = "/plugin-catalog";
 		const PANEL_LABEL = "插件目录";
-		const BUILD = "r40.0";
+		const BUILD = "r40.1";
 		const PANEL_ID = "catalog";
 
 		const SOURCE_META = {
@@ -5479,8 +5479,127 @@ window.__ModuleLoader__.load({
 
 		/* ── 插件体 ── */
 
+		/* R40.1：**面板自报 DOM 契约** —— 换会话后一条 `client_eval` 就能验界面，不用现场写选择器。
+		 *
+		 * 为什么值得做成资产：R40 这一轮的真机验收是手写的（菜单 computed style、卡片 foot 状态、
+		 * 工具条三个 select、仓库六项指标），换个人/换个会话就得重写一遍，而且**白字白底这类 bug
+		 * 用颜色值肉眼看不出**。这里把「该在的东西在不在」+「菜单前后景对比度够不够」一次算出来。
+		 *
+		 * ★ 只读：不写盘、不发请求；`openMenu` 只切显示状态（切回 `""` 即关闭）。
+		 * ★ 对比度按 WCAG 相对亮度算（> 4.5 = 正文可读；< 3 = 明显看不清）。
+		 */
+		function parseRgb(text) {
+			const match = /rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(String(text || ""));
+			return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+		}
+		function relativeLuminance(rgb) {
+			const channel = (value) => {
+				const v = value / 255;
+				return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+			};
+			return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+		}
+		function contrastRatio(foreground, background) {
+			const a = relativeLuminance(foreground);
+			const b = relativeLuminance(background);
+			const hi = Math.max(a, b);
+			const lo = Math.min(a, b);
+			return Math.round(((hi + 0.05) / (lo + 0.05)) * 10) / 10;
+		}
+
+		/** 界面契约快照（只读）。在渲染进程里跑；没有面板时也会如实返回 panel:false。 */
+		function uiProbe() {
+			const doc = typeof document !== "undefined" ? document : null;
+			const panel = doc ? doc.getElementById("dpc-panel") : null;
+			const count = (selector) => (panel && typeof panel.querySelectorAll === "function" ? panel.querySelectorAll(selector).length : 0);
+			const menu = doc && typeof doc.querySelector === "function" ? doc.querySelector(".dpc-menu.is-open") : null;
+			const styleOf = (node) => (node && typeof getComputedStyle === "function" ? getComputedStyle(node) : null);
+			const menuStyle = styleOf(menu);
+			const item = menu ? menu.querySelector(".dpc-menu-item") : null;
+			const itemStyle = styleOf(item);
+			const note = menu ? menu.querySelector(".dpc-menu-note") : null;
+			const menuBg = menuStyle ? parseRgb(menuStyle.backgroundColor) : null;
+			const menuFg = itemStyle ? parseRgb(itemStyle.color) : null;
+			const bodyStyle = styleOf(doc && doc.body);
+			const bodyBg = bodyStyle ? parseRgb(bodyStyle.backgroundColor) : null;
+			const repo = doc && typeof doc.querySelector === "function" ? doc.querySelector(".dpc-repo") : null;
+			const stats = panel && typeof panel.querySelectorAll === "function" ? panel.querySelectorAll(".dpc-stats .dpc-stat").length : 0;
+			const statNode = doc && typeof doc.querySelector === "function" ? doc.querySelector(".dpc-stats") : null;
+			const statStyle = styleOf(statNode);
+			const out = {
+				build: BUILD,
+				panel: Boolean(panel),
+				/* 深色主题判据：body 背景亮度 < 0.5（白字白底就发生在深色主题里） */
+				darkTheme: bodyBg ? relativeLuminance(bodyBg) < 0.5 : null,
+				cards: count(".dpc-card"),
+				/* 每张卡都该有左下角状态行；宿主核心卡不是条目卡，所以允许差 1 */
+				cardsWithFootStatus: count(".dpc-foot-status"),
+				/* 这两个"应该为 0"的计数是 R40 的回归判据：体积不再在卡片上、工具条不再有段选 */
+				sizeChipsOnCards: count(".dpc-card .dpc-size"),
+				toolbarSelects: count(".dpc-toolbar select"),
+				toolbarSegs: count(".dpc-toolbar .dpc-seg"),
+				insightChips: count(".dpc-insights .dpc-insight"),
+				noticesInFlow: count(".dpc-panel > .dpc-note.dpc-note-warn"),
+				toast: count(".dpc-toast"),
+				statusbar: count(".dpc-statusbar"),
+				modal: Boolean(doc && typeof doc.querySelector === "function" ? doc.querySelector(".dpc-modal") : null),
+				statCells: stats,
+				statColumns: statStyle && statStyle.gridTemplateColumns ? statStyle.gridTemplateColumns.split(" ").filter(Boolean).length : 0,
+				repoBlock: Boolean(repo),
+				repoMetrics: repo ? Array.from(repo.querySelectorAll(".dpc-repo-stat")).map((node) => String(node.textContent || "").replace(/\s+/g, " ").trim()) : [],
+				menu: menu
+					? {
+							items: Array.from(menu.querySelectorAll(".dpc-menu-item")).map((node) => String(node.textContent || "").trim()),
+							note: note ? String(note.textContent || "").trim() : "",
+							zIndex: menuStyle ? menuStyle.zIndex : "",
+							background: menuStyle ? menuStyle.backgroundColor : "",
+							foreground: itemStyle ? itemStyle.color : "",
+							/* ★ 这一条就是「下拉打开是空白」的判据：对比度太低就是白字白底 */
+							contrast: menuBg && menuFg ? contrastRatio(menuFg, menuBg) : null,
+							readable: Boolean(menuBg && menuFg && contrastRatio(menuFg, menuBg) >= 3),
+						}
+					: null,
+			};
+			return out;
+		}
+
 		function apply(ctx) {
 			clientCtx = ctx;
+			/* R40.1：把自证钩子挂到 window —— 换会话后 `client_eval` 一条 `await window.__dpc.probe()` 就够。
+			 *
+			 * ★ openMenu 走**真实 DOM 点击**而不是 `set({menu})`：热重载会留下旧实例，
+			 *   模块里那个 `set` 改不动"已经渲染出来的那棵树"（R40.1 实测：set 之后 probe 仍是 null）。
+			 *   点按钮则由 React 自己的事件处理，DOM 归谁就改谁。
+			 */
+			try {
+				if (typeof window !== "undefined") {
+					const MENU_LABEL = { refresh: "刷新", generate: "生成", audit: "审核", more: "更多" };
+					const headerMenuButtons = () =>
+						Array.from(document.querySelectorAll(".dpc-header-actions2 > .dpc-menu-wrap > button"));
+					window.__dpc = {
+						build: BUILD,
+						probe: uiProbe,
+						/** 打开某个头部菜单（id 或中文标签都认）；已开则先关再开。返回是否点到了按钮。 */
+						openMenu: (id) => {
+							const label = MENU_LABEL[String(id)] || String(id || "");
+							const button = headerMenuButtons().find((node) => String(node.textContent || "").includes(label));
+							if (!button || typeof button.click !== "function") return false;
+							const wrap = button.parentElement;
+							if (wrap && wrap.querySelector(".dpc-menu.is-open")) button.click();
+							button.click();
+							return true;
+						},
+						closeMenu: () => {
+							const open = document.querySelector(".dpc-menu.is-open");
+							const button = open && open.parentElement ? open.parentElement.querySelector("button") : null;
+							if (button && typeof button.click === "function") button.click();
+							else set({ menu: "" });
+						},
+					};
+				}
+			} catch (error) {
+				/* 钩子失败不该影响面板 */
+			}
 			ctx.effect(() => {
 				const style = document.createElement("style");
 				style.setAttribute("data-plugin", "dsh-plugin-catalog");

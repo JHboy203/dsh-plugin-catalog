@@ -488,6 +488,21 @@ rendered as 0), so each is now pinned by a self-check.
 - `git+https://github.com/o/n.git` (the canonical `repository.url` form) counts as a GitHub repo too — the
   first live run of R40 failed exactly there.
 
+**Verifying the UI after switching sessions (R40.1, read-only)**: the panel exposes a self-report hook:
+
+```js
+window.__dpc.probe()
+// { build, panel, cards, cardsWithFootStatus, sizeChipsOnCards (expect 0), toolbarSelects (expect 3),
+//   toolbarSegs (expect 0), modal, statCells, statColumns, repoMetrics[6],
+//   menu: { items, note, contrast, readable, ... } }
+window.__dpc.openMenu("audit")   // opens a header menu via a real DOM click
+window.__dpc.closeMenu()
+```
+
+`menu.contrast >= 3` is the machine check for "the dropdown is white-on-white" (measured **11.6** in the dark
+theme). ⚠️ probe again in a **separate** call after `openMenu` (React renders asynchronously), and wait for
+`/repo` before expecting the six repo metrics.
+
 ## MCP category (R30)
 
 The third kind chip on the panel toolbar is `全部 / 插件 / Skill / MCP`. MCP servers are **not installed packages**, so they get their own rules:

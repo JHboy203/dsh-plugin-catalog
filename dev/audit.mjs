@@ -1016,6 +1016,26 @@ ok(
 		!/VIEW_KEYS\s*=\s*\[[^\]]*"menu"/.test(clientSource),
 );
 
+/* R40.1：把「换会话后怎么验界面」固化成面板自己的自证钩子 ——
+   以前是手写五段 client_eval（菜单 computed style / foot 状态 / 三个 select / 仓库六项 / toast），
+   换个人就得重写；而「白字白底」用颜色值肉眼看不出，必须算对比度。 */
+ok(
+	"R40.1 面板自报 DOM 契约：`window.__dpc.probe()` 一条命令验界面（含菜单前后景对比度）",
+	clientSource.includes("window.__dpc") &&
+		clientSource.includes("function uiProbe()") &&
+		clientSource.includes("contrastRatio(") &&
+		clientSource.includes("sizeChipsOnCards") &&
+		clientSource.includes("toolbarSelects") &&
+		clientSource.includes("readable:") &&
+		/* openMenu 必须点真实 DOM：热重载留下的旧实例不吃模块里的 set（R40.1 实测） */
+		clientSource.includes("button.click()") &&
+		clientSource.includes("headerMenuButtons"),
+);
+ok(
+	"R40.1 自证钩子只读为主：probe 不发请求、不写盘；openMenu 只切显示状态",
+	!/window\.__dpc[\s\S]{0,600}post\(/.test(clientSource) && !/window\.__dpc[\s\S]{0,600}fetch\(/.test(clientSource) && clientSource.includes("只切显示状态"),
+);
+
 /* ── R40：用户 2026-11-05 提的五条界面问题对应的契约 ──
    ① 四个下拉打开是空白（白字白底）；
    ② 卡片：状态移左下、体积进详情、来源徽章缩小、版式统一；

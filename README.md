@@ -421,6 +421,20 @@ dir "%USERPROFILE%\.dsh\profiles\<profile>\node_modules\@deepseek-ai"
 - `git+https://github.com/o/n.git`（`package.json` 的 `repository.url` 标准写法）也算 GitHub 仓 ——
   R40 真机第一跑就栽在这里（整仓被判「不是 GitHub 仓」，星标一栏永远是空的）。
 
+**换会话后验界面（R40.1，只读）**：面板把「该在的东西在不在」暴露成一个自证钩子 ——
+
+```js
+window.__dpc.probe()
+// { build, panel, cards, cardsWithFootStatus, sizeChipsOnCards(应 0), toolbarSelects(应 3),
+//   toolbarSegs(应 0), modal, statCells, statColumns, repoMetrics[6],
+//   menu: { items, note, contrast, readable, ... } }
+window.__dpc.openMenu("audit")   // 打开头部菜单（真实 DOM 点击）
+window.__dpc.closeMenu()
+```
+
+`menu.contrast >= 3` 就是「下拉是不是白字白底」的机器判据（深色主题实测 **11.6**）。
+⚠️ `openMenu` 之后要**下一次再 probe**（React 异步渲染）；仓库六项要等 `/repo` 回来。
+
 ## MCP 分类（R30）
 
 面板工具条上第三颗类型 chip：`全部 / 插件 / Skill / MCP`。MCP 与插件是**两种不同的东西**，所以它有自己的判据：
