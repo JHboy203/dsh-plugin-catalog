@@ -643,8 +643,10 @@ const exportWithSizesText = exportWithSizes.json?.path ? readFileSync(exportWith
 ok("导出表格带体积列，并写明这份的合计", exportWithSizesText.includes("| 体积 |") && /合计 \*\*[\d.]+ (B|KB|MB|GB)\*\*/.test(exportWithSizesText), exportWithSizesText.split("\n").slice(0, 4).join(" / ").slice(0, 240));
 
 /* ── R9：依赖归属（「那个 354 MB 的二进制是谁带进来的」「删它会不会弄坏别人」） ──
-   走真数据：这台机器的 profile 里 dsh-ops 声明了 @dsh-ops/*-win32-x64 三个运行时包，
-   所以反向索引必须把它们指回 dsh-ops；判据靠 package.json，不靠目录名猜。 */
+   走真数据：反向索引只认 package.json 的 dependencies / optionalDependencies / peerDependencies，
+   不靠目录名猜。★ R41（2026-11-07）：dsh-ops 0.5.0 起不再声明 `@dsh-ops/*-win32-x64`（bash 载荷换成
+   随包自带的 Niubash），这台机器的依赖图因此变扁平 —— 下面不再要求「必须有一个被依赖者」，
+   改为验索引自洽 + 抽查 dsh-ops 的声明与读盘一致；环境不满足时 SKIP 并写明原因。 */
 const depPlugins = entries.filter((entry) => entry.kind === "plugin" && !entry.inAsar);
 ok(
 	"插件条目带依赖四字段（dependents / dependentCount / dependsOn / dependsOnCount）",
@@ -661,25 +663,57 @@ ok(
 	depPlugins.every((entry) => entry.orphanHint === (!entry.dependency && entry.dependentCount === 0)),
 	JSON.stringify(depPlugins.filter((entry) => entry.orphanHint !== (!entry.dependency && entry.dependentCount === 0)).slice(0, 3).map((entry) => entry.name)),
 );
-const dependedEntry = depPlugins.find((entry) => entry.dependentCount > 0);
-ok(
-	"至少一条插件「被别的包依赖」，且依赖者名字都在条目列表里（本机实测 dsh-ops → @dsh-ops/*-win32-x64）",
-	Boolean(dependedEntry) &&
-		dependedEntry.dependents.length > 0 &&
-		dependedEntry.dependents.every((name) => entries.some((entry) => entry.name === name)),
-	JSON.stringify({ name: dependedEntry?.name, dependents: dependedEntry?.dependents, count: dependedEntry?.dependentCount }),
-);
-const platformDep = depPlugins.find((entry) => entry.dependents.includes("dsh-ops"));
-ok(
-	"平台运行时二进制能指回声明它的包（@dsh-ops/*-win32-x64 → dsh-ops）",
-	Boolean(platformDep),
-	JSON.stringify(depPlugins.filter((entry) => entry.name.startsWith("@dsh-ops/")).map((entry) => ({ name: entry.name, dependents: entry.dependents }))),
-);
+/* ★ R41（2026-11-07）：这一段原来是**把机型钉进断言**（R32.2 明令禁止的那一类）。
+   dsh-ops 0.4.4 的 package.json 里声明着 `@dsh-ops/*-win32-x64` 三个运行时包，旧断言于是要求
+   「必须有一个被依赖者」「平台二进制必须指回 dsh-ops」「dsh-ops 自己必须声明 @dsh-ops/*」。
+   dsh-ops **0.5.0** 把 bash 载荷换成随包自带的 Niubash 运行时，package.json 里连 dependencies 都没有了
+   （只剩 2 条 peer），依赖图因此变扁平 → 那三条从此必红，红的是机型、不是判据。
+   改成机器无关的三条，钉的仍是同一件事「反向索引算得对」：
+   ① A 声明依赖已装条目 B ⇒ B.dependents 必须含 A（本机没有这种边时 SKIP，绝不静默为真）；
+   ② 抽查 dsh-ops：条目的 dependsOn 与它自己 package.json 逐字一致（读盘，不信快照）；
+   ③ dependsOnCount 与 dependsOn 的截断口径一致。 */
+const installedNames = new Set(entries.map((entry) => entry.name));
+const declaredEdges = depPlugins.flatMap((entry) => (entry.dependsOn || []).filter((dep) => installedNames.has(dep)).map((dep) => [entry.name, dep]));
+const edgeMismatch = declaredEdges.filter(([from, to]) => {
+	const target = entries.find((entry) => entry.name === to);
+	return !target || !(target.dependents || []).includes(from);
+});
+if (declaredEdges.length > 0) {
+	ok(
+		"依赖反向索引与 dependsOn 自洽（A 声明已装条目 B ⇒ B.dependents 含 A；本机此类边 " + declaredEdges.length + " 条）",
+		edgeMismatch.length === 0,
+		JSON.stringify({ edges: declaredEdges.length, mismatch: edgeMismatch.slice(0, 3) }),
+	);
+} else {
+	skip(
+		"依赖反向索引与 dependsOn 自洽",
+		"本机没有任何「已装包声明依赖另一个已装条目」的边 —— dsh-ops 0.5.0 起不再声明 @dsh-ops/*-win32-x64（bash 载荷改为随包自带的 Niubash），依赖图是扁平的；这是机型状态，不是判据坏了",
+	);
+}
+const depMetaOf = (dir) => {
+	try {
+		const pj = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+		const merged = [];
+		for (const key of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+			if (pj[key] && typeof pj[key] === "object") merged.push(...Object.keys(pj[key]));
+		}
+		return [...new Set(merged)].sort((a, b) => a.localeCompare(b));
+	} catch {
+		return null;
+	}
+};
 const dshOpsEntry = depPlugins.find((entry) => entry.name === "dsh-ops");
+const profileNm = profileNodeModules();
+const dshOpsDeclared = profileNm ? depMetaOf(join(profileNm, "dsh-ops")) : null;
 ok(
-	"dsh-ops 自己声明了运行时依赖（体积 Top 的来源就是它）",
-	Boolean(dshOpsEntry) && dshOpsEntry.dependsOnCount > 0 && dshOpsEntry.dependsOn.some((name) => name.startsWith("@dsh-ops/")),
-	JSON.stringify({ name: dshOpsEntry?.name, dependsOn: dshOpsEntry?.dependsOn, count: dshOpsEntry?.dependsOnCount }),
+	"条目的 dependsOn 与它自己 package.json 的声明一致（抽查 dsh-ops：dependencies + optional + peer）",
+	Boolean(dshOpsEntry) && Boolean(dshOpsDeclared) && JSON.stringify(dshOpsEntry.dependsOn.slice().sort((a, b) => a.localeCompare(b))) === JSON.stringify(dshOpsDeclared),
+	JSON.stringify({ entry: dshOpsEntry?.dependsOn, pkg: dshOpsDeclared, binaries: (dshOpsDeclared || []).filter((name) => name.startsWith("@dsh-ops/")) }),
+);
+ok(
+	"dependsOnCount 与 dependsOn 截断口径一致（不会互相对不上）",
+	depPlugins.every((entry) => entry.dependsOnCount >= entry.dependsOn.length),
+	JSON.stringify(depPlugins.filter((entry) => entry.dependsOnCount < entry.dependsOn.length).slice(0, 2).map((entry) => entry.name)),
 );
 const depMetaState = readyState.json?.dependency || (await callRoute("/state")).json?.dependency || null;
 ok("state 带依赖图自述（scanned / direct / orphanHint）", Boolean(depMetaState) && depMetaState.scanned > 0 && depMetaState.direct > 0 && typeof depMetaState.orphanHint === "number", JSON.stringify(depMetaState));
@@ -694,9 +728,10 @@ const depExportText = depExport.json?.path ? readFileSync(depExport.json.path, "
 ok("导出清单带「被依赖」列（拿出去也要能判断）", depExportText.includes("| 被依赖 |") && depExportText.includes("直接依赖"), depExportText.split("\n")[8] || "");
 
 /* ── R12：装了到底会不会跑（bundles 不是唯一入口） ──
-   走真数据：这台机器的 `@dsh-ops/*-win32-x64` **不在** `dsh.profile.bundles` 里，
-   却会因为 dsh-ops 声明依赖它们而被加载 —— 旧口径把它们标成「启用：否」并置灰，
-   照着删就会弄坏 dsh-ops。这一组断言就钉住"能不能正确回答这个问题"。 */
+   历史上这台机器的 `@dsh-ops/*-win32-x64` **不在** bundles 里，却因为 dsh-ops 声明依赖而被加载 ——
+   旧口径把它们标成「启用：否」并置灰，照着删就会弄坏上游。★ R41：dsh-ops 0.5.0 之后这条链消失
+   （依赖图扁平），于是那个特例被改写成通用不变式「被已装条目声明依赖的包不许判 dormant」；
+   机型不满足时 SKIP 并说明，特例本身仍由上面 R9 那组的字段断言逐条验到。 */
 const LOAD_STATES = ["bundle", "config", "transitive", "dormant"];
 const allPlugins = entries.filter((entry) => entry.kind === "plugin");
 ok(
@@ -710,14 +745,24 @@ ok(
 	allPlugins.filter((entry) => entry.loadState === "transitive").every((entry) => typeof entry.loadVia === "string" && entry.loadVia !== "" && entries.some((other) => other.name === entry.loadVia)),
 	JSON.stringify(allPlugins.filter((entry) => entry.loadState === "transitive").slice(0, 3).map((entry) => ({ name: entry.name, via: entry.loadVia }))),
 );
-ok(
-	"平台运行时二进制被判成 transitive 而不是 dormant（本机 @dsh-ops/* → dsh-ops）",
-	(() => {
-		const binary = allPlugins.find((entry) => entry.name === "@dsh-ops/bash-win32-x64");
-		return !binary || (binary.loadState === "transitive" && binary.loadVia === "dsh-ops");
-	})(),
-	JSON.stringify(allPlugins.filter((entry) => entry.name.startsWith("@dsh-ops/")).map((entry) => ({ name: entry.name, loadState: entry.loadState, via: entry.loadVia, enabled: entry.enabled }))),
-);
+/* 旧断言写死「`@dsh-ops/bash-win32-x64` 必须判 transitive」（R41 前）。dsh-ops 0.5.0 不再声明它之后，
+   它**本来就该**是 dormant（在盘上、没人依赖、也不在任何入口上）—— 旧断言等于要求现实去迎合旧机型。
+   改成通用形式：**凡是被已装条目声明依赖的包，都不许判成 dormant**（这才是当初要钉的不变式：
+   有人依赖它，它就不能被报成「不会被加载」，否则照面板删就会把上游弄坏）。 */
+const declaredTargets = [...new Set(declaredEdges.map(([, to]) => to))];
+const dormantButDeclared = declaredTargets
+	.map((name) => allPlugins.find((entry) => entry.name === name))
+	.filter((entry) => entry && entry.loadState === "dormant")
+	.map((entry) => entry.name);
+if (declaredTargets.length > 0) {
+	ok(
+		"被已装条目声明依赖的包不判成 dormant（本机此类包 " + declaredTargets.length + " 个）",
+		dormantButDeclared.length === 0,
+		JSON.stringify({ targets: declaredTargets, dormant: dormantButDeclared }),
+	);
+} else {
+	skip("被已装条目声明依赖的包不判成 dormant", "本机没有这种包（依赖图为扁平，与上一条同源）—— 机型状态，不是判据坏了");
+}
 ok(
 	"loadState 与 enabled 是两件事（存在 enabled=false 但会被加载的条目，这正是旧口口径的坑）",
 	allPlugins.some((entry) => entry.enabled === false && entry.loadState !== "dormant"),
